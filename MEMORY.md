@@ -96,3 +96,150 @@ In regex-based sentence boundary tokenizers, periods inside abbreviations (`Dr.`
 6. **ADR-06: ChatML Control Token Sanitization**
    - *Decision*: Strip `<|im_start|>`, `<|im_end|>`, `[INST]`, `[/INST]`, `<s>`, `</s>` from user inputs and book contexts.
    - *Rationale*: Prevents prompt injection attacks that escape conversational assistant boundaries.
+7. **ADR-07: Unified FastAPI WebSocket & Static Asset Single-Process Server**
+   - *Decision*: Combine static HTML/CSS/font HUD dashboard hosting (`GET /`) and bi-directional real-time telemetry/audio streaming (`WS /ws`) into a single FastAPI/uvicorn server process on port 8000.
+   - *Rationale*: Eliminates cross-origin resource sharing (CORS) issues, simplifies deployment, provides deterministic lifecycle management, and enables tight synchronization between the web client and the local voice agent runtime.
+8. **ADR-08: Hybrid Audio Ingestion Architecture & Virtual Loopback Fallback**
+   - *Decision*: Provide a switchable audio bridge supporting browser Web Audio PCM streaming, host hardware `sounddevice` microphone capture, and an automated headless Virtual Audio Loopback fallback.
+   - *Rationale*: Web Audio API provides zero-configuration microphone access directly from modern browsers, host Python sounddevice supports low-latency direct hardware access, and the virtual loopback guarantees continuous automated CI/CD and offline testing stability without physical audio peripherals.
+9. **ADR-09: Decoupled Binary Audio & JSON Telemetry over WebSocket**
+   - *Decision*: Multiplex structured JSON control messages (`state_sync`, `vad_event`, `cursor_update`, `barge_in`, `telemetry`, `prompt_envelope`) and raw binary 24kHz 16-bit mono PCM chunks over the same WebSocket connection.
+   - *Rationale*: Avoids base64 encoding overhead (which adds ~33% bandwidth and CPU serialization cost in high-frequency audio frames) while preserving typed schema validation for state control and UI telemetry.
+
+---
+
+## 5. Unified WebSocket Streaming Protocol & Telemetry Schemas
+
+### 5.1. Client -> Server WebSocket Protocol (JSON & Binary PCM)
+1. **Select Voice**:
+   ```json
+   {"type": "select_voice", "voice_id": "lucy-kushinada"}
+   ```
+2. **Switch Mic Source**:
+   ```json
+   {"type": "set_mic_source", "source": "browser" | "host"}
+   ```
+3. **Trigger Barge-In**:
+   ```json
+   {"type": "barge_in_trigger"}
+   ```
+4. **Set Cadence**:
+   ```json
+   {"type": "set_cadence", "cadence": 1.2}
+   ```
+5. **Playback Control**:
+   ```json
+   {"type": "playback_control", "action": "pause" | "resume" | "next" | "prev"}
+   ```
+6. **Binary PCM Audio Frame**:
+   - Format: 24kHz 16-bit Mono PCM (Little-Endian int16).
+   - Ingested directly into `AudioIngestionBridge` when `mic_source == "browser"`.
+
+### 5.2. Server -> Client WebSocket Protocol (JSON & Binary PCM)
+1. **State Sync (`state_sync`)**:
+   ```json
+   {
+     "type": "state_sync",
+     "state": "NARRATING",
+     "active_voice": "david-martinez",
+     "mic_source": "browser",
+     "cadence": 1.0,
+     "sentence_idx": 3,
+     "word_offset": 0,
+     "latency_ms": 0.04
+   }
+   ```
+2. **VAD Event Telemetry (`vad_event`)** *(emitted every 30ms frame)*:
+   ```json
+   {
+     "type": "vad_event",
+     "speech_active": false,
+     "dbfs": -42.5,
+     "noise_floor_dbfs": -54.0,
+     "threshold_dbfs": -42.0
+   }
+   ```
+3. **Sub-50ms Barge-In Signal (`barge_in`)**:
+   ```json
+   {
+     "type": "barge_in",
+     "latency_ms": 0.045,
+     "generation": 4,
+     "flushed_samples": 48000
+   }
+   ```
+4. **Word Cursor Update (`cursor_update`)**:
+   ```json
+   {
+     "type": "cursor_update",
+     "sentence_idx": 3,
+     "word_offset": 12,
+     "char_offset": 64,
+     "total_sentences": 42,
+     "sentence_text": "The neon glow of Night City reflected against the pavement."
+   }
+   ```
+5. **Prompt Envelope (`prompt_envelope`)**:
+   ```json
+   {
+     "type": "prompt_envelope",
+     "state": "REPLYING",
+     "context": "Narrative excerpt...",
+     "query": "Who is David talking to?",
+     "reply": "David is speaking directly with Lucy.",
+     "pre_roll_words": 3
+   }
+   ```
+6. **Audio Telemetry (`telemetry`)**:
+   ```json
+   {
+     "type": "telemetry",
+     "buffer_samples": 12000,
+     "buffer_capacity": 240000,
+     "drain_latency_ms": 0.038,
+     "rms_db": -18.2,
+     "fft_bins": [0.12, 0.45, 0.88, 0.65, 0.32, 0.21, 0.15, 0.08, 0.05, 0.04, 0.03, 0.02, 0.01, 0.01, 0.0, 0.0]
+   }
+   ```
+7. **Binary Audio Output PCM**:
+   - 24kHz 16-bit Mono PCM streamed directly to browser Web Audio API DAC for continuous stutter-free playback.
+
+### 5.3. Hybrid Audio Ingestion Architecture
+```
+                         +-----------------------------+
+                         |  HUD Audio Input Selector   |
+                         +--------------+--------------+
+                                        |
+                 +----------------------+----------------------+
+                 |                                             |
+                 v                                             v
+     +-----------------------+                     +-----------------------+
+     | Browser WebAudio PCM  |                     | Host Sounddevice Mic  |
+     | (WebSocket Binary In) |                     | (PortAudio Hardware)  |
+     +-----------+-----------+                     +-----------+-----------+
+                 |                                             |
+                 +----------------------+----------------------+
+                                        |
+                                        v
+                         +-----------------------------+
+                         |    AudioIngestionBridge     |
+                         |  (Optional Virtual Loopback)|
+                         +--------------+--------------+
+                                        |
+                                        v
+                         +-----------------------------+
+                         | 16kHz Energy VAD Accumulator|
+                         |  (30ms Frames, DC Blocker)  |
+                         +-----------------------------+
+```
+- **Browser Mic Mode**: Receives raw PCM chunks over WebSocket from client-side Web Audio API (`getUserMedia`).
+- **Host Mic Mode**: Reads from the server machine's physical microphone via `sounddevice.InputStream`.
+- **Virtual Audio Loopback**: In-memory test audio generator producing configurable silence, tones, or synthesized voice frames, enabling 100% headless automated test coverage without physical hardware dependencies.
+
+
+7. **ADR-07: Unified FastAPI WebSocket Architecture for 24kHz Audio & HUD Telemetry**
+   - *Decision*: Host a unified local FastAPI server on port 8000 serving static single-page HUD assets and exposing `ws://localhost:8000/ws` for bi-directional 24kHz PCM audio frames, 30ms VAD events, word cursor progress, and atomic drain signals.
+   - *Rationale*: Eliminates cross-origin and multi-port complexity, allowing the browser and backend to exchange high-throughput audio with sub-millisecond serialization overhead.
+8. **ADR-08: Three-Phase Adversarial Hardening and Competitive Architecture Protocol**
+   - *Decision*: Following any major development sprint, deploy a 4-auditor adversarial scrutiny team applying `/code-review-and-quality` and `/bugs-are-annoying`. Route all discovered defects to 2 independent architecture teams (Team Alpha and Team Beta) communicating via `send_message` to synthesize competing united proposals, from which the Lead Coordinator selects the best design moves for 4 Fixers to implement under TDD.
+   - *Rationale*: Mono-agent verification produces blind spots. Adversarial scrutiny combined with competing peer architecture produces battle-hardened DSP and concurrency stability.
