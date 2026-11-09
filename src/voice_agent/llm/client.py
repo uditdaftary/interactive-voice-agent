@@ -141,16 +141,16 @@ async def search_web(query: str, max_results: int = 3) -> str:
 
 
 class LLMClient:
-    """Multi-provider client supporting Ollama, OpenAI-compatible APIs (Groq, Together, DeepSeek),
-    Gemini, and intelligent local extractive fallback with live internet web search grounding.
+    """Multi-provider client supporting Built-in Zero-Setup extraction, Ollama,
+    OpenAI-compatible APIs (Groq, Together, DeepSeek), and live internet web search grounding.
     """
 
     def __init__(
         self,
         base_url: str = "http://localhost:11434/v1",
         api_key: str = "local",
-        provider: str = "ollama",
-        model: str = "llama3.2",
+        provider: str = "builtin",
+        model: str = "builtin-assistant",
         web_search_enabled: bool = True,
     ):
         self.base_url = base_url.rstrip("/")
@@ -158,7 +158,7 @@ class LLMClient:
         self.provider = provider.lower().strip()
         self.model = model
         self.web_search_enabled = web_search_enabled
-        self._fallback_mock = MockLLMClient("Local model responding.")
+        self._fallback_mock = MockLLMClient("Built-in model responding.")
 
     def update_config(
         self,
@@ -196,6 +196,19 @@ class LLMClient:
         model: Optional[str] = None,
         max_tokens: int = 150,
     ) -> AsyncGenerator[str, None]:
+        # Fast path: built-in native zero-setup question extraction
+        if self.provider in ("builtin", "local-builtin", "native", "none"):
+            user_msg = ""
+            for m in reversed(messages):
+                if m.get("role") == "user":
+                    user_msg = m.get("content", "")
+                    break
+            fallback_text = self._synthesize_fallback_answer(user_msg)
+            for word in fallback_text.split():
+                await asyncio.sleep(0.015)
+                yield word + " "
+            return
+
         import json
         import urllib.request
         import urllib.error
@@ -273,13 +286,74 @@ class LLMClient:
                 yield word + " "
 
     def _synthesize_fallback_answer(self, user_msg: str) -> str:
-        """Construct a natural response when external LLM endpoint is offline."""
-        clean = user_msg.lower()
-        if "who" in clean or "what is" in clean or "where" in clean:
-            # Extract key nouns
-            return f"Regarding your question about {user_msg.strip()[:60]}, the story highlights key details in the current passage. Let us continue exploring."
-        elif "why" in clean:
-            return f"The events unfold directly from the underlying circumstances in this chapter. Let's see what happens next."
+        """Construct a direct, context-aware spoken response from book text or web search grounding
+        without requiring Ollama or any external LLM setup.
+        """
+        # 1. Extract query
+        query = ""
+        if "User Question:" in user_msg:
+            query = user_msg.split("User Question:")[-1].strip()
+        elif "Query:" in user_msg:
+            query = user_msg.split("Query:")[-1].strip()
         else:
-            return f"Understood. Continuing narration with your question in mind."
+            query = user_msg.strip()
+
+        # 2. Extract web search results if present
+        web_section = ""
+        if "Live Internet Web Search Results:" in user_msg:
+            after_web = user_msg.split("Live Internet Web Search Results:")[1]
+            if "User Question:" in after_web:
+                web_section = after_web.split("User Question:")[0].strip()
+            else:
+                web_section = after_web.strip()
+
+        # 3. Extract book context if present
+        book_context = ""
+        if "Book Context:" in user_msg:
+            after_book = user_msg.split("Book Context:")[1]
+            if "Live Internet Web Search Results:" in after_book:
+                book_context = after_book.split("Live Internet Web Search Results:")[0].strip()
+            elif "User Question:" in after_book:
+                book_context = after_book.split("User Question:")[0].strip()
+            else:
+                book_context = after_book.strip()
+            book_context = book_context.strip(' "\'\n')
+
+        # If live web search results are available, synthesize answer from top result
+        if web_section and web_section.strip():
+            lines = [l.strip().lstrip("- ").strip() for l in web_section.split("\n") if l.strip()]
+            if lines:
+                best_line = lines[0]
+                if ":" in best_line:
+                    _, desc = best_line.split(":", 1)
+                    best_line = desc.strip()
+                # Clean URLs
+                best_line = re.sub(r'https?://\S+', '', best_line).strip()
+                sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', best_line) if len(s.strip()) > 5]
+                spoken = sentences[0] if sentences else best_line[:140]
+                return f"According to current web information: {spoken} Returning to our reading."
+
+        # If book context is available, find most relevant sentence
+        if book_context and book_context.strip():
+            query_words = set(re.findall(r'\b[A-Za-z0-9]{3,}\b', query.lower()))
+            context_sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', book_context) if len(s.strip()) > 5]
+
+            best_sentence = ""
+            best_score = -1
+            for s in context_sentences:
+                s_words = set(re.findall(r'\b[A-Za-z0-9]{3,}\b', s.lower()))
+                score = len(query_words.intersection(s_words))
+                if score > best_score:
+                    best_score = score
+                    best_sentence = s
+
+            if best_sentence and best_score > 0:
+                return f"In this passage: {best_sentence} Let us continue."
+            elif context_sentences:
+                return f"In the current scene: {context_sentences[0]} Let's continue."
+
+        clean = query.lower()
+        if "who" in clean or "what" in clean or "where" in clean:
+            return f"Regarding your question about {query[:40]}, the narrative develops these details as the scene unfolds. Let's continue."
+        return "Understood. Resuming narration with your question in mind."
 

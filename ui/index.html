@@ -420,7 +420,8 @@
       <div class="field-group">
         <label class="field-label">LLM Provider</label>
         <select id="cfg-provider" class="field-select" onchange="onProviderChange(this.value)">
-          <option value="ollama">Ollama (Local Offline - http://localhost:11434)</option>
+          <option value="builtin" selected>Built-in Agent (Zero Setup - 100% Native Python)</option>
+          <option value="ollama">Ollama (Local Daemon - http://localhost:11434)</option>
           <option value="openai">OpenAI (api.openai.com)</option>
           <option value="groq">Groq High-Speed (api.groq.com/openai/v1)</option>
           <option value="together">Together AI / DeepSeek</option>
@@ -1696,7 +1697,10 @@
   function onProviderChange(val) {
     const endpointInput = document.getElementById('cfg-endpoint');
     const modelInput = document.getElementById('cfg-model');
-    if (val === 'ollama') {
+    if (val === 'builtin') {
+      endpointInput.value = 'in-process';
+      modelInput.value = 'builtin-assistant';
+    } else if (val === 'ollama') {
       endpointInput.value = 'http://localhost:11434';
       modelInput.value = 'llama3.2';
     } else if (val === 'openai') {
