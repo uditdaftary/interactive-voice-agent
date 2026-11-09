@@ -76,12 +76,35 @@ class PlaybackControlMessage(BaseProtocolMessage):
     )
 
 
+class QueryInterruptionMessage(BaseProtocolMessage):
+    """User speech query or text prompt sent to interrupt narration with a question."""
+
+    type: Literal["query_interruption"] = "query_interruption"
+    query: str = Field(
+        ...,
+        description="Question or prompt asked by the user during interruption",
+    )
+
+
+class UpdateLLMConfigMessage(BaseProtocolMessage):
+    """Update local or remote LLM endpoint provider and web search configuration."""
+
+    type: Literal["update_config"] = "update_config"
+    provider: Optional[str] = Field(default=None, description="LLM provider ('ollama', 'openai', 'groq', 'gemini')")
+    base_url: Optional[str] = Field(default=None, description="API Base URL (e.g. 'http://localhost:11434')")
+    api_key: Optional[str] = Field(default=None, description="API Key for remote LLM provider")
+    model: Optional[str] = Field(default=None, description="Model identifier (e.g. 'llama3.2', 'gpt-4o-mini')")
+    web_search_enabled: Optional[bool] = Field(default=None, description="Enable live internet web search grounding")
+
+
 ClientMessage = Union[
     SelectVoiceMessage,
     SetMicSourceMessage,
     BargeInTriggerMessage,
     SetCadenceMessage,
     PlaybackControlMessage,
+    QueryInterruptionMessage,
+    UpdateLLMConfigMessage,
 ]
 
 
@@ -314,6 +337,21 @@ def parse_client_message(raw: Union[str, bytes, Dict[str, Any]]) -> Optional[Cli
                 else:
                     return None
             return PlaybackControlMessage(action=str(action))
+
+        if msg_type in ("query_interruption", "user_query", "ask_question", "query"):
+            query = str(payload.get("query") or payload.get("text") or "").strip()
+            if query:
+                return QueryInterruptionMessage(query=query)
+            return None
+
+        if msg_type in ("update_config", "set_config", "configure_llm"):
+            return UpdateLLMConfigMessage(
+                provider=payload.get("provider"),
+                base_url=payload.get("base_url"),
+                api_key=payload.get("api_key"),
+                model=payload.get("model"),
+                web_search_enabled=payload.get("web_search_enabled"),
+            )
 
     except Exception:
         return None

@@ -67,6 +67,27 @@
         <span class="faint">ACTIVE VOICE:</span>
         <span class="num text-white" id="header-active-voice">David Martinez</span>
       </div>
+      <div class="volume-strip" id="master-volume-strip" style="min-height:36px; padding:4px 10px;">
+        <button type="button" id="mute-toggle-btn" onclick="toggleMute()" title="Mute/Unmute Audio" style="background:none; border:none; cursor:pointer; color:var(--ink); padding:0; display:flex; align-items:center;">
+          <svg id="volume-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" width="15" height="15"><path d="M2 5h3l4-4v14L5 11H2zM12 5a4 4 0 0 1 0 6"/></svg>
+        </button>
+        <input type="range" class="volume-slider" id="volume-slider" min="0" max="1" step="0.05" value="1.0" oninput="setMasterVolume(this.value)" style="width:70px;">
+        <span class="num text-white" id="volume-readout" style="font-size:11px; min-width:30px;">100%</span>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <button type="button" class="btn live" style="min-height:36px; padding:0 12px; font-size:11.5px;" onclick="openDocumentUploadModal()">
+          <span>+ UPLOAD EBOOK</span>
+          <span class="tab">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 14h8M8 2v9M5 5l3-3 3 3"/></svg>
+          </span>
+        </button>
+        <button type="button" class="btn" style="min-height:36px; padding:0 12px; font-size:11.5px;" onclick="openModelConfigModal()">
+          <span>⚙ CONFIG</span>
+          <span class="tab">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5L13 13M3 13l1.5-1.5M11.5 4.5L13 3"/></svg>
+          </span>
+        </button>
+      </div>
       <div class="code-strip">
         <i class="ADVISORY" title="Advisory"></i>
         <i class="MEDIUM" title="Medium"></i>
@@ -197,9 +218,13 @@
           <div style="display:flex; align-items:center; gap:10px;">
             <span class="mono faint">VA 020</span>
             <h2>Continuous Narrative Stream &amp; Cursor</h2>
+            <span class="mono faint" style="font-size:11px; margin-left:8px;" id="header-doc-title">[BOOK: Night City Run]</span>
           </div>
-          <div class="mono faint" style="font-size:12px;">
-            SENTENCE: <span class="num text-white" id="counter-sentence">3 / 7</span>
+          <div style="display:flex; align-items:center; gap:12px;">
+            <div class="mono faint" style="font-size:12px;">
+              SENTENCE: <span class="num text-white" id="counter-sentence">1 / 8</span>
+            </div>
+            <button class="btn" style="min-height:30px; padding:0 8px; font-size:11px;" onclick="openDocumentUploadModal()">+ INGEST</button>
           </div>
         </div>
 
@@ -208,6 +233,17 @@
           <!-- Continuous Reading Text Surface -->
           <div class="narrative-box" id="narrative-container">
             <!-- Dynamically populated and highlighted by JS script -->
+          </div>
+
+          <!-- Interactive Barge-In Question Bar -->
+          <div class="interruption-bar">
+            <input type="text" id="interruption-query-input" class="interruption-input" placeholder="Ask a question about the book or search real-time info (e.g. 'Who is Lucy?', 'Search web: latest news on AI')..." onkeydown="if(event.key==='Enter') submitInterruptionQuery()">
+            <button class="btn danger" style="min-height:44px;" onclick="submitInterruptionQuery()">
+              <span>ASK AGENT</span>
+              <span class="tab">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 8h10M9 4l4 4-4 4"/></svg>
+              </span>
+            </button>
           </div>
 
           <!-- Q&A Context Envelope (Appears upon Barge-In) -->
@@ -312,6 +348,124 @@
     </div>
   </footer>
 
+</div>
+
+<!-- ========================================== -->
+<!-- DOCUMENT UPLOAD MODAL (PDF / EPUB / TXT)   -->
+<!-- ========================================== -->
+<div id="document-upload-modal" class="modal-backdrop" style="display:none;" onclick="if(event.target===this) closeDocumentUploadModal()">
+  <div class="modal-dialog">
+    <div class="modal-head">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <span class="mono faint">VA DOC 01</span>
+        <h2 style="font-size:18px;">Ingest Narrative Document (Ebook / PDF / EPUB / TXT)</h2>
+      </div>
+      <button class="btn" style="min-height:32px; padding:0 10px;" onclick="closeDocumentUploadModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <!-- Tabs: Upload File vs Paste Text -->
+      <div style="display:flex; gap:10px; border-bottom:1px solid var(--hair); padding-bottom:12px;">
+        <button type="button" class="btn active" id="tab-doc-file" onclick="switchDocTab('file')">FILE UPLOAD (.PDF / .EPUB / .TXT)</button>
+        <button type="button" class="btn" id="tab-doc-text" onclick="switchDocTab('text')">PASTE BOOK TEXT</button>
+      </div>
+
+      <!-- File Upload Tab Content -->
+      <div id="doc-tab-file-content" class="field-group">
+        <div class="drop-zone" id="file-drop-zone" onclick="document.getElementById('doc-file-input').click()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" width="36" height="36" style="color:var(--high);"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="12" y2="12"/><line x1="15" y1="15" x2="12" y2="12"/></svg>
+          <div>
+            <strong style="color:var(--ink);">Click to browse</strong> or drag &amp; drop an ebook here
+          </div>
+          <span class="mono faint" style="font-size:11.5px;">Supported formats: PDF (.pdf), EPUB (.epub), Markdown (.md), Plain Text (.txt)</span>
+          <span id="selected-file-name" class="mono text-white" style="font-size:12px; margin-top:6px; display:none;"></span>
+        </div>
+        <input type="file" id="doc-file-input" accept=".pdf,.epub,.txt,.md" style="display:none;" onchange="handleFileSelect(this.files)">
+      </div>
+
+      <!-- Paste Text Tab Content -->
+      <div id="doc-tab-text-content" class="field-group" style="display:none;">
+        <label class="field-label">Document Title</label>
+        <input type="text" id="paste-doc-title" class="field-input" placeholder="e.g. Neuromancer - Chapter 1">
+        <label class="field-label" style="margin-top:8px;">Narrative Text Content</label>
+        <textarea id="paste-doc-text" class="field-textarea" placeholder="Paste chapters, paragraphs, or articles here..."></textarea>
+      </div>
+
+      <div id="doc-upload-status" class="mono" style="font-size:12.5px; color:var(--high); display:none;"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeDocumentUploadModal()">CANCEL</button>
+      <button class="btn live" id="btn-submit-doc" onclick="submitDocumentIngestion()">
+        <span>INGEST &amp; START NARRATION</span>
+        <span class="tab">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><polyline points="4 8 8 12 12 4"/></svg>
+        </span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ========================================== -->
+<!-- MODEL & WEB SEARCH CONFIG MODAL            -->
+<!-- ========================================== -->
+<div id="model-config-modal" class="modal-backdrop" style="display:none;" onclick="if(event.target===this) closeModelConfigModal()">
+  <div class="modal-dialog">
+    <div class="modal-head">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <span class="mono faint">VA CFG 02</span>
+        <h2 style="font-size:18px;">Model &amp; Live Web Search Configuration</h2>
+      </div>
+      <button class="btn" style="min-height:32px; padding:0 10px;" onclick="closeModelConfigModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-group">
+        <label class="field-label">LLM Provider</label>
+        <select id="cfg-provider" class="field-select" onchange="onProviderChange(this.value)">
+          <option value="ollama">Ollama (Local Offline - http://localhost:11434)</option>
+          <option value="openai">OpenAI (api.openai.com)</option>
+          <option value="groq">Groq High-Speed (api.groq.com/openai/v1)</option>
+          <option value="together">Together AI / DeepSeek</option>
+          <option value="custom">Custom OpenAI-Compatible Endpoint</option>
+        </select>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Endpoint URL</label>
+        <input type="text" id="cfg-endpoint" class="field-input" value="http://localhost:11434">
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Model Identifier</label>
+        <input type="text" id="cfg-model" class="field-input" value="llama3.2" placeholder="e.g. llama3.2, qwen2.5:7b, mistral, gpt-4o-mini">
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">API Key (Optional for Local Ollama)</label>
+        <input type="password" id="cfg-api-key" class="field-input" placeholder="Enter remote API key or leave blank for local Ollama">
+      </div>
+
+      <!-- Live Web Search Toggle -->
+      <div style="display:flex; align-items:flex-start; gap:12px; background:var(--sleeve); border:1px solid var(--hair); padding:14px;">
+        <input type="checkbox" id="cfg-web-search" checked style="width:18px; height:18px; accent-color:var(--high); cursor:pointer; margin-top:2px;">
+        <div>
+          <strong style="color:var(--ink); font-size:13.5px;">Live Internet Web Search Grounding (DuckDuckGo)</strong>
+          <div class="mono faint" style="font-size:11.5px; margin-top:2px;">
+            Automatically performs live web searches when the user interrupts with questions about real-time events, facts, or entities, feeding web citations into the LLM context.
+          </div>
+        </div>
+      </div>
+
+      <div id="model-config-status" class="mono" style="font-size:12.5px; color:var(--high); display:none;"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="testModelConfig()">TEST ENDPOINT</button>
+      <button class="btn live" onclick="saveModelConfig()">
+        <span>SAVE &amp; APPLY</span>
+        <span class="tab">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><polyline points="4 8 8 12 12 4"/></svg>
+        </span>
+      </button>
+    </div>
+  </div>
 </div>
 
 <!-- ========================================== -->
@@ -920,10 +1074,14 @@
       this.reconnectInterval = 3000;
       this.micSource = 'browser';
       this.audioContext = null;
+      this.gainNode = null;
       this.micStream = null;
       this.micProcessor = null;
       this.analyser = null;
+      this.masterVolume = 1.0;
+      this.isMuted = false;
       this.nextPlayTime = 0;
+      this.activeAudioSources = [];
       this.lastTelemetryBins = null;
       this.lastTelemetryRms = null;
       this.lastTelemetryTime = 0;
@@ -942,9 +1100,15 @@
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
         if (AudioCtx) {
           try {
-            this.audioContext = new AudioCtx({ sampleRate: 24000 });
+            this.audioContext = new AudioCtx();
+            this.gainNode = this.audioContext.createGain();
+            this.gainNode.gain.value = this.isMuted ? 0.0 : this.masterVolume;
+
             this.analyser = this.audioContext.createAnalyser();
             this.analyser.fftSize = 64;
+
+            this.gainNode.connect(this.analyser);
+            this.analyser.connect(this.audioContext.destination);
           } catch (e) {
             console.warn("AudioContext init error:", e);
           }
@@ -952,6 +1116,34 @@
       }
       if (this.audioContext && this.audioContext.state === 'suspended') {
         this.audioContext.resume().catch(() => {});
+      }
+    }
+
+    setVolume(val) {
+      this.masterVolume = Math.max(0, Math.min(1, parseFloat(val)));
+      if (this.gainNode && !this.isMuted) {
+        this.gainNode.gain.value = this.masterVolume;
+      }
+    }
+
+    toggleMute() {
+      this.isMuted = !this.isMuted;
+      if (this.gainNode) {
+        this.gainNode.gain.value = this.isMuted ? 0.0 : this.masterVolume;
+      }
+      return this.isMuted;
+    }
+
+    stopAllAudio() {
+      for (const s of this.activeAudioSources) {
+        try { s.stop(); } catch (e) {}
+      }
+      this.activeAudioSources = [];
+      if (this.audioContext) {
+        this.nextPlayTime = this.audioContext.currentTime;
+      }
+      if (window.speechSynthesis) {
+        window.speechSynthesis.cancel();
       }
     }
 
@@ -997,6 +1189,14 @@
       if (this.micSource === 'browser') {
         this.startBrowserMicCapture();
       }
+
+      // Sync document and sentences from server
+      syncDocumentFromServer();
+
+      // Signal resume to start backend narration
+      if (isPlaying) {
+        this.send({ type: 'playback_control', action: 'resume' });
+      }
     }
 
     onDisconnected() {
@@ -1040,26 +1240,41 @@
       }
     }
 
-    handleBinaryAudio(arrayBuffer) {
+    async handleBinaryAudio(arrayBuffer) {
       this.initAudioContext();
       if (!this.audioContext) return;
+      if (this.audioContext.state === 'suspended') {
+        try { await this.audioContext.resume(); } catch (e) {}
+      }
 
       try {
-        const int16 = new Int16Array(arrayBuffer);
-        const float32 = new Float32Array(int16.length);
-        for (let i = 0; i < int16.length; i++) {
-          float32[i] = int16[i] / 32768.0;
+        const uint8 = new Uint8Array(arrayBuffer);
+        const isMp3 = (uint8[0] === 0x49 && uint8[1] === 0x44 && uint8[2] === 0x33) ||
+                      (uint8[0] === 0xFF && (uint8[1] & 0xE0) === 0xE0);
+        const isWav = (uint8[0] === 0x52 && uint8[1] === 0x49 && uint8[2] === 0x46 && uint8[3] === 0x46);
+
+        let audioBuf;
+        if (isMp3 || isWav) {
+          audioBuf = await this.audioContext.decodeAudioData(arrayBuffer.slice(0));
+        } else {
+          const int16 = new Int16Array(arrayBuffer);
+          const float32 = new Float32Array(int16.length);
+          for (let i = 0; i < int16.length; i++) {
+            float32[i] = int16[i] / 32768.0;
+          }
+          audioBuf = this.audioContext.createBuffer(1, float32.length, 24000);
+          audioBuf.copyToChannel(float32, 0);
         }
 
-        const audioBuf = this.audioContext.createBuffer(1, float32.length, 24000);
-        audioBuf.copyToChannel(float32, 0);
+        if (!audioBuf) return;
 
         const src = this.audioContext.createBufferSource();
         src.buffer = audioBuf;
 
-        if (this.analyser) {
+        if (this.gainNode) {
+          src.connect(this.gainNode);
+        } else if (this.analyser) {
           src.connect(this.analyser);
-          this.analyser.connect(this.audioContext.destination);
         } else {
           src.connect(this.audioContext.destination);
         }
@@ -1071,8 +1286,14 @@
         const startTime = Math.max(now, this.nextPlayTime);
         src.start(startTime);
         this.nextPlayTime = startTime + audioBuf.duration;
+
+        this.activeAudioSources.push(src);
+        src.onended = () => {
+          const idx = this.activeAudioSources.indexOf(src);
+          if (idx !== -1) this.activeAudioSources.splice(idx, 1);
+        };
       } catch (err) {
-        console.warn("Audio buffer playback error:", err);
+        console.warn("Audio buffer decode / playback error:", err);
       }
     }
 
@@ -1134,6 +1355,7 @@
     }
 
     handleBargeIn(msg) {
+      this.stopAllAudio();
       currentState = 'BARGE_IN';
       updateStateUI();
       const lat = (msg.latency_ms !== undefined) ? Number(msg.latency_ms).toFixed(2) : '0.04';
@@ -1258,6 +1480,329 @@
 
   const wsClient = new HUDWebSocketClient();
 
+  // --- VOLUME & MUTE CONTROLS ---
+  function setMasterVolume(val) {
+    if (wsClient) {
+      wsClient.setVolume(val);
+    }
+    const readout = document.getElementById('volume-readout');
+    if (readout) readout.innerText = `${Math.round(val * 100)}%`;
+  }
+
+  function toggleMute() {
+    if (wsClient) {
+      const isMuted = wsClient.toggleMute();
+      const icon = document.getElementById('volume-icon');
+      const readout = document.getElementById('volume-readout');
+      if (isMuted) {
+        if (icon) icon.innerHTML = '<path d="M2 5h3l4-4v14L5 11H2zM14 4l-6 6M8 4l6 6"/>';
+        if (readout) readout.innerText = 'MUTED';
+      } else {
+        if (icon) icon.innerHTML = '<path d="M2 5h3l4-4v14L5 11H2zM12 5a4 4 0 0 1 0 6"/>';
+        if (readout) readout.innerText = `${Math.round(wsClient.masterVolume * 100)}%`;
+      }
+    }
+  }
+
+  // --- DOCUMENT INGESTION MODAL & LOGIC ---
+  let selectedUploadFile = null;
+
+  function openDocumentUploadModal() {
+    const modal = document.getElementById('document-upload-modal');
+    if (modal) modal.style.display = 'flex';
+  }
+
+  function closeDocumentUploadModal() {
+    const modal = document.getElementById('document-upload-modal');
+    if (modal) modal.style.display = 'none';
+    const statusEl = document.getElementById('doc-upload-status');
+    if (statusEl) statusEl.style.display = 'none';
+  }
+
+  function switchDocTab(tab) {
+    const fileTabBtn = document.getElementById('tab-doc-file');
+    const textTabBtn = document.getElementById('tab-doc-text');
+    const fileContent = document.getElementById('doc-tab-file-content');
+    const textContent = document.getElementById('doc-tab-text-content');
+
+    if (tab === 'file') {
+      fileTabBtn.classList.add('active');
+      textTabBtn.classList.remove('active');
+      fileContent.style.display = 'flex';
+      textContent.style.display = 'none';
+    } else {
+      fileTabBtn.classList.remove('active');
+      textTabBtn.classList.add('active');
+      fileContent.style.display = 'none';
+      textContent.style.display = 'flex';
+    }
+  }
+
+  function handleFileSelect(files) {
+    if (!files || files.length === 0) return;
+    selectedUploadFile = files[0];
+    const nameEl = document.getElementById('selected-file-name');
+    if (nameEl) {
+      nameEl.innerText = `SELECTED: ${selectedUploadFile.name} (${(selectedUploadFile.size / 1024).toFixed(1)} KB)`;
+      nameEl.style.display = 'block';
+    }
+  }
+
+  // Drag and drop listeners for dropzone
+  window.addEventListener('DOMContentLoaded', () => {
+    const dropZone = document.getElementById('file-drop-zone');
+    if (dropZone) {
+      ['dragenter', 'dragover'].forEach(eventName => {
+        dropZone.addEventListener(eventName, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dropZone.classList.add('dragover');
+        }, false);
+      });
+      ['dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dropZone.classList.remove('dragover');
+        }, false);
+      });
+      dropZone.addEventListener('drop', (e) => {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+        handleFileSelect(files);
+      }, false);
+    }
+  });
+
+  async function submitDocumentIngestion() {
+    const statusEl = document.getElementById('doc-upload-status');
+    const isFileTab = document.getElementById('tab-doc-file').classList.contains('active');
+
+    if (statusEl) {
+      statusEl.style.display = 'block';
+      statusEl.innerText = 'Ingesting and parsing document sentences...';
+    }
+
+    try {
+      let resp;
+      if (isFileTab) {
+        if (!selectedUploadFile) {
+          alert("Please select a .pdf, .epub, .txt, or .md file to upload.");
+          return;
+        }
+        const formData = new FormData();
+        formData.append('file', selectedUploadFile);
+        resp = await fetch('/api/upload-document', {
+          method: 'POST',
+          body: formData,
+        });
+      } else {
+        const text = document.getElementById('paste-doc-text').value.trim();
+        const title = document.getElementById('paste-doc-title').value.trim() || 'Pasted Text';
+        if (!text) {
+          alert("Please enter narrative text to ingest.");
+          return;
+        }
+        resp = await fetch('/api/upload-document', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, title }),
+        });
+      }
+
+      if (!resp.ok) {
+        const err = await resp.json();
+        throw new Error(err.detail || 'Ingestion failed');
+      }
+
+      const result = await resp.json();
+      if (statusEl) {
+        statusEl.innerText = `Success: Ingested "${result.title}" (${result.sentence_count} sentences, ${result.word_count} words).`;
+      }
+
+      // Update state and UI
+      await syncDocumentFromServer();
+      closeDocumentUploadModal();
+
+      // Start narration
+      isPlaying = true;
+      const btnLabel = document.getElementById('btn-playback-label');
+      if (btnLabel) btnLabel.innerText = 'PAUSE NARRATION';
+      if (wsClient && wsClient.isConnected) {
+        wsClient.send({ type: 'playback_control', action: 'resume' });
+      }
+    } catch (err) {
+      if (statusEl) {
+        statusEl.innerText = `Error: ${err.message}`;
+      }
+    }
+  }
+
+  async function syncDocumentFromServer() {
+    try {
+      const resp = await fetch('/api/document');
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.sentences && data.sentences.length > 0) {
+          STORY_PARAGRAPHS = data.sentences;
+          currentSentenceIdx = data.current_sentence_idx || 0;
+          currentWordIdx = 0;
+          const docTitleEl = document.getElementById('header-doc-title');
+          if (docTitleEl) docTitleEl.innerText = `[BOOK: ${data.title || "Night City Run"}]`;
+          renderNarrativeStream();
+        }
+      }
+    } catch (e) {}
+  }
+
+  // --- MODEL & LIVE WEB SEARCH CONFIG MODAL ---
+  function openModelConfigModal() {
+    const modal = document.getElementById('model-config-modal');
+    if (modal) modal.style.display = 'flex';
+    fetchModelConfig();
+  }
+
+  function closeModelConfigModal() {
+    const modal = document.getElementById('model-config-modal');
+    if (modal) modal.style.display = 'none';
+  }
+
+  async function fetchModelConfig() {
+    try {
+      const resp = await fetch('/api/config');
+      if (resp.ok) {
+        const data = await resp.json();
+        const llm = data.llm || {};
+        if (llm.provider) document.getElementById('cfg-provider').value = llm.provider;
+        if (llm.base_url) document.getElementById('cfg-endpoint').value = llm.base_url;
+        if (llm.model) document.getElementById('cfg-model').value = llm.model;
+        if (llm.web_search_enabled !== undefined) {
+          document.getElementById('cfg-web-search').checked = !!llm.web_search_enabled;
+        }
+      }
+    } catch (e) {}
+  }
+
+  function onProviderChange(val) {
+    const endpointInput = document.getElementById('cfg-endpoint');
+    const modelInput = document.getElementById('cfg-model');
+    if (val === 'ollama') {
+      endpointInput.value = 'http://localhost:11434';
+      modelInput.value = 'llama3.2';
+    } else if (val === 'openai') {
+      endpointInput.value = 'https://api.openai.com/v1';
+      modelInput.value = 'gpt-4o-mini';
+    } else if (val === 'groq') {
+      endpointInput.value = 'https://api.groq.com/openai/v1';
+      modelInput.value = 'llama-3.3-70b-versatile';
+    } else if (val === 'together') {
+      endpointInput.value = 'https://api.together.xyz/v1';
+      modelInput.value = 'deepseek-ai/DeepSeek-R1-Distill-Llama-70B';
+    }
+  }
+
+  async function saveModelConfig() {
+    const provider = document.getElementById('cfg-provider').value;
+    const base_url = document.getElementById('cfg-endpoint').value.trim();
+    const model = document.getElementById('cfg-model').value.trim();
+    const api_key = document.getElementById('cfg-api-key').value.trim();
+    const web_search_enabled = document.getElementById('cfg-web-search').checked;
+
+    const payload = {
+      provider,
+      base_url,
+      endpoint: base_url,
+      model,
+      model_name: model,
+      api_key,
+      web_search_enabled
+    };
+
+    try {
+      const resp = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (resp.ok) {
+        if (wsClient && wsClient.isConnected) {
+          wsClient.send({ type: 'update_config', ...payload });
+        }
+        closeModelConfigModal();
+      }
+    } catch (err) {
+      alert(`Failed to save config: ${err.message}`);
+    }
+  }
+
+  async function testModelConfig() {
+    const statusEl = document.getElementById('model-config-status');
+    if (statusEl) {
+      statusEl.style.display = 'block';
+      statusEl.innerText = 'Testing connection and prompt completion...';
+    }
+    const t0 = performance.now();
+    try {
+      const resp = await fetch('/api/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: 'Hello, please confirm you are online.' })
+      });
+      const t1 = performance.now();
+      if (resp.ok) {
+        if (statusEl) {
+          statusEl.innerText = `Connected! Latency: ${(t1 - t0).toFixed(1)} ms. Interruption Q&A pipeline active.`;
+        }
+      } else {
+        if (statusEl) statusEl.innerText = `Error: Server returned HTTP ${resp.status}`;
+      }
+    } catch (e) {
+      if (statusEl) statusEl.innerText = `Connection failed: ${e.message}`;
+    }
+  }
+
+  // --- AD-HOC VOICE & TEXT INTERRUPTION WITH WEB SEARCH GROUNDING ---
+  async function submitInterruptionQuery(overrideQuery) {
+    const input = document.getElementById('interruption-query-input');
+    const query = (overrideQuery || (input ? input.value : '')).trim();
+    if (!query) return;
+
+    if (input) input.value = '';
+
+    // 1. Immediately disrupt audio and update UI to LISTENING / INTERRUPTED
+    if (wsClient) {
+      wsClient.stopAllAudio();
+      wsClient.initAudioContext();
+    }
+    currentState = 'LISTENING';
+    updateStateUI();
+
+    // 2. Show Prompt Envelope with search grounding status
+    const envelope = document.getElementById('dialogue-envelope');
+    if (envelope) {
+      envelope.style.display = 'grid';
+      const qEl = envelope.querySelector('div:nth-child(3) span:last-child');
+      if (qEl) qEl.innerText = `"${query}"`;
+      const rEl = envelope.querySelector('div:nth-child(4) span:last-child');
+      if (rEl) rEl.innerText = `[Searching live web via DuckDuckGo & formulating response...]`;
+    }
+
+    // 3. Send over WebSocket if connected, otherwise call /api/ask
+    if (wsClient && wsClient.isConnected) {
+      wsClient.send({ type: 'query_interruption', query: query });
+    } else {
+      try {
+        await fetch('/api/ask', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: query })
+        });
+      } catch (err) {
+        console.warn("REST ask error:", err);
+      }
+    }
+  }
+
   // Expose controller API for testing and programmatic automation
   window.wsClient = wsClient;
   window.selectVoice = selectVoice;
@@ -1265,6 +1810,13 @@
   window.setCadence = setCadence;
   window.togglePlayPause = togglePlayPause;
   window.triggerBargeIn = triggerBargeIn;
+  window.setMasterVolume = setMasterVolume;
+  window.toggleMute = toggleMute;
+  window.openDocumentUploadModal = openDocumentUploadModal;
+  window.closeDocumentUploadModal = closeDocumentUploadModal;
+  window.openModelConfigModal = openModelConfigModal;
+  window.closeModelConfigModal = closeModelConfigModal;
+  window.submitInterruptionQuery = submitInterruptionQuery;
   window.VOICES = VOICES;
   Object.defineProperty(window, 'activeVoice', {
     get: () => activeVoice,

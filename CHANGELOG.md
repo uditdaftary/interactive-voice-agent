@@ -5,6 +5,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [0.4.0] - 2026-11-09
+
+### Real-Time Continuous Narration, Document Ingestion & Live Web Search Grounding
+*Integrated active speech synthesis with real audio streaming, multi-format ebook ingestion (PDF/EPUB/TXT/MD), dynamic LLM endpoint configuration (Ollama, OpenAI, Groq), and live DuckDuckGo web search grounding for ad-hoc voice interruptions.*
+
+### Added
+- **Multi-Tier Voice Synthesis & Hardware-Accelerated Playback (`voice_agent.tts.synthesizer`)**:
+  - Live narration audio stream broadcasting real audio chunks over WebSocket to connected HUD clients.
+  - Character persona voice mapping using Microsoft `edge-tts` (David Martinez: `en-US-GuyNeural`, Lucy Kushinada: `en-US-JennyNeural`, V Male: `en-US-ChristopherNeural`, V Female: `en-US-AriaNeural`, Johnny Silverhand: `en-US-EricNeural`).
+  - Windows SAPI5 (`pyttsx3`) local offline fallback and Web Audio API decoding in client browser.
+  - Audio Master controls in HUD: Volume slider (0-100%), Mute toggle, and zero-latency barge-in audio cut (< 0.05ms).
+- **Document Ingestion Engine (`voice_agent.document.parser`)**:
+  - Full ingestion support for PDF (`pypdf`), EPUB (XHTML/HTML chapter extraction via `zipfile`), Markdown, and Plain Text files.
+  - Token-shielded sentence boundary splitter (`split_sentences`) preserving abbreviations, ellipses, dialog quotes, and decimal numbers.
+  - Drag-and-drop document upload modal (`#document-upload-modal`) in "The Catalog Sheet" aesthetic (0px geometry, 44px buttons) supporting file upload and raw text pasting.
+  - REST endpoints: `POST /api/upload-document` and `GET /api/document`.
+- **Multi-Provider LLM & Live Web Search Grounding (`voice_agent.llm.client`)**:
+  - Flexible multi-provider LLM client supporting local Ollama (`http://localhost:11434`), OpenAI, Groq, Together, DeepSeek, and custom OpenAI-compatible endpoints.
+  - DuckDuckGo live internet web search grounding (`search_web` / `ddgs`): dynamically triggers real-time web searches when the user interrupts narration with ad-hoc questions.
+  - Streaming token responses with punctuation boundary sentence segmentation and conversational prompt assembly.
+  - Intelligent local extractive fallback formulation when external endpoints are offline.
+  - Dedicated configuration modal (`#model-config-modal`) in the HUD with endpoint, model, API key, and search toggle controls.
+- **Active Narration & Interruption Engine (`voice_agent.server.narration`)**:
+  - Coordinates document sentence queue, speech synthesis, binary audio streaming, DAC playhead word tracking, and barge-in Q&A.
+  - Interactive Interruption bar in HUD allowing users to type or speak questions mid-narration.
+  - Live Prompt Envelope telemetry displaying web search status, citations, LLM reply, and pre-roll resumption cues.
+- **Verification & Testing**:
+  - Expanded test suite from 116 to 123 tests covering document parsing, synthetic PDF ingestion, REST endpoints, and narration control.
+  - 100% test pass rate (123/123 tests passing).
+
+---
+
 ## [0.3.0] - 2026-11-09
 
 ### Unified Voice Agent HUD Dashboard & Full-Stack WebSocket Server

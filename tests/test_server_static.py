@@ -41,6 +41,14 @@ def test_get_root_serves_index_html(client: TestClient) -> None:
     assert "Lucy Kushinada" in content
     assert "Johnny Silverhand" in content
 
+    # Verify Sprint 3 features: Document Upload, Model Config & Live Web Search
+    assert 'id="document-upload-modal"' in content
+    assert 'id="model-config-modal"' in content
+    assert 'id="interruption-query-input"' in content
+    assert 'id="volume-slider"' in content
+    assert 'id="cfg-web-search"' in content
+    assert 'id="header-doc-title"' in content
+
 
 def test_get_app_css_and_design_tokens(client: TestClient) -> None:
     """Test GET /app.css returns status 200 with The Catalog Sheet design system tokens."""

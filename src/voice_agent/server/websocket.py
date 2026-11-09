@@ -1,10 +1,11 @@
 """WebSocket Router and Protocol Handler for Interactive Voice Agent HUD.
 
 Exposes bi-directional streaming endpoint at `/ws` multiplexing JSON control / telemetry
-and raw binary PCM audio frames.
+and raw binary audio frames.
 """
 
-from typing import Optional
+import asyncio
+from typing import Optional, Any
 import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
@@ -16,9 +17,11 @@ from voice_agent.server.connection_manager import (
 from voice_agent.server.schemas import (
     BargeInTriggerMessage,
     PlaybackControlMessage,
+    QueryInterruptionMessage,
     SelectVoiceMessage,
     SetCadenceMessage,
     SetMicSourceMessage,
+    UpdateLLMConfigMessage,
     parse_client_message,
 )
 
@@ -31,6 +34,7 @@ async def handle_client_text_message(
     text: str,
     websocket: WebSocket,
     manager: ConnectionManager,
+    engine: Optional[Any] = None,
 ) -> None:
     """Parse and dispatch an incoming client JSON action message."""
     msg = parse_client_message(text)
@@ -49,6 +53,8 @@ async def handle_client_text_message(
         await manager.broadcast_json(sync_msg)
 
     elif isinstance(msg, BargeInTriggerMessage):
+        if engine is not None:
+            engine.pause_narration()
         barge_in_event = manager.trigger_barge_in()
         await manager.broadcast_json(barge_in_event)
         sync_msg = manager.get_state_sync_message()
@@ -60,10 +66,47 @@ async def handle_client_text_message(
         await manager.broadcast_json(sync_msg)
 
     elif isinstance(msg, PlaybackControlMessage):
-        if msg.action == "pause":
+        if msg.action in ("pause", "stop"):
             manager.set_state("PAUSED")
-        elif msg.action == "resume":
+            if engine is not None:
+                engine.pause_narration()
+        elif msg.action in ("resume", "start"):
             manager.set_state("NARRATING")
+        elif msg.action == "next":
+            if engine is not None and getattr(engine, "sentences", None):
+                engine.current_sentence_idx = (engine.current_sentence_idx + 1) % max(1, len(engine.sentences))
+                engine.current_word_idx = 0
+                manager.update_cursor(engine.current_sentence_idx, 0)
+        elif msg.action == "prev":
+            if engine is not None and getattr(engine, "sentences", None):
+                engine.current_sentence_idx = (engine.current_sentence_idx - 1 + len(engine.sentences)) % max(1, len(engine.sentences))
+                engine.current_word_idx = 0
+                manager.update_cursor(engine.current_sentence_idx, 0)
+
+        sync_msg = manager.get_state_sync_message()
+        await manager.broadcast_json(sync_msg)
+
+        if msg.action in ("resume", "start") and engine is not None:
+            engine.start_narration()
+
+    elif isinstance(msg, QueryInterruptionMessage):
+        if engine is not None:
+            asyncio.create_task(engine.handle_user_interruption(msg.query))
+        else:
+            barge_in_event = manager.trigger_barge_in()
+            await manager.broadcast_json(barge_in_event)
+            manager.set_state("REPLYING")
+            await manager.broadcast_json(manager.get_state_sync_message())
+
+    elif isinstance(msg, UpdateLLMConfigMessage):
+        if engine is not None and getattr(engine, "llm", None) is not None:
+            engine.llm.update_config(
+                base_url=msg.base_url,
+                api_key=msg.api_key,
+                provider=msg.provider,
+                model=msg.model,
+                web_search_enabled=msg.web_search_enabled,
+            )
         sync_msg = manager.get_state_sync_message()
         await manager.broadcast_json(sync_msg)
 
@@ -87,6 +130,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     manager: ConnectionManager = getattr(
         websocket.app.state, "connection_manager", default_connection_manager
     )
+    engine = getattr(websocket.app.state, "narration_engine", None)
 
     await manager.connect(websocket)
 
@@ -104,7 +148,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             # Handle text frame (JSON protocol actions)
             if "text" in raw_msg and raw_msg["text"] is not None:
-                await handle_client_text_message(raw_msg["text"], websocket, manager)
+                await handle_client_text_message(raw_msg["text"], websocket, manager, engine)
 
             # Handle binary frame (24kHz 16-bit PCM from browser mic)
             elif "bytes" in raw_msg and raw_msg["bytes"] is not None:

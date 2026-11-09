@@ -246,3 +246,18 @@ In regex-based sentence boundary tokenizers, periods inside abbreviations (`Dr.`
 - **Browser Mic Mode**: Receives raw PCM chunks over WebSocket from client-side Web Audio API (`getUserMedia`).
 - **Host Mic Mode**: Reads from the server machine's physical microphone via `sounddevice.InputStream`.
 - **Virtual Audio Loopback**: In-memory test audio generator producing configurable silence, tones, or synthesized voice frames, enabling 100% headless automated test coverage without physical hardware dependencies.
+
+### 5.4. Document Ingestion, Multi-Tier TTS, and Live Web Search Grounding (Sprint 3)
+1. **Document Ingestion Pipeline (`voice_agent.document.parser`)**:
+   - Parses multi-format documents: PDF (`pypdf`), EPUB (XHTML/HTML chapter parsing via `zipfile`), Markdown, and Plain Text.
+   - Token-shielded sentence segmentation (`split_sentences`) preserving abbreviations, dialogue quotes, ellipses, and numeric decimals.
+   - Accessible via REST `POST /api/upload-document` (accepting both multipart `UploadFile` and JSON text) and `GET /api/document`.
+2. **Multi-Tier Audio Synthesis (`voice_agent.tts.synthesizer`)**:
+   - Primary: High-fidelity `edge-tts` mapped to Cyberpunk resident personas (David Martinez: `en-US-GuyNeural`, Lucy Kushinada: `en-US-JennyNeural`, V Male: `en-US-ChristopherNeural`, V Female: `en-US-AriaNeural`, Johnny Silverhand: `en-US-EricNeural`).
+   - Secondary: Local Windows SAPI5 (`pyttsx3`) offline synthesis.
+   - Fallback: Deterministic synthetic audio frames + browser Web Speech API.
+3. **Multi-Provider LLM & DuckDuckGo Web Grounding (`voice_agent.llm.client`)**:
+   - Supports local Ollama (`http://localhost:11434`), OpenAI, Groq, and custom endpoints with token streaming and punctuation-boundary chunking.
+   - Real-time internet web search grounding via `duckduckgo_search` (`ddgs`) triggered dynamically when the user interrupts narration with ad-hoc questions.
+   - Configurable at runtime via `GET /api/config`, `POST /api/config`, or WebSocket `update_config` message.
+

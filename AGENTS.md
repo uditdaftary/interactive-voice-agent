@@ -161,3 +161,33 @@ All issues triaged into two independent architecture teams cross-communicating v
 - **Fixer 2 (Audio DSP & Hardware Abstraction)**: Flushed FIFO accumulator and reset IIR filter states while preserving `noise_floor_dbfs` on mic switch, resolving BUG-002. Implemented bounded monotonic playhead tracking in `read_into()`, resolving BUG-005. Sliced odd bytes defensively, resolving BUG-006. Added empty array guards in resamplers, resolving BUG-008. Precomputed half-cosine micro-fadeout window in `AudioRingBuffer.__init__`, resolving BUG-011. Raised normalization threshold to 256.0, resolving BUG-013. Exposed configurable `onset_frames`, resolving BUG-014.
 - **Fixer 3 (Frontend HUD & Visualizers)**: Centralized teleprompter timer management in `clearNarrativeTimer()` with 50ms timestamp debouncing, resolving BUG-007. Suspended canvas RAF rendering on `document.hidden`, added `visibilitychange` listener to resynchronize Web Audio clock, and clamped telemetry bins to 240, resolving BUG-009. Added metric-compatible system font fallbacks in `:root` and enforced `font-synthesis: none;`, resolving BUG-010.
 - **Fixer 4 (Test Suite Modernization & Verification)**: Migrated all test suites to `from fastapi.testclient import TestClient`, resolving BUG-003. Expanded test coverage to 116 tests across 5 tiers. Full test suite executes with 100% pass rate (116/116 tests passing in 11.07s).
+
+---
+
+## 6. Sprint 3: Document Ingestion, Speech Synthesis & Web Grounding Topology
+
+*Executed to operationalize real-time audiobook narration from user documents with live internet query grounding.*
+
+### 6.1. Domain Lead Assignments
+1. **Narration & Audio Synthesis Lead**:
+   - Built `voice_agent.server.narration.NarrationEngine` and `voice_agent.tts.synthesizer`.
+   - Microsoft `edge-tts` character voice mapping with Windows SAPI5 (`pyttsx3`) local fallback.
+   - Word cursor teleprompter synchronization broadcasting `cursor_update` and binary audio chunks over WebSocket.
+2. **Document Ingestion Lead**:
+   - Built `voice_agent.document.parser.DocumentParser`.
+   - Robust multi-format parsing for PDF (`pypdf`), EPUB (XHTML/HTML zip extraction), Markdown, and Plain Text.
+   - REST endpoints `POST /api/upload-document` and `GET /api/document`.
+3. **LLM Provider & Search Grounding Lead**:
+   - Extended `voice_agent.llm.client.LLMClient` supporting Ollama (`http://localhost:11434`), OpenAI, Groq, Together, DeepSeek.
+   - Live DuckDuckGo internet web search grounding (`search_web` / `ddgs`) dynamically querying external web citations on user interruption questions.
+   - Local extractive fallback formulation preventing pipeline crashes when external models are offline.
+4. **HUD Design & Audio Frontend Lead**:
+   - Modernized Web Audio DAC in `ui/index.html` to hardware-decode MP3/WAV/PCM chunks via `audioContext.decodeAudioData()`.
+   - Master volume slider (0-100%) and mute toggle.
+   - Added Document Ingestion Modal (`#document-upload-modal`) with drag-and-drop file upload.
+   - Added Model & Web Search Configuration Modal (`#model-config-modal`).
+   - Added Interactive Question Interruption bar with live web search status display.
+5. **Testing & Verification Lead**:
+   - Created `tests/test_document_and_api.py`.
+   - Validated complete test suite: 123/123 tests passing with 100% pass rate.
+
