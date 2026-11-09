@@ -108,6 +108,14 @@ In regex-based sentence boundary tokenizers, periods inside abbreviations (`Dr.`
 10. **ADR-10: Three-Phase Adversarial Hardening and Competitive Architecture Protocol**
     - *Decision*: Following any major development sprint, deploy a 4-auditor adversarial scrutiny team applying `/code-review-and-quality` and `/bugs-are-annoying`. Route all discovered defects to 2 independent architecture teams (Team Alpha and Team Beta) communicating via `send_message` to synthesize competing united proposals, from which the Lead Coordinator selects the best design moves for 4 Fixers to implement under TDD.
     - *Rationale*: Mono-agent verification produces blind spots. Adversarial scrutiny combined with competing peer architecture produces battle-hardened DSP and concurrency stability.
+11. **ADR-11: High-Concurrency Broadcast Fan-Out, Monotonic Playhead Parity & Acoustic Continuity**
+    - *Decision*:
+      - Replace sequential WebSocket broadcast loops with non-blocking concurrent fan-out `asyncio.gather(*[_safe_send(ws)...])` and atomic set-difference pruning `self.active_connections = [ws for ws in self.active_connections if ws not in dead_set]`.
+      - On microphone source transitions (`switch_source`), flush FIFO accumulation buffers and reset IIR filter states while strictly preserving `noise_floor_dbfs` to avoid triggering false barge-in interruptions from ambient room acoustics.
+      - Advance playhead tracking in `AudioRingBuffer.read_into()` by `samples_requested` during active playback underrun (`filled > 0 or had_active_tail`), but freeze playhead tracking when completely idle to prevent infinite clock runaway.
+      - Precompute and cache the 2ms half-cosine micro-fadeout window during `AudioRingBuffer.__init__` to achieve $\le 0.02\text{ms}$ drain latency under full concurrency load.
+      - Guard HUD canvas animations via the Page Visibility API (`document.hidden` / `visibilitychange`) to prevent queue backlog in background tabs, and enforce single-timer invariance across all teleprompter cadence and navigation transitions.
+    - *Rationale*: Eliminates head-of-line broadcast blocking, eliminates acoustic step pulses and false barge-in triggers on mic toggle, guarantees teleprompter word highlighting synchrony with physical DAC playback, and protects client-side CPU resources.
 
 ---
 

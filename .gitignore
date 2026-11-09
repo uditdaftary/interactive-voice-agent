@@ -51,3 +51,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Multi-Agent runtime scratch
+.agents/

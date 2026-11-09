@@ -36,10 +36,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   - Automated latency benchmark verifying atomic buffer drain in $< 0.05\text{ms}$.
   - End-to-end barge-in interruption latency benchmark from speech detection to playback halt in $< 50\text{ms}$.
   - Automated 5-tier integration test suite covering static assets, WebSocket protocol, hybrid mic switching, and headless pipeline execution.
-- **Post-Sprint Adversarial Quality Protocol**:
-  - 4-auditor adversarial review pass (`/code-review-and-quality` and `/bugs-are-annoying`).
-  - Competing solution architecture teams (Team Alpha and Team Beta).
-  - 4-fixer TDD remediation team with GitHub issue tracking.
+- **Post-Sprint Adversarial Hardening (BUG-001 through BUG-014)**:
+  - **ConnectionManager**: Non-blocking concurrent fan-out broadcast via `asyncio.gather(*[_safe_send(ws)...])` and atomic set-difference pruning `self.active_connections = [ws for ws in self.active_connections if ws not in dead_set]`, completely eliminating race condition crashes and head-of-line blocking under slow/dead clients (`BUG-001`).
+  - **ConnectionManager**: Added `_log_future_exception` callback with loop liveness guards to `broadcast_json_sync` and `broadcast_bytes_sync`, safely trapping unobserved background broadcast failures while filtering expected cancellations (`BUG-004`).
+  - **HybridMicrophoneBridge**: Flushed FIFO sample accumulator and reset VAD filter states (`_filter_zi`, `_prev_x`, `_prev_y`) while strictly preserving `noise_floor_dbfs` on source transitions, preventing acoustic step pulses and eliminating false-positive barge-in triggers from ambient noise (`BUG-002`). Exposed `switch_source` alias.
+  - **AudioRingBuffer**: Bounded monotonic playhead synchronization advancing `self.total_samples_played += samples_requested` during active playback underruns (`filled > 0 or had_active_tail`), but freezing playhead advance when completely idle to eliminate teleprompter clock drift without infinite idle runaway (`BUG-005`).
+  - **AudioRingBuffer**: Precomputed and cached 2ms half-cosine micro-fadeout window in `__init__`, reducing buffer drain latency to $< 0.02\text{ms}$ under full test concurrency (`BUG-011`).
+  - **Audio Ingestion Defensiveness**: Sliced `data = data[:len(data) - (len(data) % 2)]` before `np.frombuffer` across `feed_browser_pcm` and `normalize_audio`, defending against odd-byte frame fragmentation (`BUG-006`). Exposed `ingest_browser_audio` alias.
+  - **Resampling Defensiveness**: Added early-exit guards for empty audio arrays and degenerate sample rates in `resample_audio` and `_to_float32` (`BUG-008`).
+  - **VAD First-Frame Latency**: Moved `scipy.signal.lfilter` import to module top-level with fallback, eliminating a 2.5-second disk I/O cold-import delay on Windows systems (`BUG-012`).
+  - **Normalization Threshold**: Raised unnormalized float heuristic from `max_abs > 1.5` to `max_abs > 256.0` to preserve legitimate loud vocals from being attenuated by 90 dB (`BUG-013`).
+  - **Configurable Onset Frames**: Added configurable `onset_frames` parameter to `VoiceActivityDetector` (default 2), allowing tuning for noisy/vibrational environments (`BUG-014`).
+  - **HUD Teleprompter Single-Timer Invariant**: Centralized timer lifecycle into `clearNarrativeTimer()` across cadence and sentence navigation handlers, paired with 50ms timestamp debouncing on cadence buttons (`BUG-007`).
+  - **HUD Canvas Tab Throttling & Visibility Sync**: Suspended canvas RAF rendering when `document.hidden`, added `visibilitychange` listener re-anchoring Web Audio `nextPlayTime` to `audioContext.currentTime`, and clamped visualizer FFT queues to 240 samples (`BUG-009`).
+  - **HUD CSS Font Fallbacks**: Added robust cross-platform system font fallbacks in `:root` and enforced `font-synthesis: none;` on `.mono` and `.num` classes (`BUG-010`).
+  - **TestClient Modernization**: Migrated all test suites to `from fastapi.testclient import TestClient`, eliminating Starlette deprecation warnings (`BUG-003`). Coverage expanded to 116 tests (100% passing).
 
 ---
 
