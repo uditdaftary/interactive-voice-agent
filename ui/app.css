@@ -52,7 +52,7 @@ a { color: var(--ink); text-underline-offset: 3px; text-decoration: none; }
 h1, h2, h3, p { margin: 0; }
 h1, h2, h3 { font-weight: 500; }
 button, input, select { font: inherit; color: inherit; }
-code, .mono { font-family: var(--mono); font-stretch: 90%; font-variant-numeric: tabular-nums; font-size: 0.88em; }
+code, .mono { font-family: var(--mono); font-stretch: 90%; font-variation-settings: 'wdth' 90; font-variant-numeric: tabular-nums; font-size: 0.88em; }
 .mute { color: var(--ink-2); }
 .faint { color: var(--ink-3); }
 .num { font-variant-numeric: tabular-nums; }
@@ -93,6 +93,7 @@ code, .mono { font-family: var(--mono); font-stretch: 90%; font-variant-numeric:
 .brand-title {
   font-size: 20px;
   font-stretch: 125%;
+  font-variation-settings: 'wdth' 125;
   font-weight: 500;
   letter-spacing: -0.01em;
 }
@@ -212,6 +213,10 @@ code, .mono { font-family: var(--mono); font-stretch: 90%; font-variant-numeric:
 .state-pill.listening { color: var(--high); }
 .state-pill.replying i { background: var(--ink); }
 .state-pill.replying { color: var(--ink); }
+.state-pill.connected i { background: var(--high); }
+.state-pill.connected { color: var(--ink); }
+.state-pill.offline i { background: var(--advisory); }
+.state-pill.offline { color: var(--advisory); }
 
 /* Controls & 44px Tab Buttons */
 .btn {
@@ -219,7 +224,7 @@ code, .mono { font-family: var(--mono); font-stretch: 90%; font-variant-numeric:
   background: transparent;
   border: 1px solid var(--hair-2);
   border-radius: 0;
-  min-height: 42px;
+  min-height: 44px;
   padding: 0 0 0 16px;
   display: inline-flex;
   align-items: stretch;
@@ -232,13 +237,14 @@ code, .mono { font-family: var(--mono); font-stretch: 90%; font-variant-numeric:
 }
 .btn > span:first-child { display: flex; align-items: center; }
 .btn .tab {
-  width: 42px;
+  width: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
   border-left: 1px solid var(--hair-2);
   margin-left: auto;
   flex: none;
+  border-radius: 0;
 }
 .btn svg { width: 15px; height: 15px; }
 .btn:hover { border-color: var(--ink); }
@@ -254,22 +260,65 @@ code, .mono { font-family: var(--mono); font-stretch: 90%; font-variant-numeric:
 .btn.danger .tab { border-left-color: var(--critical); color: var(--critical-ink); }
 .btn.danger .tab svg { stroke: var(--critical); }
 
+/* Hybrid Mic Toggle Group */
+.mic-toggle-group {
+  display: inline-flex;
+  gap: 8px;
+}
+.mic-toggle-group .btn {
+  min-height: 44px;
+  padding: 0 0 0 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  gap: 12px;
+}
+.mic-toggle-group .btn .tab {
+  width: 44px;
+}
+.mic-toggle-group .btn.active {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+.mic-toggle-group .btn.active .tab {
+  background: var(--ink);
+  color: var(--ground);
+}
+.mic-toggle-group .btn.active .tab svg {
+  stroke: var(--ground);
+}
+.mic-toggle-group .btn:not(.active) {
+  opacity: 0.6;
+}
+.mic-toggle-group .btn:not(.active):hover {
+  opacity: 1;
+  border-color: var(--ink-2);
+}
+
 /* Button Group */
-.btn-group { display: inline-flex; border: 1px solid var(--hair-2); }
+.btn-group { display: inline-flex; border: 1px solid var(--hair-2); border-radius: 0; }
 .btn-group button {
   appearance: none;
   background: transparent;
   border: none;
+  border-radius: 0;
   border-right: 1px solid var(--hair-2);
   padding: 6px 14px;
   color: var(--ink-2);
   font-family: var(--mono);
   font-size: 12px;
   cursor: pointer;
+  transition: all 0.15s ease;
 }
 .btn-group button:last-child { border-right: none; }
 .btn-group button:hover { color: var(--ink); }
 .btn-group button.active { background: var(--sleeve); color: var(--ink); box-shadow: inset 0 -2px 0 var(--ink); }
+
+/* Dynamic 16-Bar FFT Elements */
+.fft-bar {
+  transition: height 0.08s ease, background 0.15s ease;
+  border-radius: 0;
+}
 
 /* Narrative Reader */
 .narrative-box {
@@ -348,7 +397,7 @@ code, .mono { font-family: var(--mono); font-stretch: 90%; font-variant-numeric:
 }
 .diag-cell:last-child { border-right: none; }
 .diag-cell .label { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
-.diag-cell .val { font-size: 16px; font-weight: 500; font-stretch: 125%; }
+.diag-cell .val { font-size: 16px; font-weight: 500; font-stretch: 125%; font-variation-settings: 'wdth' 125; }
 
 /* Footer */
 .footer-bar {

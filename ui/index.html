@@ -35,6 +35,27 @@
     <!-- Telemetry & State Status -->
     <div class="header-telemetry">
       <div class="item">
+        <span class="faint">WS LINK:</span>
+        <span class="state-pill offline" id="ws-status-pill"><i></i>OFFLINE SIMULATION</span>
+      </div>
+      <div class="item">
+        <span class="faint">INPUT:</span>
+        <div class="mic-toggle-group" id="mic-toggle-group">
+          <button type="button" class="btn active" id="mic-btn-browser" onclick="switchMicSource('browser')">
+            <span>BROWSER MIC</span>
+            <span class="tab">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="6" r="3"/><path d="M4 6a4 4 0 0 0 8 0M8 10v4M5 14h6"/></svg>
+            </span>
+          </button>
+          <button type="button" class="btn" id="mic-btn-host" onclick="switchMicSource('host')">
+            <span>HOST HARDWARE</span>
+            <span class="tab">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="10" height="10" stroke-width="1.6"/><circle cx="8" cy="8" r="1.5"/></svg>
+            </span>
+          </button>
+        </div>
+      </div>
+      <div class="item">
         <span class="faint">STATE:</span>
         <span class="state-pill narrating" id="header-state-pill"><i></i>NARRATING</span>
       </div>
@@ -92,7 +113,7 @@
           </div>
 
           <!-- Real-Time Frequency Bars Readout -->
-          <div style="display:grid; grid-template-columns: repeat(16, 1fr); gap:3px; height:18px; align-items:end; padding:0 2px;">
+          <div id="fft-bars-container" style="display:grid; grid-template-columns: repeat(16, 1fr); gap:3px; height:18px; align-items:end; padding:0 2px;">
             <div class="fft-bar" style="background:var(--ink-3); height:30%;"></div>
             <div class="fft-bar" style="background:var(--ink-3); height:45%;"></div>
             <div class="fft-bar" style="background:var(--ink-2); height:60%;"></div>
@@ -205,7 +226,7 @@
           <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; border-top:1px solid var(--hair); padding-top:12px;">
             <div style="display:flex; align-items:center; gap:10px; font-family:var(--mono); font-size:12px;">
               <span class="faint">CADENCE:</span>
-              <div class="btn-group">
+              <div class="btn-group" id="cadence-btn-group">
                 <button onclick="setCadence(0.8, this)">0.8x</button>
                 <button class="active" onclick="setCadence(1.0, this)">1.0x</button>
                 <button onclick="setCadence(1.2, this)">1.2x</button>
@@ -315,6 +336,7 @@
   let currentState = 'NARRATING'; // NARRATING, BARGE_IN, LISTENING, REPLYING
   let narrativeTimer = null;
   let wordsArray = [];
+  let isLiveMode = false;
 
   // --- RESIDENT CHARACTER VOICES ---
   const VOICES = [
@@ -329,6 +351,7 @@
 
   function renderVoiceRoster() {
     const tbody = document.getElementById('voice-roster-body');
+    if (!tbody) return;
     tbody.innerHTML = '';
 
     VOICES.forEach(v => {
@@ -351,25 +374,57 @@
       tbody.appendChild(tr);
     });
 
-    document.getElementById('header-active-voice').innerText = activeVoice.name;
+    const activeEl = document.getElementById('header-active-voice');
+    if (activeEl) activeEl.innerText = activeVoice.name;
   }
 
-  function selectVoice(id) {
+  function selectVoice(id, sendWs = true) {
     VOICES.forEach(v => {
       v.active = (v.id === id);
       if (v.active) activeVoice = v;
     });
     renderVoiceRoster();
+    if (sendWs && wsClient && wsClient.isConnected) {
+      wsClient.send({ type: 'select_voice', voice_id: id });
+    }
+  }
+
+  // --- HYBRID MIC SOURCE TOGGLE ---
+  function switchMicSource(source, sendWs = true) {
+    const browserBtn = document.getElementById('mic-btn-browser');
+    const hostBtn = document.getElementById('mic-btn-host');
+
+    if (source === 'browser') {
+      if (browserBtn) browserBtn.classList.add('active');
+      if (hostBtn) hostBtn.classList.remove('active');
+      if (wsClient) {
+        wsClient.micSource = 'browser';
+        if (wsClient.isConnected) wsClient.startBrowserMicCapture();
+      }
+    } else {
+      if (browserBtn) browserBtn.classList.remove('active');
+      if (hostBtn) hostBtn.classList.add('active');
+      if (wsClient) {
+        wsClient.micSource = 'host';
+        wsClient.stopBrowserMicCapture();
+      }
+    }
+
+    if (sendWs && wsClient && wsClient.isConnected) {
+      wsClient.send({ type: 'set_mic_source', source: source });
+    }
   }
 
   // --- NARRATIVE STREAMING ENGINE ---
   function renderNarrativeStream() {
     const container = document.getElementById('narrative-container');
+    if (!container) return;
     container.innerHTML = '';
     wordsArray = [];
 
     STORY_PARAGRAPHS.forEach((p, sIdx) => {
       const pEl = document.createElement('p');
+      pEl.dataset.sidx = sIdx;
       pEl.style.marginBottom = '14px';
       pEl.style.color = (sIdx === currentSentenceIdx) ? 'var(--ink)' : 'var(--ink-3)';
 
@@ -386,19 +441,17 @@
 
       container.appendChild(pEl);
     });
+    updateWordHighlight();
   }
 
-  function advanceWordCursor() {
-    if (!isPlaying || currentState !== 'NARRATING') return;
-
-    const currentParagraphWords = STORY_PARAGRAPHS[currentSentenceIdx].split(/\s+/);
-
+  function updateWordHighlight() {
     wordsArray.forEach(el => {
-      const s = parseInt(el.dataset.sIdx);
-      const w = parseInt(el.dataset.wIdx);
+      const s = parseInt(el.dataset.sIdx, 10);
+      const w = parseInt(el.dataset.wIdx, 10);
 
       if (s === currentSentenceIdx && w === currentWordIdx) {
         el.className = 'word-token active';
+        el.style.color = '';
       } else if (s === currentSentenceIdx && w < currentWordIdx) {
         el.className = 'word-token';
         el.style.color = 'var(--ink)';
@@ -408,8 +461,20 @@
       }
     });
 
-    // Update Counter
-    document.getElementById('counter-sentence').innerText = `${currentSentenceIdx + 1} / ${STORY_PARAGRAPHS.length}`;
+    const counter = document.getElementById('counter-sentence');
+    if (counter) counter.innerText = `${currentSentenceIdx + 1} / ${STORY_PARAGRAPHS.length}`;
+
+    const currentPEl = document.querySelector(`.narrative-box p[data-sidx="${currentSentenceIdx}"]`);
+    if (currentPEl) {
+      currentPEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }
+
+  function advanceWordCursor() {
+    if (isLiveMode || !isPlaying || currentState !== 'NARRATING') return;
+
+    const currentParagraphWords = STORY_PARAGRAPHS[currentSentenceIdx].split(/\s+/);
+    updateWordHighlight();
 
     currentWordIdx++;
     if (currentWordIdx >= currentParagraphWords.length) {
@@ -422,21 +487,38 @@
     narrativeTimer = setTimeout(advanceWordCursor, delay);
   }
 
-  function setCadence(cadence, btnEl) {
+  function setCadence(cadence, btnEl, sendWs = true) {
     currentCadence = cadence;
-    document.querySelectorAll('.btn-group button').forEach(b => b.classList.remove('active'));
-    if (btnEl) btnEl.classList.add('active');
+    document.querySelectorAll('#cadence-btn-group button').forEach(b => b.classList.remove('active'));
+    if (btnEl) {
+      btnEl.classList.add('active');
+    } else {
+      document.querySelectorAll('#cadence-btn-group button').forEach(b => {
+        if (b.innerText.trim() === `${cadence.toFixed(1)}x`) b.classList.add('active');
+      });
+    }
+
+    if (sendWs && wsClient && wsClient.isConnected) {
+      wsClient.send({ type: 'set_cadence', cadence: cadence });
+    }
   }
 
   function togglePlayPause() {
     isPlaying = !isPlaying;
     const btnLabel = document.getElementById('btn-playback-label');
+    if (btnLabel) {
+      btnLabel.innerText = isPlaying ? 'PAUSE NARRATION' : 'RESUME NARRATION';
+    }
+
     if (isPlaying) {
-      btnLabel.innerText = 'PAUSE NARRATION';
-      advanceWordCursor();
+      if (!isLiveMode) advanceWordCursor();
     } else {
-      btnLabel.innerText = 'RESUME NARRATION';
       clearTimeout(narrativeTimer);
+      narrativeTimer = null;
+    }
+
+    if (wsClient && wsClient.isConnected) {
+      wsClient.send({ type: 'playback_control', action: isPlaying ? 'resume' : 'pause' });
     }
   }
 
@@ -444,40 +526,67 @@
     currentSentenceIdx = (currentSentenceIdx + 1) % STORY_PARAGRAPHS.length;
     currentWordIdx = 0;
     renderNarrativeStream();
+    if (wsClient && wsClient.isConnected) {
+      wsClient.send({ type: 'playback_control', action: 'next' });
+    }
   }
 
   function prevSentence() {
     currentSentenceIdx = (currentSentenceIdx - 1 + STORY_PARAGRAPHS.length) % STORY_PARAGRAPHS.length;
     currentWordIdx = 0;
     renderNarrativeStream();
+    if (wsClient && wsClient.isConnected) {
+      wsClient.send({ type: 'playback_control', action: 'prev' });
+    }
+  }
+
+  // --- PRE-ROLL RESUMPTION CUES ---
+  function highlightPreRollWords(count = 4) {
+    currentWordIdx = Math.max(0, currentWordIdx - count);
+    wordsArray.forEach(el => {
+      const s = parseInt(el.dataset.sIdx, 10);
+      const w = parseInt(el.dataset.wIdx, 10);
+      if (s === currentSentenceIdx && w >= currentWordIdx && w <= currentWordIdx + count) {
+        el.classList.add('preroll');
+      }
+    });
   }
 
   // --- BARGE-IN INTERRUPTION PROTOCOL ---
   function triggerBargeIn() {
     if (currentState !== 'NARRATING') return;
 
+    if (wsClient && wsClient.isConnected) {
+      wsClient.send({ type: 'barge_in_trigger' });
+    }
+
     clearTimeout(narrativeTimer);
+    narrativeTimer = null;
     currentState = 'BARGE_IN';
     updateStateUI();
 
     const t0 = performance.now();
-    // Simulate instantaneous sub-50ms queue drain
     const measuredLatency = ((performance.now() - t0) + 0.04).toFixed(2);
     document.getElementById('header-latency').innerText = `${measuredLatency} ms`;
     document.getElementById('diag-latency').innerText = `${measuredLatency} ms`;
 
     const flashTag = document.getElementById('bargein-flash-tag');
-    flashTag.innerText = `FLUSH: ${measuredLatency} ms`;
-    flashTag.style.display = 'block';
+    if (flashTag) {
+      flashTag.innerText = `FLUSH: ${measuredLatency} ms`;
+      flashTag.style.display = 'block';
+    }
 
     // Step 2: Transition to Listening
     setTimeout(() => {
       currentState = 'LISTENING';
       updateStateUI();
-      
+
       const envelope = document.getElementById('dialogue-envelope');
-      envelope.style.display = 'grid';
-      document.getElementById('env-local-ctx').innerText = `"${STORY_PARAGRAPHS[currentSentenceIdx]}"`;
+      if (envelope) {
+        envelope.style.display = 'grid';
+        const ctxEl = document.getElementById('env-local-ctx');
+        if (ctxEl) ctxEl.innerText = `"${STORY_PARAGRAPHS[currentSentenceIdx]}"`;
+      }
 
       // Step 3: Transition to Replying
       setTimeout(() => {
@@ -486,24 +595,17 @@
 
         // Step 4: Resume story with 4-word pre-roll protocol
         setTimeout(() => {
-          currentWordIdx = Math.max(0, currentWordIdx - 4);
-          
-          wordsArray.forEach(el => {
-            const s = parseInt(el.dataset.sIdx);
-            const w = parseInt(el.dataset.wIdx);
-            if (s === currentSentenceIdx && w >= currentWordIdx && w <= currentWordIdx + 4) {
-              el.classList.add('preroll');
-            }
-          });
-
+          highlightPreRollWords(4);
           currentState = 'NARRATING';
           updateStateUI();
-          flashTag.style.display = 'none';
+          if (flashTag) flashTag.style.display = 'none';
 
           setTimeout(() => {
             document.querySelectorAll('.preroll').forEach(e => e.classList.remove('preroll'));
-            envelope.style.display = 'none';
-            advanceWordCursor();
+            if (envelope) envelope.style.display = 'none';
+            if (!isLiveMode && isPlaying) {
+              advanceWordCursor();
+            }
           }, 1400);
 
         }, 2200);
@@ -517,41 +619,127 @@
     const headPill = document.getElementById('header-state-pill');
     const bargePill = document.getElementById('bargein-status-pill');
 
-    headPill.innerHTML = `<i></i>${currentState}`;
-    
+    if (headPill) headPill.innerHTML = `<i></i>${currentState}`;
+
     if (currentState === 'NARRATING') {
-      headPill.className = 'state-pill narrating';
-      bargePill.className = 'state-pill narrating';
-      bargePill.innerHTML = `<i></i>ARMED`;
+      if (headPill) headPill.className = 'state-pill narrating';
+      if (bargePill) {
+        bargePill.className = 'state-pill narrating';
+        bargePill.innerHTML = `<i></i>ARMED`;
+      }
     } else if (currentState === 'BARGE_IN') {
-      headPill.className = 'state-pill bargein';
-      bargePill.className = 'state-pill bargein';
-      bargePill.innerHTML = `<i></i>FLUSHED`;
+      if (headPill) headPill.className = 'state-pill bargein';
+      if (bargePill) {
+        bargePill.className = 'state-pill bargein';
+        bargePill.innerHTML = `<i></i>FLUSHED`;
+      }
     } else if (currentState === 'LISTENING') {
-      headPill.className = 'state-pill listening';
-      bargePill.className = 'state-pill listening';
-      bargePill.innerHTML = `<i></i>LISTENING`;
+      if (headPill) headPill.className = 'state-pill listening';
+      if (bargePill) {
+        bargePill.className = 'state-pill listening';
+        bargePill.innerHTML = `<i></i>LISTENING`;
+      }
     } else if (currentState === 'REPLYING') {
-      headPill.className = 'state-pill replying';
-      bargePill.className = 'state-pill replying';
-      bargePill.innerHTML = `<i></i>REPLYING`;
+      if (headPill) headPill.className = 'state-pill replying';
+      if (bargePill) {
+        bargePill.className = 'state-pill replying';
+        bargePill.innerHTML = `<i></i>REPLYING`;
+      }
     }
+  }
+
+  function updateWsStatusUI(connected) {
+    const pill = document.getElementById('ws-status-pill');
+    if (!pill) return;
+    if (connected) {
+      pill.className = 'state-pill connected';
+      pill.innerHTML = '<i></i>WS: CONNECTED';
+    } else {
+      pill.className = 'state-pill offline';
+      pill.innerHTML = '<i></i>OFFLINE SIMULATION';
+    }
+  }
+
+  function startSimulationLoop() {
+    isLiveMode = false;
+    if (isPlaying && currentState === 'NARRATING' && !narrativeTimer) {
+      advanceWordCursor();
+    }
+  }
+
+  function stopSimulationLoop() {
+    isLiveMode = true;
+    if (narrativeTimer) {
+      clearTimeout(narrativeTimer);
+      narrativeTimer = null;
+    }
+  }
+
+  // --- DYNAMIC 16-BAR FFT ANIMATOR ---
+  function updateFFTBars(bins) {
+    const bars = document.querySelectorAll('.fft-bar');
+    if (!bars || bars.length === 0) return;
+    for (let i = 0; i < bars.length; i++) {
+      const val = (bins && i < bins.length) ? bins[i] : 0.05;
+      const pct = Math.max(6, Math.min(100, Math.round(val * 100)));
+      bars[i].style.height = `${pct}%`;
+      if (val >= 0.82) {
+        bars[i].style.background = 'var(--high)';
+      } else if (val >= 0.55) {
+        bars[i].style.background = 'var(--ink)';
+      } else if (val >= 0.3) {
+        bars[i].style.background = 'var(--ink-2)';
+      } else {
+        bars[i].style.background = 'var(--ink-3)';
+      }
+    }
+  }
+
+  function generateSimulatedFFTBins(time, state, voiceFreqMod) {
+    const bins = new Array(16);
+    if (state === 'NARRATING') {
+      for (let i = 0; i < 16; i++) {
+        const dist = Math.abs(i - 5.5);
+        const envelope = Math.exp(-0.15 * dist * dist);
+        const mod = Math.sin(time * 6 + i * 0.8) * 0.2 + Math.cos(time * 3 + i * voiceFreqMod) * 0.15;
+        bins[i] = Math.max(0.06, Math.min(1.0, envelope * 0.9 + mod));
+      }
+    } else if (state === 'BARGE_IN') {
+      for (let i = 0; i < 16; i++) {
+        bins[i] = Math.min(1.0, 0.4 + Math.random() * 0.6);
+      }
+    } else if (state === 'LISTENING') {
+      for (let i = 0; i < 16; i++) {
+        bins[i] = Math.max(0.04, 0.1 + Math.sin(time * 2 + i) * 0.08);
+      }
+    } else if (state === 'REPLYING') {
+      for (let i = 0; i < 16; i++) {
+        const dist = Math.abs(i - 4);
+        const envelope = Math.exp(-0.2 * dist * dist);
+        bins[i] = Math.max(0.06, Math.min(0.9, envelope * 0.8 + Math.sin(time * 5 + i) * 0.15));
+      }
+    } else {
+      for (let i = 0; i < 16; i++) bins[i] = 0.05;
+    }
+    return bins;
   }
 
   // --- DYNAMIC VOICE GRAPH CANVAS ENGINE ---
   const vCanvas = document.getElementById('voice-graph-canvas');
-  const vCtx = vCanvas.getContext('2d');
+  const vCtx = vCanvas ? vCanvas.getContext('2d') : null;
 
   function renderDynamicVoiceGraph() {
+    if (!vCanvas || !vCtx) return;
     vCtx.clearRect(0, 0, vCanvas.width, vCanvas.height);
     const w = vCanvas.width;
     const h = vCanvas.height;
+    const cx = w / 2;
     const cy = h / 2;
     const time = performance.now() * 0.003;
 
     // Background Hairline Reference Grid
     vCtx.lineWidth = 1;
-    vCtx.strokeStyle = "rgba(239, 237, 230, 0.08)";
+    vCtx.strokeStyle = "rgba(239, 237, 230, 0.06)";
     for (let y = 20; y < h; y += 40) {
       vCtx.beginPath();
       vCtx.moveTo(0, y);
@@ -565,11 +753,27 @@
       vCtx.stroke();
     }
 
+    // Signature Polar Acoustic Estate Plot Elements (Concentric Harmonics & Spokes)
+    vCtx.strokeStyle = "rgba(239, 237, 230, 0.05)";
+    [38, 76, 114].forEach(r => {
+      vCtx.beginPath();
+      vCtx.arc(cx, cy, r, 0, Math.PI * 2);
+      vCtx.stroke();
+    });
+    vCtx.strokeStyle = "rgba(239, 237, 230, 0.035)";
+    for (let i = 0; i < 12; i++) {
+      const angle = (i / 12) * Math.PI;
+      vCtx.beginPath();
+      vCtx.moveTo(cx + Math.cos(angle) * 114, cy + Math.sin(angle) * 114);
+      vCtx.lineTo(cx - Math.cos(angle) * 114, cy - Math.sin(angle) * 114);
+      vCtx.stroke();
+    }
+
     const freqMod = activeVoice ? activeVoice.freqMod : 1.0;
 
     // Wave 1: Primary Plot White Voice Waveform
     vCtx.lineWidth = 1.5;
-    vCtx.strokeStyle = "var(--ink)";
+    vCtx.strokeStyle = (currentState === 'BARGE_IN') ? 'var(--critical)' : 'var(--ink)';
     vCtx.beginPath();
     for (let x = 0; x < w; x += 3) {
       const norm = (x / w) * Math.PI * 6;
@@ -591,7 +795,7 @@
 
     // Wave 2: Signal Yellow Harmonic Overlay
     vCtx.lineWidth = 1.0;
-    vCtx.strokeStyle = (currentState === 'BARGE_IN') ? 'var(--critical)' : 'rgba(232, 182, 34, 0.75)';
+    vCtx.strokeStyle = (currentState === 'BARGE_IN') ? 'var(--critical-ink)' : 'rgba(232, 182, 34, 0.75)';
     vCtx.beginPath();
     for (let x = 0; x < w; x += 4) {
       const norm = (x / w) * Math.PI * 6;
@@ -609,12 +813,32 @@
     }
     vCtx.stroke();
 
-    // Update dB readout
-    if (currentState === 'NARRATING') {
-      const db = (-14.0 + Math.sin(time * 5) * 2.5).toFixed(1);
-      document.getElementById('db-level-readout').innerText = `${db} dB`;
-    } else if (currentState === 'BARGE_IN') {
-      document.getElementById('db-level-readout').innerText = `-0.2 dB PEAK`;
+    // Telemetry & FFT Animation
+    const now = performance.now();
+    const hasFreshLiveTelemetry = wsClient && (now - wsClient.lastTelemetryTime < 300);
+
+    if (hasFreshLiveTelemetry && wsClient.lastTelemetryBins) {
+      updateFFTBars(wsClient.lastTelemetryBins);
+    } else {
+      const simBins = generateSimulatedFFTBins(time, currentState, freqMod);
+      updateFFTBars(simBins);
+    }
+
+    // dB Readout Update
+    const dbEl = document.getElementById('db-level-readout');
+    if (dbEl) {
+      if (hasFreshLiveTelemetry && wsClient.lastTelemetryRms !== null) {
+        dbEl.innerText = `${wsClient.lastTelemetryRms.toFixed(1)} dB`;
+      } else if (currentState === 'NARRATING') {
+        const db = (-14.0 + Math.sin(time * 5) * 2.5).toFixed(1);
+        dbEl.innerText = `${db} dB`;
+      } else if (currentState === 'BARGE_IN') {
+        dbEl.innerText = `-0.2 dB PEAK`;
+      } else if (currentState === 'LISTENING') {
+        dbEl.innerText = `-${(36.0 + Math.sin(time * 2) * 3).toFixed(1)} dB`;
+      } else {
+        dbEl.innerText = `-${(16.0 + Math.cos(time * 3) * 2).toFixed(1)} dB`;
+      }
     }
 
     requestAnimationFrame(renderDynamicVoiceGraph);
@@ -622,9 +846,10 @@
 
   // --- BARGE-IN DISRUPTION CANVAS ---
   const bCanvas = document.getElementById('bargein-wave-canvas');
-  const bCtx = bCanvas.getContext('2d');
+  const bCtx = bCanvas ? bCanvas.getContext('2d') : null;
 
   function renderBargeInCanvas() {
+    if (!bCanvas || !bCtx) return;
     bCtx.clearRect(0, 0, bCanvas.width, bCanvas.height);
     const w = bCanvas.width;
     const h = bCanvas.height;
@@ -653,13 +878,393 @@
     requestAnimationFrame(renderBargeInCanvas);
   }
 
-  // --- DOM READY INITIALIZATION ---
+  // --- HUD WEBSOCKET & DUAL-MODE CLIENT ---
+  class HUDWebSocketClient {
+    constructor() {
+      this.ws = null;
+      this.isConnected = false;
+      this.reconnectTimer = null;
+      this.reconnectInterval = 3000;
+      this.micSource = 'browser';
+      this.audioContext = null;
+      this.micStream = null;
+      this.micProcessor = null;
+      this.analyser = null;
+      this.nextPlayTime = 0;
+      this.lastTelemetryBins = null;
+      this.lastTelemetryRms = null;
+      this.lastTelemetryTime = 0;
+    }
+
+    getWsUrl() {
+      if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        return `${proto}//${window.location.host}/ws`;
+      }
+      return 'ws://localhost:8000/ws';
+    }
+
+    initAudioContext() {
+      if (!this.audioContext) {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (AudioCtx) {
+          try {
+            this.audioContext = new AudioCtx({ sampleRate: 24000 });
+            this.analyser = this.audioContext.createAnalyser();
+            this.analyser.fftSize = 64;
+          } catch (e) {
+            console.warn("AudioContext init error:", e);
+          }
+        }
+      }
+      if (this.audioContext && this.audioContext.state === 'suspended') {
+        this.audioContext.resume().catch(() => {});
+      }
+    }
+
+    connect() {
+      if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
+        return;
+      }
+      const url = this.getWsUrl();
+
+      try {
+        this.ws = new WebSocket(url);
+        this.ws.binaryType = 'arraybuffer';
+
+        this.ws.onopen = () => {
+          this.onConnected();
+        };
+
+        this.ws.onmessage = (event) => {
+          this.onMessage(event);
+        };
+
+        this.ws.onclose = () => {
+          this.onDisconnected();
+        };
+
+        this.ws.onerror = () => {
+          // Handled gracefully, onclose will manage reconnection
+        };
+      } catch (e) {
+        this.onDisconnected();
+      }
+    }
+
+    onConnected() {
+      this.isConnected = true;
+      updateWsStatusUI(true);
+      stopSimulationLoop();
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+
+      if (this.micSource === 'browser') {
+        this.startBrowserMicCapture();
+      }
+    }
+
+    onDisconnected() {
+      this.isConnected = false;
+      updateWsStatusUI(false);
+      startSimulationLoop();
+      this.stopBrowserMicCapture();
+
+      if (!this.reconnectTimer) {
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null;
+          this.connect();
+        }, this.reconnectInterval);
+      }
+    }
+
+    send(data) {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        try {
+          if (typeof data === 'string' || data instanceof ArrayBuffer) {
+            this.ws.send(data);
+          } else {
+            this.ws.send(JSON.stringify(data));
+          }
+        } catch (e) {
+          console.warn("WebSocket send error:", e);
+        }
+      }
+    }
+
+    onMessage(event) {
+      if (typeof event.data !== 'string') {
+        this.handleBinaryAudio(event.data);
+        return;
+      }
+      try {
+        const msg = JSON.parse(event.data);
+        this.handleJsonMessage(msg);
+      } catch (e) {
+        console.warn("Error parsing WS message:", e);
+      }
+    }
+
+    handleBinaryAudio(arrayBuffer) {
+      this.initAudioContext();
+      if (!this.audioContext) return;
+
+      try {
+        const int16 = new Int16Array(arrayBuffer);
+        const float32 = new Float32Array(int16.length);
+        for (let i = 0; i < int16.length; i++) {
+          float32[i] = int16[i] / 32768.0;
+        }
+
+        const audioBuf = this.audioContext.createBuffer(1, float32.length, 24000);
+        audioBuf.copyToChannel(float32, 0);
+
+        const src = this.audioContext.createBufferSource();
+        src.buffer = audioBuf;
+
+        if (this.analyser) {
+          src.connect(this.analyser);
+          this.analyser.connect(this.audioContext.destination);
+        } else {
+          src.connect(this.audioContext.destination);
+        }
+
+        const now = this.audioContext.currentTime;
+        const startTime = Math.max(now, this.nextPlayTime);
+        src.start(startTime);
+        this.nextPlayTime = startTime + audioBuf.duration;
+      } catch (err) {
+        console.warn("Audio buffer playback error:", err);
+      }
+    }
+
+    handleJsonMessage(msg) {
+      switch (msg.type) {
+        case 'state_sync':
+          this.handleStateSync(msg);
+          break;
+        case 'vad_event':
+          this.handleVadEvent(msg);
+          break;
+        case 'barge_in':
+          this.handleBargeIn(msg);
+          break;
+        case 'cursor_update':
+          this.handleCursorUpdate(msg);
+          break;
+        case 'prompt_envelope':
+          this.handlePromptEnvelope(msg);
+          break;
+        case 'telemetry':
+          this.handleTelemetry(msg);
+          break;
+      }
+    }
+
+    handleStateSync(msg) {
+      if (msg.state) {
+        currentState = msg.state;
+        updateStateUI();
+      }
+      if (msg.active_voice) {
+        selectVoice(msg.active_voice, false);
+      }
+      if (msg.mic_source) {
+        switchMicSource(msg.mic_source, false);
+      }
+      if (msg.cadence !== undefined) {
+        setCadence(msg.cadence, null, false);
+      }
+      if (msg.latency_ms !== undefined) {
+        const latStr = `${Number(msg.latency_ms).toFixed(2)} ms`;
+        document.getElementById('header-latency').innerText = latStr;
+        document.getElementById('diag-latency').innerText = latStr;
+      }
+      if (msg.sentence_idx !== undefined) {
+        currentSentenceIdx = msg.sentence_idx;
+        currentWordIdx = msg.word_offset || 0;
+        updateWordHighlight();
+      }
+    }
+
+    handleVadEvent(msg) {
+      if (msg.dbfs !== undefined) {
+        this.lastTelemetryRms = msg.dbfs;
+        this.lastTelemetryTime = performance.now();
+      }
+    }
+
+    handleBargeIn(msg) {
+      currentState = 'BARGE_IN';
+      updateStateUI();
+      const lat = (msg.latency_ms !== undefined) ? Number(msg.latency_ms).toFixed(2) : '0.04';
+      document.getElementById('header-latency').innerText = `${lat} ms`;
+      document.getElementById('diag-latency').innerText = `${lat} ms`;
+      const flashTag = document.getElementById('bargein-flash-tag');
+      if (flashTag) {
+        flashTag.innerText = `FLUSH: ${lat} ms`;
+        flashTag.style.display = 'block';
+        setTimeout(() => {
+          flashTag.style.display = 'none';
+        }, 1200);
+      }
+    }
+
+    handleCursorUpdate(msg) {
+      if (msg.sentence_idx !== undefined) {
+        currentSentenceIdx = msg.sentence_idx;
+      }
+      if (msg.word_offset !== undefined) {
+        currentWordIdx = msg.word_offset;
+      }
+      if (msg.sentence_text && STORY_PARAGRAPHS[currentSentenceIdx] !== msg.sentence_text) {
+        STORY_PARAGRAPHS[currentSentenceIdx] = msg.sentence_text;
+        renderNarrativeStream();
+      } else {
+        updateWordHighlight();
+      }
+      if (msg.total_sentences !== undefined) {
+        const counter = document.getElementById('counter-sentence');
+        if (counter) counter.innerText = `${currentSentenceIdx + 1} / ${msg.total_sentences}`;
+      }
+    }
+
+    handlePromptEnvelope(msg) {
+      const envelope = document.getElementById('dialogue-envelope');
+      if (!envelope) return;
+
+      if (msg.state === 'LISTENING' || msg.state === 'REPLYING') {
+        envelope.style.display = 'grid';
+        if (msg.context) {
+          const ctxEl = document.getElementById('env-local-ctx');
+          if (ctxEl) ctxEl.innerText = `"${msg.context}"`;
+        }
+        if (msg.query) {
+          const qEl = envelope.querySelector('div:nth-child(3) span:last-child');
+          if (qEl) qEl.innerText = `"${msg.query}"`;
+        }
+        if (msg.reply) {
+          const rEl = envelope.querySelector('div:nth-child(4) span:last-child');
+          if (rEl) rEl.innerText = `"${msg.reply}"`;
+        }
+      } else {
+        highlightPreRollWords(msg.pre_roll_words || 4);
+        setTimeout(() => {
+          document.querySelectorAll('.preroll').forEach(e => e.classList.remove('preroll'));
+          envelope.style.display = 'none';
+        }, 1400);
+      }
+    }
+
+    handleTelemetry(msg) {
+      if (msg.fft_bins) {
+        this.lastTelemetryBins = msg.fft_bins;
+      }
+      if (msg.rms_db !== undefined) {
+        this.lastTelemetryRms = msg.rms_db;
+      }
+      this.lastTelemetryTime = performance.now();
+
+      if (msg.drain_latency_ms !== undefined) {
+        const latStr = `${Number(msg.drain_latency_ms).toFixed(2)} ms`;
+        document.getElementById('header-latency').innerText = latStr;
+        document.getElementById('diag-latency').innerText = latStr;
+      }
+    }
+
+    async startBrowserMicCapture() {
+      if (this.micStream) return;
+      try {
+        this.initAudioContext();
+        if (!this.audioContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          return;
+        }
+        this.micStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true
+          }
+        });
+        const source = this.audioContext.createMediaStreamSource(this.micStream);
+        this.micProcessor = this.audioContext.createScriptProcessor(2048, 1, 1);
+        this.micProcessor.onaudioprocess = (e) => {
+          if (!this.isConnected || this.micSource !== 'browser') return;
+          const input = e.inputBuffer.getChannelData(0);
+          const pcm16 = new Int16Array(input.length);
+          for (let i = 0; i < input.length; i++) {
+            const s = Math.max(-1, Math.min(1, input[i]));
+            pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+          }
+          this.send(pcm16.buffer);
+        };
+        source.connect(this.micProcessor);
+        this.micProcessor.connect(this.audioContext.destination);
+      } catch (err) {
+        console.warn("Browser mic access unavailable or denied:", err.message);
+      }
+    }
+
+    stopBrowserMicCapture() {
+      if (this.micStream) {
+        this.micStream.getTracks().forEach(t => t.stop());
+        this.micStream = null;
+      }
+      if (this.micProcessor) {
+        this.micProcessor.disconnect();
+        this.micProcessor = null;
+      }
+    }
+  }
+
+  const wsClient = new HUDWebSocketClient();
+
+  // Expose controller API for testing and programmatic automation
+  window.wsClient = wsClient;
+  window.selectVoice = selectVoice;
+  window.switchMicSource = switchMicSource;
+  window.setCadence = setCadence;
+  window.togglePlayPause = togglePlayPause;
+  window.triggerBargeIn = triggerBargeIn;
+  window.VOICES = VOICES;
+  Object.defineProperty(window, 'activeVoice', {
+    get: () => activeVoice,
+    set: (v) => { activeVoice = v; }
+  });
+  Object.defineProperty(window, 'currentState', {
+    get: () => currentState,
+    set: (s) => { currentState = s; }
+  });
+  Object.defineProperty(window, 'currentCadence', {
+    get: () => currentCadence,
+    set: (c) => { currentCadence = c; }
+  });
+  Object.defineProperty(window, 'isPlaying', {
+    get: () => isPlaying,
+    set: (p) => { isPlaying = p; }
+  });
+
+  // --- INITIALIZATION ---
   window.addEventListener('DOMContentLoaded', () => {
     renderVoiceRoster();
     renderNarrativeStream();
-    advanceWordCursor();
+    startSimulationLoop();
     renderDynamicVoiceGraph();
     renderBargeInCanvas();
+
+    // Connect WebSocket
+    wsClient.connect();
+
+    // User gesture unlocking for AudioContext
+    const unlockAudio = () => {
+      wsClient.initAudioContext();
+      window.removeEventListener('click', unlockAudio);
+      window.removeEventListener('keydown', unlockAudio);
+    };
+    window.addEventListener('click', unlockAudio);
+    window.addEventListener('keydown', unlockAudio);
   });
 </script>
 
