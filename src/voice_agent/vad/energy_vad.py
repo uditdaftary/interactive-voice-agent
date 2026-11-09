@@ -6,6 +6,11 @@ and onset persistence for conversational voice agents.
 from typing import Any, Generator, List, Optional, Union
 import numpy as np
 
+try:
+    from scipy.signal import lfilter
+except ImportError:
+    lfilter = None
+
 
 class VoiceActivityDetector:
     """Voice Activity Detector evaluating strictly 30ms frames with adaptive noise floor,
@@ -106,14 +111,19 @@ class VoiceActivityDetector:
         else:
             self._reference_ducking_threshold = None
 
-    def reset(self) -> None:
-        """Reset internal FIFO, DSP filter state, and speech detection counters."""
+    def reset(self, preserve_noise_floor: bool = False) -> None:
+        """Reset internal FIFO, DSP filter state, and speech detection counters.
+
+        If preserve_noise_floor is True, retains the calibrated background noise floor
+        and threshold to prevent false-positive barge-in interruptions on mic source switches.
+        """
         self._fifo = np.empty(0, dtype=np.float32)
         self._filter_zi = np.zeros(1, dtype=np.float32)
         self._prev_x = 0.0
         self._prev_y = 0.0
-        self.noise_floor_dbfs = float(self.initial_noise_floor_dbfs)
-        self.threshold_dbfs = self.noise_floor_dbfs + self.snr_margin_db
+        if not preserve_noise_floor:
+            self.noise_floor_dbfs = float(self.initial_noise_floor_dbfs)
+            self.threshold_dbfs = self.noise_floor_dbfs + self.snr_margin_db
         self.is_speech = False
         self.is_turn_complete = False
         self.hangover_count = 0
@@ -156,7 +166,7 @@ class VoiceActivityDetector:
             chunk = chunk.astype(np.float32)
             # Check for unnormalized float values
             max_abs = float(np.max(np.abs(chunk))) if len(chunk) > 0 else 0.0
-            if max_abs > 1.5:
+            if max_abs > 256.0:
                 chunk = chunk / 32768.0
             chunk = np.clip(chunk, -1.0, 1.0)
 
@@ -170,12 +180,12 @@ class VoiceActivityDetector:
         # Zero-mean centering
         centered = frame - np.mean(frame)
 
-        try:
-            from scipy.signal import lfilter
-
-            y, self._filter_zi = lfilter(self._b, self._a, centered, zi=self._filter_zi)
-            return y.astype(np.float32)
-        except Exception:
+        if lfilter is not None:
+            try:
+                y, self._filter_zi = lfilter(self._b, self._a, centered, zi=self._filter_zi)
+                return y.astype(np.float32)
+            except Exception:
+                pass
             # Fallback pure-numpy/python loop
             y = np.empty_like(centered)
             px, py = self._prev_x, self._prev_y

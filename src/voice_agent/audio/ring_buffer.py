@@ -29,6 +29,11 @@ class AudioRingBuffer:
         self.fadeout_tail: Optional[np.ndarray] = None
         self.lock = threading.Lock()
 
+        # Precompute default 2ms half-cosine micro-fadeout window to eliminate dynamic allocation on critical drain path
+        self._default_fade_samples = max(2, int(round(self.sample_rate * 0.002)))
+        t = np.linspace(0.0, np.pi, self._default_fade_samples, endpoint=True)
+        self._cached_fade_window = 0.5 * (1.0 + np.cos(t))
+
     @property
     def available_write(self) -> int:
         """Remaining capacity available for writing."""
@@ -171,8 +176,11 @@ class AudioRingBuffer:
                     raw[end1:] = self.buffer[0:end2]
 
                 if fade_samples > 1:
-                    t = np.linspace(0.0, np.pi, fade_samples, endpoint=True)
-                    window = 0.5 * (1.0 + np.cos(t))
+                    if fade_samples == len(self._cached_fade_window):
+                        window = self._cached_fade_window
+                    else:
+                        t = np.linspace(0.0, np.pi, fade_samples, endpoint=True)
+                        window = 0.5 * (1.0 + np.cos(t))
                     self.fadeout_tail = np.round(raw * window).astype(np.int16)
                 else:
                     self.fadeout_tail = np.zeros(1, dtype=np.int16)
@@ -199,6 +207,7 @@ class AudioRingBuffer:
 
         with self.lock:
             filled = 0
+            had_active_tail = self.fadeout_tail is not None and len(self.fadeout_tail) > 0
 
             # 1. Consume micro-fadeout tail if present
             if self.fadeout_tail is not None and len(self.fadeout_tail) > 0:
@@ -229,7 +238,9 @@ class AudioRingBuffer:
             if filled < samples_requested:
                 self._zero_pad_outdata(outdata, filled)
 
-            self.total_samples_played += filled
+            # Advance playhead by full requested samples only when active audio was emitted (prevents idle runaway)
+            if filled > 0 or had_active_tail:
+                self.total_samples_played += samples_requested
             return filled
 
     def read(self, samples_requested: int) -> np.ndarray:

@@ -28,8 +28,8 @@
   --high: #e8b622;
   --critical: #e03a2f;
   --critical-ink: #ff6a5c;
-  --sans: "Archivo", ui-sans-serif, system-ui, sans-serif;
-  --mono: "Martian Mono", ui-monospace, "Cascadia Mono", monospace;
+  --sans: "Archivo", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: "Martian Mono", ui-monospace, "Cascadia Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
 }
 
@@ -52,10 +52,10 @@ a { color: var(--ink); text-underline-offset: 3px; text-decoration: none; }
 h1, h2, h3, p { margin: 0; }
 h1, h2, h3 { font-weight: 500; }
 button, input, select { font: inherit; color: inherit; }
-code, .mono { font-family: var(--mono); font-stretch: 90%; font-variation-settings: 'wdth' 90; font-variant-numeric: tabular-nums; font-size: 0.88em; }
+code, .mono { font-family: var(--mono); font-stretch: 90%; font-variation-settings: 'wdth' 90; font-variant-numeric: tabular-nums; font-size: 0.88em; font-synthesis: none; }
 .mute { color: var(--ink-2); }
 .faint { color: var(--ink-3); }
-.num { font-variant-numeric: tabular-nums; }
+.num { font-variant-numeric: tabular-nums; font-synthesis: none; }
 [hidden] { display: none !important; }
 
 /* Shell Layout */

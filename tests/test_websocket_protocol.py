@@ -16,7 +16,7 @@ Validates:
 """
 
 import pytest
-from starlette.testclient import TestClient
+from fastapi.testclient import TestClient
 
 from voice_agent.server.app import create_app
 from voice_agent.server.connection_manager import ConnectionManager

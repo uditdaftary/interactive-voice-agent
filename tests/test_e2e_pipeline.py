@@ -20,7 +20,7 @@ import asyncio
 from typing import List
 import numpy as np
 import pytest
-from starlette.testclient import TestClient
+from fastapi.testclient import TestClient
 
 from voice_agent.audio.hybrid import HybridMicrophoneBridge
 from voice_agent.audio.loopback import VirtualAudioDevice

@@ -470,7 +470,15 @@
     }
   }
 
+  function clearNarrativeTimer() {
+    if (narrativeTimer !== null) {
+      clearTimeout(narrativeTimer);
+      narrativeTimer = null;
+    }
+  }
+
   function advanceWordCursor() {
+    clearNarrativeTimer();
     if (isLiveMode || !isPlaying || currentState !== 'NARRATING') return;
 
     const currentParagraphWords = STORY_PARAGRAPHS[currentSentenceIdx].split(/\s+/);
@@ -487,7 +495,13 @@
     narrativeTimer = setTimeout(advanceWordCursor, delay);
   }
 
+  let lastCadenceTimestamp = 0;
   function setCadence(cadence, btnEl, sendWs = true) {
+    const now = performance.now();
+    if (now - lastCadenceTimestamp < 50) return;
+    lastCadenceTimestamp = now;
+
+    clearNarrativeTimer();
     currentCadence = cadence;
     document.querySelectorAll('#cadence-btn-group button').forEach(b => b.classList.remove('active'));
     if (btnEl) {
@@ -501,6 +515,10 @@
     if (sendWs && wsClient && wsClient.isConnected) {
       wsClient.send({ type: 'set_cadence', cadence: cadence });
     }
+
+    if (!isLiveMode && isPlaying && currentState === 'NARRATING') {
+      advanceWordCursor();
+    }
   }
 
   function togglePlayPause() {
@@ -513,8 +531,7 @@
     if (isPlaying) {
       if (!isLiveMode) advanceWordCursor();
     } else {
-      clearTimeout(narrativeTimer);
-      narrativeTimer = null;
+      clearNarrativeTimer();
     }
 
     if (wsClient && wsClient.isConnected) {
@@ -523,18 +540,26 @@
   }
 
   function nextSentence() {
+    clearNarrativeTimer();
     currentSentenceIdx = (currentSentenceIdx + 1) % STORY_PARAGRAPHS.length;
     currentWordIdx = 0;
     renderNarrativeStream();
+    if (!isLiveMode && isPlaying && currentState === 'NARRATING') {
+      advanceWordCursor();
+    }
     if (wsClient && wsClient.isConnected) {
       wsClient.send({ type: 'playback_control', action: 'next' });
     }
   }
 
   function prevSentence() {
+    clearNarrativeTimer();
     currentSentenceIdx = (currentSentenceIdx - 1 + STORY_PARAGRAPHS.length) % STORY_PARAGRAPHS.length;
     currentWordIdx = 0;
     renderNarrativeStream();
+    if (!isLiveMode && isPlaying && currentState === 'NARRATING') {
+      advanceWordCursor();
+    }
     if (wsClient && wsClient.isConnected) {
       wsClient.send({ type: 'playback_control', action: 'prev' });
     }
@@ -730,6 +755,10 @@
 
   function renderDynamicVoiceGraph() {
     if (!vCanvas || !vCtx) return;
+    if (document.hidden) {
+      requestAnimationFrame(renderDynamicVoiceGraph);
+      return;
+    }
     vCtx.clearRect(0, 0, vCanvas.width, vCanvas.height);
     const w = vCanvas.width;
     const h = vCanvas.height;
@@ -850,6 +879,10 @@
 
   function renderBargeInCanvas() {
     if (!bCanvas || !bCtx) return;
+    if (document.hidden) {
+      requestAnimationFrame(renderBargeInCanvas);
+      return;
+    }
     bCtx.clearRect(0, 0, bCanvas.width, bCanvas.height);
     const w = bCanvas.width;
     const h = bCanvas.height;
@@ -1032,6 +1065,9 @@
         }
 
         const now = this.audioContext.currentTime;
+        if (this.nextPlayTime < now) {
+          this.nextPlayTime = now;
+        }
         const startTime = Math.max(now, this.nextPlayTime);
         src.start(startTime);
         this.nextPlayTime = startTime + audioBuf.duration;
@@ -1064,6 +1100,7 @@
     }
 
     handleStateSync(msg) {
+      clearNarrativeTimer();
       if (msg.state) {
         currentState = msg.state;
         updateStateUI();
@@ -1160,7 +1197,7 @@
 
     handleTelemetry(msg) {
       if (msg.fft_bins) {
-        this.lastTelemetryBins = msg.fft_bins;
+        this.lastTelemetryBins = msg.fft_bins.slice(0, 240);
       }
       if (msg.rms_db !== undefined) {
         this.lastTelemetryRms = msg.rms_db;
@@ -1256,6 +1293,15 @@
 
     // Connect WebSocket
     wsClient.connect();
+
+    // Page Visibility API: resync audio playhead on tab refocus to prevent queue burst
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && wsClient && wsClient.audioContext) {
+        if (wsClient.audioContext.state === 'running') {
+          wsClient.nextPlayTime = wsClient.audioContext.currentTime;
+        }
+      }
+    });
 
     // User gesture unlocking for AudioContext
     const unlockAudio = () => {

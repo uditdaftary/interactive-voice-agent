@@ -271,7 +271,7 @@ def parse_client_message(raw: Union[str, bytes, Dict[str, Any]]) -> Optional[Cli
 
     if isinstance(raw, str):
         try:
-            payload: Dict[str, Any] = json.loads(raw)
+            payload = json.loads(raw)
         except json.JSONDecodeError:
             return None
     elif isinstance(raw, dict):
@@ -279,11 +279,16 @@ def parse_client_message(raw: Union[str, bytes, Dict[str, Any]]) -> Optional[Cli
     else:
         return None
 
+    if not isinstance(payload, dict):
+        return None
+
     msg_type = str(payload.get("type", "")).strip().lower()
 
     try:
         if msg_type in ("select_voice", "selectvoice"):
-            voice_id = payload.get("voice_id") or payload.get("voice") or ""
+            voice_id = payload.get("voice_id")
+            if voice_id is None:
+                voice_id = payload.get("voice", "")
             return SelectVoiceMessage(voice_id=str(voice_id))
 
         if msg_type in ("set_mic_source", "switch_mic_source", "setmicsource"):
@@ -307,7 +312,7 @@ def parse_client_message(raw: Union[str, bytes, Dict[str, Any]]) -> Optional[Cli
                 elif msg_type == "resume_narration":
                     action = "resume"
                 else:
-                    action = "resume"
+                    return None
             return PlaybackControlMessage(action=str(action))
 
     except Exception:

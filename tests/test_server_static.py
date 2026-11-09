@@ -7,7 +7,7 @@ exact MIME types, zero font 404 errors, and returns 404 for missing assets.
 
 from pathlib import Path
 import pytest
-from starlette.testclient import TestClient
+from fastapi.testclient import TestClient
 
 from voice_agent.server.app import create_app
 

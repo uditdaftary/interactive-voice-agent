@@ -165,6 +165,12 @@ class HybridMicrophoneBridge:
             # Clean up existing host stream when leaving "host" mode
             self._stop_host_stream()
 
+            # Flush FIFO accumulator and reset VAD filter state to prevent sample discontinuity / false barge-in
+            self._fifo = np.empty(0, dtype=np.float32)
+            self._speech_in_progress = False
+            if hasattr(self, "vad") and self.vad is not None:
+                self.vad.reset(preserve_noise_floor=True)
+
             if norm_source == "host":
                 success = self._start_host_stream()
                 if not success:
@@ -214,12 +220,19 @@ class HybridMicrophoneBridge:
         barge-in if speech is detected.
         Returns the number of 30ms frames processed.
         """
+        if isinstance(data, (bytes, bytearray)):
+            if len(data) % 2 != 0:
+                data = data[: len(data) - 1]
         with self._lock:
             if self.source != "browser":
                 return 0
 
             sr = sample_rate if sample_rate is not None else self.input_sample_rate
             return self._ingest_audio_data(data, sr)
+
+    # Architectural aliases for cross-subagent compatibility
+    switch_source = set_source
+    ingest_browser_audio = feed_browser_pcm
 
     def feed_audio(
         self,
@@ -481,7 +494,7 @@ class HybridMicrophoneBridge:
         else:
             arr = arr.astype(np.float32)
             max_abs = float(np.max(np.abs(arr))) if len(arr) > 0 else 0.0
-            if max_abs > 1.5:
+            if max_abs > 256.0:
                 arr = arr / 32768.0
             arr = np.clip(arr, -1.0, 1.0)
 

@@ -396,6 +396,8 @@ class VirtualAudioDevice:
     def _to_float32(data: Any, target_len: int) -> np.ndarray:
         """Convert input data to 1D float32 array in [-1.0, 1.0]."""
         arr = np.asarray(data)
+        if arr.size == 0:
+            return np.zeros(target_len, dtype=np.float32)
         if arr.ndim > 1:
             arr = np.mean(arr, axis=-1)
         arr = arr.flatten()

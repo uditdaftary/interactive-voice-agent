@@ -242,23 +242,29 @@ class ConnectionManager:
     async def broadcast_text(self, text: str) -> None:
         """Broadcast a text payload to all active connections.
 
-        Safely cleans up any disconnected clients encountered during transmission.
+        Non-blocking concurrent fan-out using asyncio.gather to eliminate head-of-line
+        blocking, safely pruning disconnected clients via set comprehension.
         """
         with self._lock:
             sockets = list(self.active_connections)
 
-        dead_sockets: List[WebSocket] = []
-        for ws in sockets:
+        if not sockets:
+            return
+
+        async def _safe_send(ws: WebSocket) -> Optional[WebSocket]:
             try:
                 await ws.send_text(text)
+                return None
             except Exception:
-                dead_sockets.append(ws)
+                return ws
+
+        results = await asyncio.gather(*[_safe_send(ws) for ws in sockets], return_exceptions=False)
+        dead_sockets = [ws for ws in results if ws is not None]
 
         if dead_sockets:
             with self._lock:
-                for ws in dead_sockets:
-                    if ws in self.active_connections:
-                        self.active_connections.remove(ws)
+                dead_set = set(dead_sockets)
+                self.active_connections = [ws for ws in self.active_connections if ws not in dead_set]
 
     async def broadcast_json(self, message: Union[BaseModel, Dict[str, Any], str]) -> None:
         """Serialize and broadcast a JSON message to all active clients."""
@@ -278,18 +284,34 @@ class ConnectionManager:
         with self._lock:
             sockets = list(self.active_connections)
 
-        dead_sockets: List[WebSocket] = []
-        for ws in sockets:
+        if not sockets:
+            return
+
+        async def _safe_send(ws: WebSocket) -> Optional[WebSocket]:
             try:
                 await ws.send_bytes(data)
+                return None
             except Exception:
-                dead_sockets.append(ws)
+                return ws
+
+        results = await asyncio.gather(*[_safe_send(ws) for ws in sockets], return_exceptions=False)
+        dead_sockets = [ws for ws in results if ws is not None]
 
         if dead_sockets:
             with self._lock:
-                for ws in dead_sockets:
-                    if ws in self.active_connections:
-                        self.active_connections.remove(ws)
+                dead_set = set(dead_sockets)
+                self.active_connections = [ws for ws in self.active_connections if ws not in dead_set]
+
+    @staticmethod
+    def _log_future_exception(fut: Any) -> None:
+        try:
+            exc = fut.exception()
+            if exc is not None:
+                logger.warning(f"Background WebSocket broadcast error: {exc}")
+        except (asyncio.CancelledError, concurrent.futures.CancelledError):
+            pass
+        except Exception as e:
+            logger.debug(f"Error inspecting broadcast future: {e}")
 
     def broadcast_json_sync(
         self,
@@ -304,8 +326,9 @@ class ConnectionManager:
             except RuntimeError:
                 target_loop = None
 
-        if target_loop is not None and target_loop.is_running():
-            asyncio.run_coroutine_threadsafe(self.broadcast_json(message), target_loop)
+        if target_loop is not None and target_loop.is_running() and not target_loop.is_closed():
+            fut = asyncio.run_coroutine_threadsafe(self.broadcast_json(message), target_loop)
+            fut.add_done_callback(self._log_future_exception)
 
     def broadcast_bytes_sync(
         self,
@@ -320,8 +343,9 @@ class ConnectionManager:
             except RuntimeError:
                 target_loop = None
 
-        if target_loop is not None and target_loop.is_running():
-            asyncio.run_coroutine_threadsafe(self.broadcast_bytes(data), target_loop)
+        if target_loop is not None and target_loop.is_running() and not target_loop.is_closed():
+            fut = asyncio.run_coroutine_threadsafe(self.broadcast_bytes(data), target_loop)
+            fut.add_done_callback(self._log_future_exception)
 
 
 # Module-level default singleton instance
