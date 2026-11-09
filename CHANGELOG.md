@@ -5,6 +5,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [0.3.0] - Unreleased
+
+### Unified Voice Agent HUD Dashboard & Full-Stack WebSocket Server
+*Full-stack integration of the single-page Catalog Sheet HUD with a local FastAPI WebSocket streaming server.*
+
+### Added
+- **Unified FastAPI Server & Static Host**:
+  - Unified local server hosting both the static HUD assets (`ui/`) and bi-directional WebSocket (`ws://localhost:8000/ws`).
+  - Bi-directional 24kHz audio PCM streaming and 30ms VAD event telemetry.
+- **Audio Virtual Device & Mock Loopback**:
+  - `VirtualAudioDevice` enabling headless test execution and automated CI verification without physical sound hardware.
+- **Single-Page Catalog Sheet HUD**:
+  - 60 FPS live canvas dynamic voice graph visualizer and FFT spectrum.
+  - Continuous narrative teleprompter with word-level cursor token tracking in inverted Plot White.
+  - Sub-50ms barge-in disruption canvas with atomic queue drain latency benchmark.
+  - Resident character voice selector table (David Martinez, Lucy, V Male/Female, Johnny Silverhand).
+- **Post-Sprint Adversarial Quality Protocol**:
+  - 4-auditor adversarial review pass (`/code-review-and-quality` and `/bugs-are-annoying`).
+  - Competing solution architecture teams (Team Alpha and Team Beta).
+  - 4-fixer TDD remediation team with GitHub issue tracking.
+
+---
+
 ## [0.2.0] - 2026-11-09
 
 ### Comprehensive Multi-Agent Audit & Production Hardening
