@@ -5,6 +5,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [0.5.1] - 2026-11-09
+
+### Web Search Truncation Fix, Lore Typo Tolerance & Post-Barge-In Resumption
+*Resolved web snippet truncation after '...', added Cyberpunk lore typo tolerance (e.g. 'arakasa' -> Arasaka), enabled full document passage retrieval for ad-hoc queries, and established seamless server-driven audio narration and teleprompter resumption post-barge-in.*
+
+### Fixed
+- **Web Search Snippet Truncation & '...' Cutoff (`src/voice_agent/llm/client.py`)**:
+  - `sanitize_web_snippet()` strips URLs, bracket citations (`[1]`), date headers (`Nov 2, 2026`), empty parentheticals `(Japanese: )`, and replaces ellipses (`...`, `…`) with whitespace before sentence tokenization, completely eliminating trailing `...` and premature sentence cutoffs.
+  - Sourced full substantive definitions (scoring explanatory phrases like "is a", "megacorporation", "specializing in") and synthesized 2-sentence answers with authentic character voice prefixes.
+  - Sanitized multi-byte Unicode characters to safe ASCII, preventing Windows `cp1252` encoding crashes on console output.
+- **Phonetic Speech Typo Tolerance & Document Context Matching (`voice_agent.llm.client`, `voice_agent.server.narration`)**:
+  - Added phonetic typo tolerance mapping speech recognition errors (e.g. `arakasa` / `arakas` -> `arasaka`, `sande` -> `sandevistan`) across search queries and document token matching.
+  - `search_document_passages()` queries the entire loaded book/prose (`self.sentences`) rather than only the current sentence, integrating both external web facts and internal document excerpts.
+- **Post-Barge-In Narration Resumption (`voice_agent.server.narration`, `ui/index.html`)**:
+  - Removed rogue simulation `setTimeout` chains in `triggerBargeIn()` that stomped over live WebSocket state.
+  - Server awaits answer audio playback duration before broadcasting pre-roll resumption cues (`PromptEnvelopeMessage(state="NARRATING", pre_roll_words=4)`).
+  - Cleanly restarts background narration task and re-engages teleprompter word highlighting and scrolling.
+- **Web Speech API Transcript Capture (`ui/index.html`)**:
+  - Fixed `recognizer.onresult` to accumulate all final and interim results across `event.results`, eliminating dropped words in manual voice barge-in.
+  - Triggered query submission cleanly on `recognizer.onend`.
+
+### Testing & Verification
+- All 123 tests passing with 100% success rate across all 5 tiers.
+
+---
+
 ## [0.5.0] - 2026-11-09
 
 ### Production Studio Experience, Direct Microphone Barge-In & Authentic Cyberpunk Character Voices

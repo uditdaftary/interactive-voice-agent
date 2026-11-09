@@ -222,3 +222,26 @@ All issues triaged into two independent architecture teams cross-communicating v
 5. **Testing & Verification Lead**:
    - Verified 123/123 tests passing with 100% success rate.
 
+---
+
+## 8. Sprint 4.1: Web Grounding Sanity, Typo Tolerance & Resumption Continuity
+
+*Executed to eliminate web snippet truncation ('...'), support phonetic speech-to-text typos (e.g. 'arakasa' -> Arasaka), search complete document notes, and restore seamless post-barge-in narration resumption.*
+
+### 8.1. Domain Lead Assignments
+1. **Web Grounding & NLP Lead**:
+   - Built `sanitize_web_snippet` stripping citation tags (`[1]`), date prefixes, and Unicode artifacts.
+   - Normalized ellipses (`...`, `…`) to prevent false sentence termination.
+   - Implemented 2-sentence substantive fact scoring prioritizing definition markers ("is a", "megacorporation").
+   - Integrated ASCII normalization preventing Windows `cp1252` encoding crashes.
+2. **Document Ingestion & Context Matching Lead**:
+   - Built `search_document_passages` searching the full loaded document (`self.sentences`) with token matching.
+   - Added phonetic typo tolerance for Cyberpunk lore terms (`arakas` / `arakasa` -> `arasaka`, `sande` -> `sandevistan`).
+3. **State Machine & Streaming Resumption Lead**:
+   - Fixed `triggerBargeIn()` removing rogue offline simulation timers that stomped over live WebSocket state.
+   - Server dynamically waits for question answer playback duration before broadcasting pre-roll resumption cues (`PromptEnvelopeMessage(state="NARRATING", pre_roll_words=4)`).
+   - Ensured atomic restart of `NarrationEngine._narration_loop()` post-interruption.
+4. **Testing & Verification Lead**:
+   - Re-verified full test suite: 123/123 tests passing with 100% success rate.
+
+

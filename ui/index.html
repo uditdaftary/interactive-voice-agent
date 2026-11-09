@@ -845,18 +845,24 @@
     };
 
     recognizer.onresult = (event) => {
-      let transcript = '';
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        transcript += event.results[i][0].transcript;
+      let finalTranscript = '';
+      let interimTranscript = '';
+      for (let i = 0; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript;
+        } else {
+          interimTranscript += event.results[i][0].transcript;
+        }
       }
+      const fullTranscript = (finalTranscript + ' ' + interimTranscript).trim() || finalTranscript.trim() || interimTranscript.trim();
       const input = document.getElementById('interruption-query-input');
-      if (input) input.value = transcript;
+      if (input && fullTranscript) input.value = fullTranscript;
 
       const ticker = document.getElementById('speech-ticker');
       if (ticker) {
         ticker.style.display = 'flex';
         const textEl = document.getElementById('speech-ticker-text');
-        if (textEl) textEl.innerText = transcript || 'Listening to your voice...';
+        if (textEl) textEl.innerText = fullTranscript || 'Listening to your voice...';
       }
     };
 
@@ -870,8 +876,9 @@
       isVoiceListening = false;
       updateBargeInButtonUI(false);
       const input = document.getElementById('interruption-query-input');
-      if (input && input.value.trim().length > 0) {
-        submitInterruptionQuery();
+      const val = input ? input.value.trim() : '';
+      if (val.length > 0) {
+        submitInterruptionQuery(val);
       }
     };
 
@@ -942,8 +949,6 @@
 
   // --- BARGE-IN INTERRUPTION PROTOCOL ---
   function triggerBargeIn() {
-    if (currentState !== 'NARRATING') return;
-
     if (wsClient && wsClient.isConnected) {
       wsClient.send({ type: 'barge_in_trigger' });
     }
@@ -964,7 +969,19 @@
       flashTag.style.display = 'block';
     }
 
-    // Step 2: Transition to Listening
+    // In live mode with active WebSocket, let server drive LISTENING, REPLYING, and NARRATING states
+    if (wsClient && wsClient.isConnected) {
+      setTimeout(() => {
+        if (flashTag) flashTag.style.display = 'none';
+        if (currentState === 'BARGE_IN') {
+          currentState = 'LISTENING';
+          updateStateUI();
+        }
+      }, 300);
+      return;
+    }
+
+    // Offline / Local Simulation Mode: Step 2: Transition to Listening
     setTimeout(() => {
       currentState = 'LISTENING';
       updateStateUI();
@@ -1536,6 +1553,11 @@
       clearNarrativeTimer();
       if (msg.state) {
         currentState = msg.state;
+        if (msg.state === 'NARRATING') {
+          isPlaying = true;
+          const btnLabel = document.getElementById('btn-playback-label');
+          if (btnLabel) btnLabel.innerText = 'PAUSE NARRATION';
+        }
         updateStateUI();
       }
       if (msg.active_voice) {
@@ -1584,6 +1606,10 @@
     }
 
     handleCursorUpdate(msg) {
+      if (currentState !== 'NARRATING' && isPlaying) {
+        currentState = 'NARRATING';
+        updateStateUI();
+      }
       if (msg.sentence_idx !== undefined) {
         currentSentenceIdx = msg.sentence_idx;
       }
@@ -1607,6 +1633,8 @@
       if (!envelope) return;
 
       if (msg.state === 'LISTENING' || msg.state === 'REPLYING') {
+        currentState = msg.state;
+        updateStateUI();
         envelope.style.display = 'grid';
         if (msg.context) {
           const ctxEl = document.getElementById('env-local-ctx');
@@ -1621,6 +1649,12 @@
           if (rEl) rEl.innerText = `"${msg.reply}"`;
         }
       } else {
+        currentState = 'NARRATING';
+        isPlaying = true;
+        updateStateUI();
+        const btnLabel = document.getElementById('btn-playback-label');
+        if (btnLabel) btnLabel.innerText = 'PAUSE NARRATION';
+
         highlightPreRollWords(msg.pre_roll_words || 4);
         setTimeout(() => {
           document.querySelectorAll('.preroll').forEach(e => e.classList.remove('preroll'));

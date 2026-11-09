@@ -146,20 +146,57 @@ class MockLLMClient:
             yield w + " "
 
 
+def sanitize_web_snippet(text: str) -> str:
+    """Sanitize snippet text by removing URLs, citation markers, ellipses, and unprintable chars."""
+    if not text:
+        return ""
+    # Normalize unicode quotes and dashes
+    text = text.replace("\u2026", " ").replace("...", " ").replace("\ufffd", " ")
+    text = text.replace("\u2019", "'").replace("\u2018", "'").replace("\u201c", '"').replace("\u201d", '"')
+    text = text.replace("\u2014", " - ").replace("\u2013", " - ")
+    # Remove URLs
+    text = re.sub(r'https?://\S+', '', text)
+    # Remove Wikipedia / Fandom bracket citations [1], [UPD], etc.
+    text = re.sub(r'\[.*?\]', '', text)
+    # Remove leading dates e.g. "Nov 2, 2026", "1910s - 1950s"
+    text = re.sub(r'^\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},?\s+\d{4}\s*[-–—·]?\s*', '', text)
+    text = re.sub(r'^\s*\d{4}s\s*-\s*\d{4}s[A-Za-z]*\s*', '', text)
+    # Ensure safe ascii printable representation to avoid Windows CP1252 encoding crashes
+    text = text.encode('ascii', 'ignore').decode('ascii')
+    # Remove empty or language-only parens left by non-ascii character stripping
+    text = re.sub(r'\([A-Za-z\s]*:\s*\)', '', text)
+    text = re.sub(r'\(\s*\)', '', text)
+    # Collapse multiple whitespaces
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
 def search_web_sync(query: str, max_results: int = 3) -> str:
     """Execute live internet web search to ground interruption queries."""
     if not query or not query.strip():
         return ""
+    # Normalize query typos for Cyberpunk world lore
+    search_q = query
+    query_lower = query.lower()
+    if "arakas" in query_lower:
+        search_q = query_lower.replace("arakas", "arasaka")
+    elif "sande" in query_lower and "sandevistan" not in query_lower:
+        search_q = query_lower.replace("sande", "sandevistan")
+
     try:
-        from duckduckgo_search import DDGS
-        results = list(DDGS().text(query, max_results=max_results))
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
+        results = list(DDGS().text(search_q, max_results=max_results))
         if not results:
             return ""
         lines = []
         for r in results:
-            title = r.get("title", "")
-            body = r.get("body", "")
-            lines.append(f"- {title}: {body}")
+            title = sanitize_web_snippet(r.get("title", ""))
+            body = sanitize_web_snippet(r.get("body", ""))
+            if title or body:
+                lines.append(f"- {title}: {body}")
         return "\n".join(lines)
     except Exception:
         return ""
@@ -333,14 +370,24 @@ class LLMClient:
 
         # 1. Extract query
         query = ""
-        if "User Question:" in user_msg:
-            query = user_msg.split("User Question:")[-1].strip()
+        if "interrupted your narration with this question: '" in user_msg:
+            query = user_msg.split("interrupted your narration with this question: '")[1].split("'")[0].strip()
+        elif "User Question:" in user_msg:
+            query = user_msg.split("User Question:")[-1].split("\n")[0].strip()
         elif "Query:" in user_msg:
-            query = user_msg.split("Query:")[-1].strip()
+            query = user_msg.split("Query:")[-1].split("\n")[0].strip()
         else:
-            query = user_msg.strip()
+            query = user_msg.split("\n")[0].strip()
 
-        # 2. Extract web search results if present
+        # Clean query tokens
+        query_terms = [t for t in re.findall(r'\b[a-z]{3,}\b', query.lower()) if t not in {'what', 'who', 'where', 'when', 'tell', 'about', 'this', 'that', 'from', 'with'}]
+        # Handle common Cyberpunk voice recognition typos
+        if "arakas" in query.lower() or "arakasa" in query.lower():
+            query_terms.append("arasaka")
+        if "sande" in query.lower():
+            query_terms.append("sandevistan")
+
+        # 2. Extract web search results if present; or trigger live search if enabled
         web_section = ""
         if "Live Internet Web Search Results:" in user_msg:
             after_web = user_msg.split("Live Internet Web Search Results:")[1]
@@ -348,70 +395,116 @@ class LLMClient:
                 web_section = after_web.split("User Question:")[0].strip()
             else:
                 web_section = after_web.strip()
+        elif getattr(self, "web_search_enabled", True) and query:
+            web_section = search_web_sync(query)
 
-        # 3. Extract book context if present
+        # 3. Extract document / book passages if present
         book_context = ""
-        if "Book Context:" in user_msg:
-            after_book = user_msg.split("Book Context:")[1]
-            if "Live Internet Web Search Results:" in after_book:
-                book_context = after_book.split("Live Internet Web Search Results:")[0].strip()
-            elif "User Question:" in after_book:
-                book_context = after_book.split("User Question:")[0].strip()
-            else:
-                book_context = after_book.strip()
-            book_context = book_context.strip(' "\'\n')
+        for tag in ["Relevant Passages from Loaded Document:", "Passages from Document:", "Book Context:", "Currently Spoken Line:", "Context:"]:
+            if tag in user_msg:
+                after_tag = user_msg.split(tag)[1]
+                for stop_marker in ["Live Internet Web Search Results:", "User Question:", "Provide a direct"]:
+                    if stop_marker in after_tag:
+                        after_tag = after_tag.split(stop_marker)[0]
+                book_context = after_tag.strip()
+                break
 
-        # If live web search results are available, synthesize answer from top result
-        if web_section and web_section.strip():
-            lines = [l.strip().lstrip("- ").strip() for l in web_section.split("\n") if l.strip()]
-            if lines:
-                best_line = lines[0]
-                if ":" in best_line:
-                    _, desc = best_line.split(":", 1)
-                    best_line = desc.strip()
-                # Clean URLs
-                best_line = re.sub(r'https?://\S+', '', best_line).strip()
-                sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', best_line) if len(s.strip()) > 5]
-                spoken = sentences[0] if sentences else best_line[:140]
-
-                if "johnny" in char:
-                    return f"Listen up samurai, tapped into the net: {spoken} Don't let the corpos spin it. Back to the story."
-                elif "lucy" in char:
-                    return f"Dived into the subnet. The data stream shows: {spoken} Stay quiet, let's keep reading."
-                elif "v-female" in char:
-                    return f"Intel verified: {spoken} Eyes forward, resuming the mission."
-                elif "v-male" in char or char == "v":
-                    return f"Scanned the feed, choom: {spoken} Let's get back to business."
-                else:
-                    return f"Yo choomba, pulled this off the net: {spoken} Preem stuff. Let's roll."
-
-        # If book context is available, find most relevant sentence
-        if book_context and book_context.strip():
-            query_words = set(re.findall(r'\b[A-Za-z0-9]{3,}\b', query.lower()))
-            context_sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', book_context) if len(s.strip()) > 5]
-
-            best_sentence = ""
+        # 4. Find most relevant sentence from the book / uploaded document
+        best_book_sent = ""
+        if book_context:
+            candidate_sents = [s.strip().lstrip("- ").strip() for s in re.split(r'(?<=[.!?])\s+|\n+', book_context) if len(s.strip()) > 10]
             best_score = -1
-            for s in context_sentences:
-                s_words = set(re.findall(r'\b[A-Za-z0-9]{3,}\b', s.lower()))
-                score = len(query_words.intersection(s_words))
-                if score > best_score:
+            for s in candidate_sents:
+                s_lower = s.lower()
+                score = 0
+                for qt in query_terms:
+                    if qt in s_lower:
+                        score += 3
+                    elif len(qt) >= 4 and qt[:4] in s_lower:
+                        score += 1
+                if score > best_score and score > 0:
                     best_score = score
-                    best_sentence = s
+                    best_book_sent = s
 
-            if best_sentence and best_score > 0:
-                if "johnny" in char:
-                    return f"Straight from the scene, samurai: {best_sentence} Keep your wits sharp."
-                elif "lucy" in char:
-                    return f"In this passage: {best_sentence} Don't lose focus, David."
-                elif "v-female" in char:
-                    return f"Target intel from the scene: {best_sentence} Let's move."
-                elif "v-male" in char or char == "v":
-                    return f"Right here in the op, choom: {best_sentence} Back to it."
-                else:
-                    return f"Check it out, choom: {best_sentence} Sandevistan primed, let's roll."
-            elif context_sentences:
-                return f"In the current scene: {context_sentences[0]} Let's continue."
+        # 5. Extract substantive, non-truncated fact from Web Search
+        best_web_fact = ""
+        if web_section and web_section.strip():
+            candidate_web = []
+            for line in web_section.split("\n"):
+                line = line.strip().lstrip("- ").strip()
+                if not line:
+                    continue
+                if ":" in line:
+                    title, body = line.split(":", 1)
+                    line = f"{title}. {body}"
+                clean = sanitize_web_snippet(line)
+                for sent in re.split(r'(?<=[.!?])\s+', clean):
+                    sent = sent.strip()
+                    # Filter junk
+                    if len(sent) > 15 and not any(skip in sent.lower() for skip in ['login', 'sign up', 'all rights reserved', 'cookie', 'wikipedia is']):
+                        candidate_web.append(sent)
+
+            scored_web = []
+            for sent in candidate_web:
+                s_lower = sent.lower()
+                score = 0
+                for qt in query_terms:
+                    if qt in s_lower:
+                        score += 4
+                if any(kw in s_lower for kw in ['is a', 'is an', 'is the', 'megacorporation', 'specializing in', 'security division', 'developed by']):
+                    score += 6
+                elif any(kw in s_lower for kw in ['corporation', 'founded', 'weapons', 'cyberware', 'character', 'known for']):
+                    score += 2
+                if score > 0:
+                    scored_web.append((score, sent))
+
+            scored_web.sort(key=lambda x: x[0], reverse=True)
+            if scored_web:
+                # Select top 1-2 sentences ensuring no trailing '...' and full thought
+                top_sent = scored_web[0][1].strip()
+                if not top_sent.endswith(('.', '!', '?')):
+                    top_sent += '.'
+                best_web_fact = top_sent
+
+                # If short, add second relevant sentence if available
+                if len(top_sent) < 90 and len(scored_web) > 1:
+                    second_sent = scored_web[1][1].strip()
+                    if second_sent and second_sent != top_sent:
+                        if not second_sent.endswith(('.', '!', '?')):
+                            second_sent += '.'
+                        best_web_fact = f"{top_sent} {second_sent}"
+
+        # 6. Synthesize the integrated response
+        if best_web_fact:
+            if best_book_sent and any(qt in best_book_sent.lower() for qt in query_terms):
+                clean_book = best_book_sent.lstrip("\"'")
+                full_body = f"{best_web_fact} In our narrative, {clean_book}"
+            else:
+                full_body = best_web_fact
+
+            if "johnny" in char:
+                return f"Listen up samurai, tapped into the net: {full_body} Don't let the corpos spin it. Back to the story."
+            elif "lucy" in char:
+                return f"Dived into the subnet. {full_body} Stay quiet, let's keep reading."
+            elif "v-female" in char:
+                return f"Intel verified: {full_body} Eyes forward, resuming the mission."
+            elif "v-male" in char or char == "v":
+                return f"Scanned the feed, choom: {full_body} Let's get back to business."
+            else:
+                return f"Yo choomba, pulled this off the net: {full_body} Preem stuff. Let's roll."
+
+        # If only document / notes context is available
+        if best_book_sent:
+            if "johnny" in char:
+                return f"Straight from the scene, samurai: {best_book_sent} Keep your wits sharp."
+            elif "lucy" in char:
+                return f"In this passage: {best_book_sent} Don't lose focus, David."
+            elif "v-female" in char:
+                return f"Target intel from the scene: {best_book_sent} Let's move."
+            elif "v-male" in char or char == "v":
+                return f"Right here in the op, choom: {best_book_sent} Back to it."
+            else:
+                return f"Check it out, choom: {best_book_sent} Sandevistan primed, let's roll."
 
         clean = query.lower()
         if "who" in clean or "what" in clean or "where" in clean:

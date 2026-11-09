@@ -277,3 +277,15 @@ In regex-based sentence boundary tokenizers, periods inside abbreviations (`Dr.`
    - Pitch formatted strictly adhering to Edge-TTS regex `^[+-]\d+Hz$`.
    - Character system prompts and conversational response templates inject authentic slang, world-building lore, and distinct emotional attitudes into every spoken reply.
 
+### 5.6. Web Snippet Sanity, Typo Tolerance & Resumption Continuity (Sprint 4.1)
+1. **Web Search Sanity & Truncation Elimination (ADR-11)**:
+   - `sanitize_web_snippet()` sanitizes DuckDuckGo text snippets by stripping URLs, bracket citations (`[1]`, `[UPD]`), leading dates (`Nov 2, 2026`), empty language tags `(Japanese: )`, and multi-byte unicode characters that trigger Windows `cp1252` encoding crashes.
+   - Ellipses (`...`, `…`) are normalized to whitespace before sentence segmentation, completely preventing sentence cutoffs mid-thought.
+2. **Lore Typo Tolerance & Cross-Document Passage Grounding**:
+   - Web search queries and document passage scans dynamically map phonetic speech-to-text typos (e.g. `arakasa` / `arakas` -> `arasaka`, `sande` -> `sandevistan`).
+   - `search_document_passages()` queries the entire loaded prose (`self.sentences`) and combines local narrative citations with external search facts for rich, accurate answers.
+3. **Deterministic Post-Barge-In Resumption Pipeline**:
+   - Fixed rogue simulation timers in `triggerBargeIn()` that collided with live WebSocket state.
+   - Server-driven resumption: `handle_user_interruption` awaits question audio playback, broadcasts pre-roll resumption cues (`PromptEnvelopeMessage(state="NARRATING", pre_roll_words=4)`), transitions `manager.state = "NARRATING"`, and restarts `start_narration()` cleanly.
+   - Client teleprompter resumes word highlighting and scrolls to the active sentence without drift.
+

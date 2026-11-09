@@ -164,10 +164,55 @@ class NarrationEngine:
         except Exception as exc:
             logger.error(f"Error in narration loop: {exc}")
 
+    def search_document_passages(self, query: str, max_passages: int = 3) -> List[str]:
+        """Search all sentences in the loaded document/prose for relevant passages matching the query."""
+        if not self.sentences or not query.strip():
+            return []
+
+        query_clean = query.lower()
+        if "arakas" in query_clean:
+            query_clean += " arasaka"
+        if "sande" in query_clean and "sandevistan" not in query_clean:
+            query_clean += " sandevistan"
+
+        import re
+        stopwords = {
+            "what", "where", "when", "which", "whose", "who", "whom", "tell",
+            "about", "this", "that", "from", "with", "have", "been", "there",
+            "their", "they", "does", "could", "would", "should", "the", "and"
+        }
+        tokens = [w for w in re.findall(r'\b[a-z]{3,}\b', query_clean) if w not in stopwords]
+        if not tokens:
+            return []
+
+        scored = []
+        for s in self.sentences:
+            s_low = s.lower()
+            score = 0
+            for t in tokens:
+                if t in s_low:
+                    score += 2
+                elif len(t) >= 4 and t[:4] in s_low:
+                    score += 1
+            if score > 0:
+                scored.append((score, s))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [item[1] for item in scored[:max_passages]]
+
     async def handle_user_interruption(self, query: str) -> None:
-        """Handle real-time barge-in question: grounds query with web search, queries LLM, speaks answer."""
+        """Handle real-time barge-in question: grounds query with web search & book passages, queries LLM, speaks answer."""
         async with self._lock:
-            # 1. Instantaneous barge-in drain (< 50ms)
+            # 1. Instantly terminate any background narration loop to avoid race conditions
+            if self._narration_task and not self._narration_task.done():
+                self._narration_task.cancel()
+                try:
+                    await self._narration_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                self._narration_task = None
+
+            # 2. Instantaneous barge-in drain (< 50ms)
             barge_in_event = self.manager.trigger_barge_in()
             await self.manager.broadcast_json(barge_in_event)
 
@@ -179,21 +224,29 @@ class NarrationEngine:
             voice_id = self.manager.active_voice or "david-martinez"
             cadence = self.manager.cadence or 1.0
 
-            # 2. Live Internet Web Search Grounding
+            # 3. Retrieve relevant passages from document / uploaded notes
+            doc_passages = self.search_document_passages(query, max_passages=3)
+
+            # 4. Live Internet Web Search Grounding
             web_grounding = ""
             if self.llm.web_search_enabled:
                 await self.manager.broadcast_json(PromptEnvelopeMessage(
                     state="LISTENING",
-                    context=f"Searching web for: {query[:50]}...",
+                    context=f"Searching web and document for: {query[:50]}...",
                     query=query,
                     reply="",
                 ))
                 web_grounding = await search_web(query, max_results=3)
 
-            # 3. Assemble in-character LLM prompt
-            context_block = f"Book Context: \"{current_context}\""
+            # 5. Assemble in-character prompt with full context
+            context_parts = []
+            if doc_passages:
+                context_parts.append("Passages from Document:\n" + "\n".join(f"- {p}" for p in doc_passages))
+            if current_context:
+                context_parts.append(f"Currently Reading Sentence: \"{current_context}\"")
             if web_grounding:
-                context_block += f"\n\nLive Internet Web Search Results:\n{web_grounding}"
+                context_parts.append(f"Live Internet Web Search Results:\n{web_grounding}")
+            context_block = "\n\n".join(context_parts)
 
             character_prompt = CHARACTER_PERSONA_PROMPTS.get(
                 voice_id,
@@ -216,7 +269,7 @@ class NarrationEngine:
                 },
             ]
 
-            # 4. Stream LLM tokens to Prompt Envelope
+            # 6. Stream LLM tokens to Prompt Envelope
             parser = PunctuationStreamParser()
             accumulated_reply = ""
 
@@ -224,7 +277,7 @@ class NarrationEngine:
                 state="REPLYING",
                 context=current_context,
                 query=query,
-                reply="...",
+                reply="Formulating answer...",
             ))
 
             async for token in self.llm.stream_generate(messages, character_id=voice_id):
@@ -239,17 +292,17 @@ class NarrationEngine:
 
             final_reply = accumulated_reply.strip() or "I have processed your question. Let us return to the narrative."
 
-            # 5. Synthesize LLM answer to speech audio and stream to client
+            # 7. Synthesize LLM answer to speech audio and stream to client
             audio_bytes, fmt = await synthesize_sentence(final_reply, voice_id=voice_id, cadence=cadence)
             if audio_bytes:
                 await self.manager.broadcast_bytes(audio_bytes)
 
             # Estimate duration to let speech finish playing in client
             reply_words = len(final_reply.split())
-            playback_delay = max(1.5, reply_words / (2.5 * cadence))
+            playback_delay = max(2.0, reply_words / (2.2 * cadence))
             await asyncio.sleep(playback_delay)
 
-            # 6. Pre-Roll Resumption Cue & return to NARRATING
+            # 8. Pre-Roll Resumption Cue & return to NARRATING
             await self.manager.broadcast_json(PromptEnvelopeMessage(
                 state="NARRATING",
                 context=current_context,
@@ -257,9 +310,9 @@ class NarrationEngine:
                 reply=final_reply,
                 pre_roll_words=4,
             ))
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(1.0)
 
-            # Resume narration
+            # 9. Cleanly resume background narration
             self.manager.set_state("NARRATING")
             await self.manager.broadcast_json(self.manager.get_state_sync_message())
             self.start_narration()
