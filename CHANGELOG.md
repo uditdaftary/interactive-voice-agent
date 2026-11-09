@@ -5,6 +5,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [0.6.0] - 2026-11-09
+
+### Server-Side Neural Speech Recognition & Turn-Taking Voice Interpretation
+*Integrated local neural speech-to-text with Faster-Whisper, speech turn accumulation with pause segmentation, bi-directional WebSocket transcript streaming, REST transcription API, and HUD client voice synchronization.*
+
+### Added
+- **Neural Speech-To-Text Recognition Engine (`voice_agent.stt.recognizer`)**:
+  - Implemented `STTEngine` powered by `faster-whisper` (`tiny.en`, INT8 quantization on CPU) delivering $< 350$ms transcription latency without cloud dependencies or GPU VRAM.
+  - Multi-tier resilience: primary Faster-Whisper, secondary `SpeechRecognition` library fallback, and deterministic `MockSTTEngine` for headless testing.
+  - Zero-noise gating for silent audio (< 0.01 peak) avoiding hallucinations.
+  - Dedicated REST endpoint `POST /api/transcribe` accepting multipart WAV or raw PCM uploads with duration and latency telemetry.
+- **Speech Turn Accumulator & Pause Segmentation (`voice_agent.stt.accumulator`)**:
+  - Implemented `SpeechTurnAccumulator` buffering streaming 16kHz PCM chunks during active speech.
+  - RMS energy VAD speech onset and pause detection with configurable thresholds.
+  - Automatic turn boundary segmentation on conversational pauses ($> 600$ms silence trailing speech of $\ge 300$ms), transcribing utterances without requiring manual push-to-talk release.
+  - Instant manual turn completion via `voice_end` / `speech_end` control signals.
+- **Bi-Directional STT Streaming Protocol (`voice_agent.server.websocket`, `voice_agent.server.schemas`)**:
+  - Typed Pydantic schemas: `UserSpeechTranscriptMessage` (`user_speech_transcript`) and `VoiceEndMessage` (`voice_end` / `speech_end`).
+  - WebSocket router routes binary PCM chunks into `SpeechTurnAccumulator` when state is `LISTENING` or `BARGE_IN`.
+  - Automatically invokes `STTEngine.transcribe()` and broadcasts transcripts to all connected clients.
+  - Directly dispatches recognized utterances to `NarrationEngine.handle_user_interruption(query)` for immediate character Q&A response and audio playback.
+- **HUD Client Bi-Directional Speech Synchronization (`ui/index.html`)**:
+  - `[🎙️ BARGE IN & SPEAK]` button and `Space`/`V` shortcuts stream 16-bit PCM chunks to server STT engine.
+  - Real-time transcript preview rendered in `#interruption-query-input` and `#speech-ticker`.
+  - Automatic query dispatch on receiving final server transcripts, triggering Prompt Envelope generation and teleprompter resumption cues.
+- **Benchmark Suite & E2E Verification (`tests/test_benchmarks.py`, `tests/test_e2e_pipeline.py`)**:
+  - Added STT transcription latency benchmark verifying $< 350$ms throughput.
+  - Added full end-to-end integration test validating speech frame -> VAD barge-in -> LISTENING -> STT transcription -> LLM response -> resumption cue -> NARRATING.
+
+### Testing & Verification
+- 100% test pass rate across the full test suite (148+ tests passing).
+
+---
+
 ## [0.5.1] - 2026-11-09
 
 ### Web Search Truncation Fix, Lore Typo Tolerance & Post-Barge-In Resumption

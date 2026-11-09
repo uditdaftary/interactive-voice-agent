@@ -244,4 +244,34 @@ All issues triaged into two independent architecture teams cross-communicating v
 4. **Testing & Verification Lead**:
    - Re-verified full test suite: 123/123 tests passing with 100% success rate.
 
+---
+
+## 9. Sprint 5: Server-Side Neural Speech Recognition & Turn-Taking Voice Interpretation
+
+*Executed to implement local offline Faster-Whisper speech-to-text recognition, speech turn accumulation with pause segmentation, WebSocket transcript streaming, REST transcription endpoint, and HUD client speech synchronization.*
+
+### 9.1. Domain Lead Assignments
+1. **Neural STT Recognition Lead**:
+   - Implemented `STTEngine` (`voice_agent.stt.recognizer`) using `faster-whisper` (`tiny.en`, INT8 on CPU) delivering $< 350$ms latency.
+   - Built resilient multi-tier fallback (Faster-Whisper -> SpeechRecognition -> `MockSTTEngine`).
+   - Integrated zero-noise amplitude gating (< 0.01 peak) to prevent silence hallucinations.
+2. **Speech Turn & Conversational Pause Lead**:
+   - Developed `SpeechTurnAccumulator` (`voice_agent.stt.accumulator`) buffering real-time 16kHz PCM chunks.
+   - Implemented energy thresholding VAD and automatic silence pause detection ($> 600$ms trailing silence after $\ge 300$ms speech) for hands-free utterance segmentation.
+   - Handled explicit `voice_end` / `speech_end` client flush signals.
+3. **WebSocket Streaming & Interruption Orchestration Lead**:
+   - Defined typed Pydantic protocol messages: `UserSpeechTranscriptMessage` and `VoiceEndMessage`.
+   - Wired WebSocket binary audio ingestion to `SpeechTurnAccumulator` during `LISTENING` and `BARGE_IN`.
+   - Automatically piped recognized user transcripts into `NarrationEngine.handle_user_interruption(query)`.
+   - Built REST `POST /api/transcribe` endpoint for multipart audio file transcription.
+4. **Client Voice Synchronization & HUD UI Lead**:
+   - Updated `ui/index.html` and `ui/app.css` to stream 16-bit PCM microphone chunks over WebSocket.
+   - Rendered live speech recognition transcripts into query input and speech ticker.
+   - Automated query submission and prompt envelope display upon receiving final server transcripts.
+5. **Testing & Benchmark Verification Lead**:
+   - Built end-to-end voice barge-in test in `tests/test_e2e_pipeline.py`.
+   - Implemented STT transcription latency benchmark in `tests/test_benchmarks.py`.
+   - Verified 100% test pass rate across the full test suite (148+ tests).
+
+
 

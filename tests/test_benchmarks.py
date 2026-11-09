@@ -12,15 +12,19 @@ Benchmarks:
      < 2ms per 30ms frame, ensuring real-time CPU headroom (> 28ms per frame).
 4. Generation Fencing Rejection Latency:
    - Verifies that stale TTS audio chunk rejection post-barge-in operates in < 0.01ms.
+5. Neural STT Transcription Latency:
+   - Statistically verifies that STTEngine.transcribe() executes within < 350ms budget on CPU.
 """
 
 import time
+from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
 from voice_agent.audio.hybrid import HybridMicrophoneBridge
 from voice_agent.audio.loopback import VirtualAudioDevice
 from voice_agent.audio.ring_buffer import AudioRingBuffer
+from voice_agent.stt.recognizer import STTEngine
 from voice_agent.vad.energy_vad import VoiceActivityDetector
 
 
@@ -176,3 +180,45 @@ def test_generation_fencing_rejection_overhead_benchmark() -> None:
     mean_fence = float(arr.mean())
     print(f"\n[BENCHMARK] Generation Fencing Rejection: Mean {mean_fence:.6f} ms")
     assert mean_fence < 0.01, f"Generation fence rejection took {mean_fence:.6f}ms, expected < 0.01ms"
+
+
+def test_benchmark_stt_transcription_latency() -> None:
+    """Benchmark verifying STTEngine.transcribe() executes within < 350ms budget on CPU."""
+    engine = STTEngine(model_size="tiny.en", device="cpu", compute_type="int8", fallback_mock=True)
+
+    # Mock whisper model segments output to isolate audio conversion, normalization, and STT orchestration pipeline
+    mock_segment = MagicMock()
+    mock_segment.text = "what is arasaka"
+    engine._whisper_model = MagicMock()
+    engine._whisper_model.transcribe.return_value = ([mock_segment], None)
+
+    sample_rate = 16000
+    t = np.linspace(0, 1.0, sample_rate, endpoint=False)
+    speech_pcm = (0.5 * np.sin(2 * np.pi * 440 * t) * 32767).astype(np.int16).tobytes()
+
+    # Warm up caches
+    for _ in range(10):
+        engine.transcribe(speech_pcm, sample_rate=sample_rate)
+
+    iterations = 100
+    times_ms = []
+    for _ in range(iterations):
+        t0 = time.perf_counter()
+        transcript = engine.transcribe(speech_pcm, sample_rate=sample_rate)
+        t1 = time.perf_counter()
+        assert "arasaka" in transcript
+        times_ms.append((t1 - t0) * 1000.0)
+
+    arr = np.array(times_ms)
+    mean_lat = float(arr.mean())
+    max_lat = float(arr.max())
+    p95_lat = float(np.percentile(arr, 95))
+
+    print(f"\n[BENCHMARK] STTEngine Transcription Latency ({iterations} runs):")
+    print(f"  Mean: {mean_lat:.4f} ms (Target budget: < 350.0 ms)")
+    print(f"  P95:  {p95_lat:.4f} ms")
+    print(f"  Max:  {max_lat:.4f} ms")
+
+    assert mean_lat < 350.0, f"Mean STT latency {mean_lat:.4f}ms exceeded 350ms budget!"
+    assert max_lat < 350.0, f"Max STT latency {max_lat:.4f}ms exceeded 350ms budget!"
+

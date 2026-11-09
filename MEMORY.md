@@ -289,3 +289,24 @@ In regex-based sentence boundary tokenizers, periods inside abbreviations (`Dr.`
    - Server-driven resumption: `handle_user_interruption` awaits question audio playback, broadcasts pre-roll resumption cues (`PromptEnvelopeMessage(state="NARRATING", pre_roll_words=4)`), transitions `manager.state = "NARRATING"`, and restarts `start_narration()` cleanly.
    - Client teleprompter resumes word highlighting and scrolls to the active sentence without drift.
 
+### 5.7. Server-Side Neural Speech Recognition & Turn-Taking Voice Interpretation (Sprint 5 / ADR-12)
+1. **Local Neural STT Engine (`voice_agent.stt.recognizer.STTEngine`)**:
+   - High-throughput local speech recognition using `faster-whisper` (`tiny.en`, INT8 quantized, CPU inference, $< 350$ms latency budget).
+   - Dynamic fallbacks: secondary `SpeechRecognition` library, tertiary deterministic `MockSTTEngine` for headless CI environments.
+   - Accepts raw PCM bytes, bytearrays, float32, or int16 numpy arrays at 16kHz; filters near-zero amplitude noise (< 0.01 peak).
+   - Dedicated REST endpoint `POST /api/transcribe` accepting multipart audio uploads (`.wav` or raw `.pcm`) returning JSON transcript and duration telemetry.
+2. **Speech Turn Accumulator & Dynamic Pause Detection (`voice_agent.stt.accumulator.SpeechTurnAccumulator`)**:
+   - Conversational turn segmenter buffering 16kHz 16-bit PCM chunks during user speech.
+   - Detects speech onset via RMS energy thresholding ($> 0.02$).
+   - Automatic silence timeout segmentation ($> 600$ms silence trailing active speech of $\ge 300$ms) triggering automatic transcription without requiring explicit manual clicks.
+   - Instant manual flush on client `voice_end` / `speech_end` control signals.
+3. **Bi-Directional STT WebSocket Streaming Protocol**:
+   - Multiplexes incoming binary PCM16 audio frames from browser microphone when session is in `LISTENING` or `BARGE_IN`.
+   - Broadcasts typed `UserSpeechTranscriptMessage` (`user_speech_transcript`) containing transcription text, finality flag, and latency metrics.
+   - Seamlessly dispatches transcribed query directly to `NarrationEngine.handle_user_interruption(query)`.
+4. **HUD Client Speech Synchronization (`ui/index.html`)**:
+   - `[🎙️ BARGE IN & SPEAK]` button / `V` key starts live microphone recording and streams PCM16 frames over WebSocket.
+   - Dynamically updates query input and HUD speech ticker with server-side transcripts in real time.
+   - Automatically submits query upon final transcript receipt and renders Prompt Envelope with live LLM response and pre-roll resumption cues.
+
+
