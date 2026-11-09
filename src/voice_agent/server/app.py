@@ -6,9 +6,12 @@ and REST endpoints for document ingestion, LLM configuration, and Q&A interrupti
 """
 
 from contextlib import asynccontextmanager
+import io
 import logging
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional, Union
+import wave
+import numpy as np
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -23,6 +26,47 @@ from voice_agent.server.websocket import router as websocket_router
 import asyncio
 
 logger = logging.getLogger(__name__)
+
+
+def extract_audio_and_duration(content: bytes) -> tuple[bytes, float]:
+    """Extract raw PCM bytes and duration in seconds from audio content.
+
+    Supports RIFF WAV containers (converting stereo to mono PCM if needed)
+    or falls back to raw 16kHz 16-bit mono PCM.
+    """
+    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WAVE":
+        try:
+            with wave.open(io.BytesIO(content), "rb") as wf:
+                framerate = wf.getframerate()
+                n_frames = wf.getnframes()
+                channels = wf.getnchannels()
+                duration = round(n_frames / float(framerate), 3) if framerate > 0 else 0.0
+                raw_frames = wf.readframes(n_frames)
+                if channels > 1:
+                    pcm_np = np.frombuffer(raw_frames, dtype=np.int16)
+                    pcm_np = pcm_np.reshape(-1, channels).mean(axis=1).astype(np.int16)
+                    return pcm_np.tobytes(), duration
+                return raw_frames, duration
+        except Exception as exc:
+            logger.debug("Could not parse WAV container: %s", exc)
+
+    # Fallback: assume raw PCM 16-bit mono 16kHz (32000 bytes/sec)
+    duration = round(len(content) / 32000.0, 3)
+    return content, duration
+
+
+def get_stt_engine(app: FastAPI) -> Any:
+    """Retrieve or lazily initialize the STTEngine from app state or connection manager."""
+    engine = getattr(app.state, "stt_engine", None)
+    if engine is None:
+        manager = getattr(app.state, "connection_manager", None)
+        if manager is not None and hasattr(manager, "stt_engine") and manager.stt_engine is not None:
+            engine = manager.stt_engine
+        else:
+            from voice_agent.stt.recognizer import STTEngine
+            engine = STTEngine(fallback_mock=True)
+        app.state.stt_engine = engine
+    return engine
 
 
 @asynccontextmanager
@@ -43,6 +87,7 @@ def create_app(
     ui_dir: Optional[Union[str, Path]] = None,
     connection_manager: Optional[ConnectionManager] = None,
     narration_engine: Optional[NarrationEngine] = None,
+    stt_engine: Optional[Any] = None,
 ) -> FastAPI:
     """Create and configure the unified FastAPI application.
 
@@ -50,6 +95,7 @@ def create_app(
         ui_dir: Path to static dashboard UI directory. Defaults to project `ui/`.
         connection_manager: Custom ConnectionManager instance. Defaults to default singleton.
         narration_engine: Custom NarrationEngine instance. Defaults to new instance.
+        stt_engine: Custom STTEngine or MockSTTEngine instance. Defaults to connection manager's engine.
 
     Returns:
         Configured FastAPI application instance.
@@ -67,6 +113,14 @@ def create_app(
 
     engine = narration_engine if narration_engine is not None else NarrationEngine(connection_manager=manager)
     app.state.narration_engine = engine
+
+    # Store STT engine in app state if provided
+    if stt_engine is not None:
+        app.state.stt_engine = stt_engine
+    elif hasattr(manager, "stt_engine"):
+        app.state.stt_engine = manager.stt_engine
+    else:
+        app.state.stt_engine = None
 
     # Include WebSocket streaming router at /ws
     app.include_router(websocket_router)
@@ -213,6 +267,31 @@ def create_app(
 
         await mgr.broadcast_json(mgr.get_state_sync_message())
         return {"status": "ok", "state": mgr.state, "current_sentence_idx": eng.current_sentence_idx}
+
+    @app.post("/api/transcribe")
+    async def transcribe_audio(
+        file: UploadFile = File(...),
+    ):
+        """Transcribe an uploaded audio file (WAV or raw PCM).
+
+        Returns:
+            JSON with transcript, duration_sec, and status "ok".
+        """
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="Uploaded audio file is empty.")
+
+        pcm_data, duration_sec = extract_audio_and_duration(content)
+        stt = get_stt_engine(app)
+        transcript = stt.transcribe(pcm_data)
+        if transcript is None:
+            transcript = ""
+
+        return {
+            "transcript": transcript,
+            "duration_sec": duration_sec,
+            "status": "ok",
+        }
 
     # =========================================================================
     # Mount Static HUD Assets
