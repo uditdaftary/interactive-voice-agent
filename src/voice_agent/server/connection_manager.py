@@ -1,0 +1,328 @@
+"""Connection and Session State Manager for Interactive Voice Agent WebSocket Server.
+
+Manages active client connections, session state synchronization,
+thread-safe broadcasting, and clean disconnection cleanup without memory leaks.
+"""
+
+from typing import Any, Callable, Dict, List, Optional, Set, Union
+import asyncio
+import json
+import logging
+import threading
+from fastapi import WebSocket
+from pydantic import BaseModel
+
+from voice_agent.server.schemas import (
+    BargeInEventMessage,
+    CursorUpdateMessage,
+    StateSyncMessage,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class ConnectionManager:
+    """Thread-safe WebSocket connection and session state manager."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self.active_connections: List[WebSocket] = []
+
+        # Session state defaults
+        self._state: str = "NARRATING"
+        self._active_voice: str = "david-martinez"
+        self._mic_source: str = "browser"
+        self._cadence: float = 1.0
+        self._sentence_idx: int = 0
+        self._word_offset: int = 0
+        self._latency_ms: float = 0.0
+        self._generation: int = 0
+
+        # Optional callbacks for DSP / Orchestrator integration
+        self._audio_sink: Optional[Callable[[bytes], Any]] = None
+        self._barge_in_callback: Optional[Callable[[int, float], Any]] = None
+        self._voice_change_callback: Optional[Callable[[str], Any]] = None
+        self._mic_source_change_callback: Optional[Callable[[str], Any]] = None
+
+    # ========================================================================
+    # Connection Lifecycle
+    # ========================================================================
+
+    async def connect(self, websocket: WebSocket) -> None:
+        """Accept a WebSocket connection and register it in active connections."""
+        await websocket.accept()
+        with self._lock:
+            if websocket not in self.active_connections:
+                self.active_connections.append(websocket)
+        logger.info(f"WebSocket client connected. Active connections: {len(self.active_connections)}")
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        """Deregister a WebSocket client cleanly without memory leaks."""
+        with self._lock:
+            if websocket in self.active_connections:
+                self.active_connections.remove(websocket)
+        logger.info(f"WebSocket client disconnected. Active connections: {len(self.active_connections)}")
+
+    async def disconnect_all(self) -> None:
+        """Close and disconnect all active connections during shutdown."""
+        with self._lock:
+            sockets = list(self.active_connections)
+            self.active_connections.clear()
+
+        for ws in sockets:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+    @property
+    def connection_count(self) -> int:
+        """Current number of active WebSocket connections."""
+        with self._lock:
+            return len(self.active_connections)
+
+    # ========================================================================
+    # Session State Accessors & Mutators
+    # ========================================================================
+
+    @property
+    def state(self) -> str:
+        with self._lock:
+            return self._state
+
+    def set_state(self, state: str) -> None:
+        with self._lock:
+            self._state = state
+
+    @property
+    def active_voice(self) -> str:
+        with self._lock:
+            return self._active_voice
+
+    def set_voice(self, voice_id: str) -> None:
+        cb = None
+        with self._lock:
+            self._active_voice = voice_id
+            cb = self._voice_change_callback
+        if cb is not None:
+            try:
+                cb(voice_id)
+            except Exception as e:
+                logger.error(f"Error executing voice_change_callback: {e}")
+
+    @property
+    def mic_source(self) -> str:
+        with self._lock:
+            return self._mic_source
+
+    def set_mic_source(self, source: str) -> None:
+        cb = None
+        with self._lock:
+            self._mic_source = source
+            cb = self._mic_source_change_callback
+        if cb is not None:
+            try:
+                cb(source)
+            except Exception as e:
+                logger.error(f"Error executing mic_source_change_callback: {e}")
+
+    @property
+    def cadence(self) -> float:
+        with self._lock:
+            return self._cadence
+
+    def set_cadence(self, cadence: float) -> None:
+        with self._lock:
+            self._cadence = cadence
+
+    @property
+    def generation(self) -> int:
+        with self._lock:
+            return self._generation
+
+    def update_cursor(
+        self,
+        sentence_idx: int,
+        word_offset: int,
+        latency_ms: float = 0.0,
+    ) -> None:
+        with self._lock:
+            self._sentence_idx = sentence_idx
+            self._word_offset = word_offset
+            if latency_ms > 0:
+                self._latency_ms = latency_ms
+
+    def trigger_barge_in(
+        self,
+        flushed_samples: int = 0,
+        latency_ms: float = 0.04,
+    ) -> BargeInEventMessage:
+        """Trigger an instantaneous barge-in interruption.
+
+        Increments generation counter, switches state to LISTENING,
+        and invokes registered pipeline callback.
+        """
+        cb = None
+        with self._lock:
+            self._generation += 1
+            self._state = "LISTENING"
+            self._latency_ms = latency_ms
+            current_gen = self._generation
+            cb = self._barge_in_callback
+
+        if cb is not None:
+            try:
+                cb(flushed_samples, latency_ms)
+            except Exception as e:
+                logger.error(f"Error executing barge_in_callback: {e}")
+
+        return BargeInEventMessage(
+            latency_ms=latency_ms,
+            generation=current_gen,
+            flushed_samples=flushed_samples,
+        )
+
+    def get_state_sync_message(self) -> StateSyncMessage:
+        """Generate a StateSyncMessage snapshot from current session state."""
+        with self._lock:
+            return StateSyncMessage(
+                state=self._state,
+                active_voice=self._active_voice,
+                mic_source=self._mic_source,
+                cadence=self._cadence,
+                sentence_idx=self._sentence_idx,
+                word_offset=self._word_offset,
+                latency_ms=self._latency_ms,
+            )
+
+    # ========================================================================
+    # Audio Ingestion & Callback Hooks
+    # ========================================================================
+
+    def register_audio_sink(self, callback: Callable[[bytes], Any]) -> None:
+        """Register a callback sink to receive client Web Audio PCM frames."""
+        with self._lock:
+            self._audio_sink = callback
+
+    def register_barge_in_callback(self, callback: Callable[[int, float], Any]) -> None:
+        """Register a callback invoked when barge-in is triggered."""
+        with self._lock:
+            self._barge_in_callback = callback
+
+    def register_voice_change_callback(self, callback: Callable[[str], Any]) -> None:
+        """Register a callback invoked when character voice is changed."""
+        with self._lock:
+            self._voice_change_callback = callback
+
+    def register_mic_source_change_callback(self, callback: Callable[[str], Any]) -> None:
+        """Register a callback invoked when mic ingestion source changes."""
+        with self._lock:
+            self._mic_source_change_callback = callback
+
+    def on_audio_frame(self, frame_bytes: bytes) -> None:
+        """Route incoming raw client PCM audio frame to the registered audio sink."""
+        sink = None
+        with self._lock:
+            sink = self._audio_sink
+        if sink is not None:
+            try:
+                sink(frame_bytes)
+            except Exception as e:
+                logger.error(f"Error in audio sink callback: {e}")
+
+    # ========================================================================
+    # Messaging & Broadcasting
+    # ========================================================================
+
+    async def send_state_sync(self, websocket: WebSocket) -> None:
+        """Send current state sync snapshot to a specific client connection."""
+        msg = self.get_state_sync_message()
+        await websocket.send_text(msg.model_dump_json())
+
+    async def broadcast_text(self, text: str) -> None:
+        """Broadcast a text payload to all active connections.
+
+        Safely cleans up any disconnected clients encountered during transmission.
+        """
+        with self._lock:
+            sockets = list(self.active_connections)
+
+        dead_sockets: List[WebSocket] = []
+        for ws in sockets:
+            try:
+                await ws.send_text(text)
+            except Exception:
+                dead_sockets.append(ws)
+
+        if dead_sockets:
+            with self._lock:
+                for ws in dead_sockets:
+                    if ws in self.active_connections:
+                        self.active_connections.remove(ws)
+
+    async def broadcast_json(self, message: Union[BaseModel, Dict[str, Any], str]) -> None:
+        """Serialize and broadcast a JSON message to all active clients."""
+        if isinstance(message, BaseModel):
+            payload_text = message.model_dump_json()
+        elif isinstance(message, dict):
+            payload_text = json.dumps(message)
+        elif isinstance(message, str):
+            payload_text = message
+        else:
+            payload_text = json.dumps(str(message))
+
+        await self.broadcast_text(payload_text)
+
+    async def broadcast_bytes(self, data: bytes) -> None:
+        """Broadcast raw binary PCM audio frame to all active clients."""
+        with self._lock:
+            sockets = list(self.active_connections)
+
+        dead_sockets: List[WebSocket] = []
+        for ws in sockets:
+            try:
+                await ws.send_bytes(data)
+            except Exception:
+                dead_sockets.append(ws)
+
+        if dead_sockets:
+            with self._lock:
+                for ws in dead_sockets:
+                    if ws in self.active_connections:
+                        self.active_connections.remove(ws)
+
+    def broadcast_json_sync(
+        self,
+        message: Union[BaseModel, Dict[str, Any], str],
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+    ) -> None:
+        """Thread-safe synchronous broadcast helper for background audio threads."""
+        target_loop = loop
+        if target_loop is None:
+            try:
+                target_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                target_loop = None
+
+        if target_loop is not None and target_loop.is_running():
+            asyncio.run_coroutine_threadsafe(self.broadcast_json(message), target_loop)
+
+    def broadcast_bytes_sync(
+        self,
+        data: bytes,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+    ) -> None:
+        """Thread-safe synchronous binary broadcast helper for background audio threads."""
+        target_loop = loop
+        if target_loop is None:
+            try:
+                target_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                target_loop = None
+
+        if target_loop is not None and target_loop.is_running():
+            asyncio.run_coroutine_threadsafe(self.broadcast_bytes(data), target_loop)
+
+
+# Module-level default singleton instance
+default_connection_manager = ConnectionManager()
