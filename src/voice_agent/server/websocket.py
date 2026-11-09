@@ -5,6 +5,7 @@ and raw binary audio frames.
 """
 
 import asyncio
+import time
 from typing import Optional, Any
 import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -22,6 +23,8 @@ from voice_agent.server.schemas import (
     SetCadenceMessage,
     SetMicSourceMessage,
     UpdateLLMConfigMessage,
+    UserSpeechTranscriptMessage,
+    VoiceEndMessage,
     parse_client_message,
 )
 
@@ -30,11 +33,43 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["WebSocket"])
 
 
+async def process_stt_utterance(
+    utterance: bytes,
+    manager: ConnectionManager,
+    stt_engine: Any,
+    engine: Optional[Any] = None,
+) -> Optional[str]:
+    """Transcribe accumulated utterance audio, broadcast transcript, and trigger interruption."""
+    if not utterance:
+        return None
+    start_t = time.perf_counter()
+    try:
+        transcript = stt_engine.transcribe(utterance)
+    except Exception as exc:
+        logger.warning(f"STT transcription failed: {exc}")
+        return None
+
+    latency_ms = round((time.perf_counter() - start_t) * 1000.0, 2)
+    if transcript and transcript.strip():
+        clean_text = transcript.strip()
+        msg = UserSpeechTranscriptMessage(
+            transcript=clean_text,
+            is_final=True,
+            latency_ms=latency_ms,
+        )
+        await manager.broadcast_json(msg)
+        if engine is not None and hasattr(engine, "handle_user_interruption"):
+            asyncio.create_task(engine.handle_user_interruption(clean_text))
+        return clean_text
+    return None
+
+
 async def handle_client_text_message(
     text: str,
     websocket: WebSocket,
     manager: ConnectionManager,
     engine: Optional[Any] = None,
+    stt_engine: Optional[Any] = None,
 ) -> None:
     """Parse and dispatch an incoming client JSON action message."""
     msg = parse_client_message(text)
@@ -110,6 +145,16 @@ async def handle_client_text_message(
         sync_msg = manager.get_state_sync_message()
         await manager.broadcast_json(sync_msg)
 
+    elif isinstance(msg, VoiceEndMessage):
+        if manager.state in ("LISTENING", "BARGE_IN"):
+            acc = getattr(manager, "accumulator", None)
+            if acc is not None:
+                utterance = acc.flush()
+                if utterance:
+                    active_stt = stt_engine or getattr(manager, "stt_engine", None)
+                    if active_stt is not None:
+                        await process_stt_utterance(utterance, manager, active_stt, engine)
+
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
@@ -131,6 +176,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         websocket.app.state, "connection_manager", default_connection_manager
     )
     engine = getattr(websocket.app.state, "narration_engine", None)
+    stt_engine = getattr(websocket.app.state, "stt_engine", None)
 
     await manager.connect(websocket)
 
@@ -148,11 +194,20 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             # Handle text frame (JSON protocol actions)
             if "text" in raw_msg and raw_msg["text"] is not None:
-                await handle_client_text_message(raw_msg["text"], websocket, manager, engine)
+                await handle_client_text_message(raw_msg["text"], websocket, manager, engine, stt_engine)
 
-            # Handle binary frame (24kHz 16-bit PCM from browser mic)
+            # Handle binary frame (24kHz / 16kHz 16-bit PCM from browser mic)
             elif "bytes" in raw_msg and raw_msg["bytes"] is not None:
-                manager.on_audio_frame(raw_msg["bytes"])
+                pcm_data = raw_msg["bytes"]
+                manager.on_audio_frame(pcm_data)
+                if manager.state in ("LISTENING", "BARGE_IN"):
+                    acc = getattr(manager, "accumulator", None)
+                    if acc is not None:
+                        utterance = acc.feed(pcm_data)
+                        if utterance:
+                            active_stt = stt_engine or getattr(manager, "stt_engine", None)
+                            if active_stt is not None:
+                                await process_stt_utterance(utterance, manager, active_stt, engine)
 
     except WebSocketDisconnect:
         logger.info("Client disconnected via WebSocketDisconnect.")

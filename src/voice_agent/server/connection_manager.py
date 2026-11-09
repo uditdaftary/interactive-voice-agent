@@ -24,7 +24,11 @@ logger = logging.getLogger(__name__)
 class ConnectionManager:
     """Thread-safe WebSocket connection and session state manager."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        stt_engine: Optional[Any] = None,
+        accumulator: Optional[Any] = None,
+    ) -> None:
         self._lock = threading.RLock()
         self.active_connections: List[WebSocket] = []
 
@@ -37,6 +41,10 @@ class ConnectionManager:
         self._word_offset: int = 0
         self._latency_ms: float = 0.0
         self._generation: int = 0
+
+        # STT & Speech Turn-taking
+        self._stt_engine: Optional[Any] = stt_engine
+        self._accumulator: Optional[Any] = accumulator
 
         # Optional callbacks for DSP / Orchestrator integration
         self._audio_sink: Optional[Callable[[bytes], Any]] = None
@@ -140,6 +148,32 @@ class ConnectionManager:
         with self._lock:
             return self._generation
 
+    @property
+    def stt_engine(self) -> Any:
+        with self._lock:
+            if self._stt_engine is None:
+                from voice_agent.stt.recognizer import STTEngine
+                self._stt_engine = STTEngine(fallback_mock=True)
+            return self._stt_engine
+
+    @stt_engine.setter
+    def stt_engine(self, engine: Any) -> None:
+        with self._lock:
+            self._stt_engine = engine
+
+    @property
+    def accumulator(self) -> Any:
+        with self._lock:
+            if self._accumulator is None:
+                from voice_agent.stt.accumulator import SpeechTurnAccumulator
+                self._accumulator = SpeechTurnAccumulator()
+            return self._accumulator
+
+    @accumulator.setter
+    def accumulator(self, acc: Any) -> None:
+        with self._lock:
+            self._accumulator = acc
+
     def update_cursor(
         self,
         sentence_idx: int,
@@ -169,6 +203,8 @@ class ConnectionManager:
             self._latency_ms = latency_ms
             current_gen = self._generation
             cb = self._barge_in_callback
+            if self._accumulator is not None:
+                self._accumulator.reset()
 
         if cb is not None:
             try:

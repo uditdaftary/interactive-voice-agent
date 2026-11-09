@@ -97,6 +97,12 @@ class UpdateLLMConfigMessage(BaseProtocolMessage):
     web_search_enabled: Optional[bool] = Field(default=None, description="Enable live internet web search grounding")
 
 
+class VoiceEndMessage(BaseProtocolMessage):
+    """Client notification that user voice utterance has concluded."""
+
+    type: Literal["voice_end"] = "voice_end"
+
+
 ClientMessage = Union[
     SelectVoiceMessage,
     SetMicSourceMessage,
@@ -105,6 +111,7 @@ ClientMessage = Union[
     PlaybackControlMessage,
     QueryInterruptionMessage,
     UpdateLLMConfigMessage,
+    VoiceEndMessage,
 ]
 
 
@@ -265,6 +272,24 @@ class TelemetryMessage(BaseProtocolMessage):
     )
 
 
+class UserSpeechTranscriptMessage(BaseProtocolMessage):
+    """Real-time user speech transcript event broadcast to HUD."""
+
+    type: Literal["user_speech_transcript"] = "user_speech_transcript"
+    transcript: str = Field(
+        ...,
+        description="Transcribed user speech query or command",
+    )
+    is_final: bool = Field(
+        default=True,
+        description="True if utterance transcription is finalized",
+    )
+    latency_ms: Optional[float] = Field(
+        default=None,
+        description="Transcription execution latency in milliseconds",
+    )
+
+
 ServerMessage = Union[
     StateSyncMessage,
     VADEventMessage,
@@ -272,6 +297,7 @@ ServerMessage = Union[
     CursorUpdateMessage,
     PromptEnvelopeMessage,
     TelemetryMessage,
+    UserSpeechTranscriptMessage,
 ]
 
 
@@ -343,6 +369,9 @@ def parse_client_message(raw: Union[str, bytes, Dict[str, Any]]) -> Optional[Cli
             if query:
                 return QueryInterruptionMessage(query=query)
             return None
+
+        if msg_type in ("voice_end", "voiceend", "speech_end", "speechend", "voice_stop"):
+            return VoiceEndMessage()
 
         if msg_type in ("update_config", "set_config", "configure_llm"):
             return UpdateLLMConfigMessage(
