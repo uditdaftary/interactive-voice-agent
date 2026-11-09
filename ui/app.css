@@ -602,6 +602,14 @@ code, .mono { font-family: var(--mono); font-stretch: 90%; font-variation-settin
   border-color: var(--critical);
   animation: pulseMic 1.2s infinite alternate ease-in-out;
 }
+.mic-bargein-btn.listening span {
+  color: var(--ground);
+  font-weight: 700;
+}
+.mic-bargein-btn.listening .tab {
+  background: rgba(0, 0, 0, 0.25);
+  border-left-color: rgba(0, 0, 0, 0.2);
+}
 .mic-bargein-btn.listening svg {
   stroke: var(--ground);
 }

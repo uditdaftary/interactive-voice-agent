@@ -868,17 +868,13 @@
 
     recognizer.onerror = (event) => {
       console.warn("Speech recognition notice:", event.error);
-      isVoiceListening = false;
-      updateBargeInButtonUI(false);
+      // Non-fatal preview notice; server-side STT continues recording via WebSocket PCM stream
     };
 
     recognizer.onend = () => {
-      isVoiceListening = false;
-      updateBargeInButtonUI(false);
-      const input = document.getElementById('interruption-query-input');
-      const val = input ? input.value.trim() : '';
-      if (val.length > 0) {
-        submitInterruptionQuery(val);
+      // Silence detected by browser speech recognition
+      if (isVoiceListening) {
+        stopDirectVoiceBargeIn();
       }
     };
 
@@ -892,19 +888,28 @@
       if (listening) {
         btn.classList.add('listening');
         const span = btn.querySelector('span');
-        if (span) span.innerText = '🔴 LISTENING... SPEAK NOW';
+        if (span) span.innerText = '🛑 STOP & TRANSCRIBE';
       } else {
         btn.classList.remove('listening');
         const span = btn.querySelector('span');
         if (span) span.innerText = '🎙️ BARGE IN & SPEAK';
       }
     }
-    if (!listening && ticker && (!document.getElementById('interruption-query-input').value)) {
+    if (!listening && ticker && (!document.getElementById('interruption-query-input') || !document.getElementById('interruption-query-input').value)) {
       ticker.style.display = 'none';
     }
   }
 
   function startDirectVoiceBargeIn() {
+    // If currently listening, toggle off: stop and send voice_end to server
+    if (isVoiceListening) {
+      stopDirectVoiceBargeIn();
+      return;
+    }
+
+    isVoiceListening = true;
+    updateBargeInButtonUI(true);
+
     unlockAudioPlayback();
     // 1. Drain / halt narration in < 0.05ms
     if (wsClient) {
@@ -912,7 +917,21 @@
     }
     triggerBargeIn();
 
-    // 2. Initialize and trigger Speech Recognition
+    // 2. Ensure WebSocket client starts streaming 16kHz PCM mic frames
+    if (wsClient) {
+      wsClient.micSource = 'browser';
+      wsClient.startBrowserMicCapture();
+    }
+
+    // 3. Update speech recognition ticker
+    const ticker = document.getElementById('speech-ticker');
+    if (ticker) {
+      ticker.style.display = 'flex';
+      const textEl = document.getElementById('speech-ticker-text');
+      if (textEl) textEl.innerText = 'Listening to your voice... Speak your question';
+    }
+
+    // 4. Initialize and trigger Speech Recognition (optional browser preview)
     if (!speechRecognizer) {
       speechRecognizer = initSpeechRecognition();
     }
@@ -931,6 +950,27 @@
       if (input) {
         input.focus();
         input.placeholder = "Speak aloud or type your question here...";
+      }
+    }
+  }
+
+  function stopDirectVoiceBargeIn() {
+    if (!isVoiceListening) return;
+    isVoiceListening = false;
+    updateBargeInButtonUI(false);
+
+    if (speechRecognizer) {
+      try { speechRecognizer.stop(); } catch(e) {}
+    }
+
+    // Send voice_end over WebSocket to flush server accumulator and transcribe immediately
+    if (wsClient && wsClient.isConnected) {
+      wsClient.send({ type: 'voice_end' });
+    } else {
+      const input = document.getElementById('interruption-query-input');
+      const val = input ? input.value.trim() : '';
+      if (val.length > 0) {
+        submitInterruptionQuery(val);
       }
     }
   }
@@ -1546,6 +1586,9 @@
         case 'telemetry':
           this.handleTelemetry(msg);
           break;
+        case 'user_speech_transcript':
+          this.handleUserSpeechTranscript(msg);
+          break;
       }
     }
 
@@ -1679,6 +1722,50 @@
       }
     }
 
+    handleUserSpeechTranscript(msg) {
+      if (!msg) return;
+      const transcript = (msg.transcript !== undefined && msg.transcript !== null) ? String(msg.transcript) : '';
+
+      // 1. Update query input field
+      const input = document.getElementById('interruption-query-input');
+      if (input && transcript) {
+        input.value = transcript;
+      }
+
+      // 2. Update speech recognition ticker
+      const ticker = document.getElementById('speech-ticker');
+      if (ticker) {
+        ticker.style.display = 'flex';
+        const textEl = document.getElementById('speech-ticker-text');
+        if (textEl) {
+          textEl.innerText = transcript || 'Listening to your voice...';
+        }
+      }
+
+      // 3. If final transcript and non-empty, transition to LISTENING with Prompt Envelope
+      if (msg.is_final && transcript && transcript.trim().length > 0) {
+        const cleanQuery = transcript.trim();
+        isVoiceListening = false;
+        updateBargeInButtonUI(false);
+
+        currentState = 'LISTENING';
+        updateStateUI();
+
+        const envelope = document.getElementById('dialogue-envelope');
+        if (envelope) {
+          envelope.style.display = 'grid';
+          const qEl = envelope.querySelector('div:nth-child(3) span:last-child');
+          if (qEl) qEl.innerText = `"${cleanQuery}"`;
+          const rEl = envelope.querySelector('div:nth-child(4) span:last-child');
+          if (rEl) rEl.innerText = `[Interpreting speech & formulating response...]`;
+          const ctxEl = document.getElementById('env-local-ctx');
+          if (ctxEl && typeof STORY_PARAGRAPHS !== 'undefined' && STORY_PARAGRAPHS[currentSentenceIdx]) {
+            ctxEl.innerText = `"${STORY_PARAGRAPHS[currentSentenceIdx]}"`;
+          }
+        }
+      }
+    }
+
     async startBrowserMicCapture() {
       if (this.micStream) return;
       try {
@@ -1709,6 +1796,31 @@
             if (rms > 0.065) {
               startDirectVoiceBargeIn();
             }
+          }
+
+          // Real-time conversational pause/silence detection during active voice listening
+          if (isVoiceListening) {
+            let sumSq = 0.0;
+            for (let i = 0; i < input.length; i++) {
+              sumSq += input[i] * input[i];
+            }
+            const rms = Math.sqrt(sumSq / input.length);
+            if (rms > 0.035) {
+              this._clientVoiceDetected = true;
+              this._clientSilenceStart = 0;
+            } else if (this._clientVoiceDetected) {
+              const now = performance.now();
+              if (!this._clientSilenceStart) {
+                this._clientSilenceStart = now;
+              } else if (now - this._clientSilenceStart > 750) {
+                this._clientVoiceDetected = false;
+                this._clientSilenceStart = 0;
+                stopDirectVoiceBargeIn();
+              }
+            }
+          } else {
+            this._clientVoiceDetected = false;
+            this._clientSilenceStart = 0;
           }
 
           const pcm16 = new Int16Array(input.length);
@@ -2078,6 +2190,7 @@
   window.togglePlayPause = togglePlayPause;
   window.triggerBargeIn = triggerBargeIn;
   window.startDirectVoiceBargeIn = startDirectVoiceBargeIn;
+  window.stopDirectVoiceBargeIn = stopDirectVoiceBargeIn;
   window.toggleHandsFree = toggleHandsFree;
   window.unlockAudioPlayback = unlockAudioPlayback;
   window.setMasterVolume = setMasterVolume;
