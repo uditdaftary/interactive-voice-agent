@@ -472,6 +472,13 @@
 <!-- JAVASCRIPT: LOGIC & WAVEFORM ENGINES       -->
 <!-- ========================================== -->
 <script>
+  function getApiBaseUrl() {
+    if (window.location.protocol.startsWith('http') && window.location.port === '8080') {
+      return 'http://localhost:8000';
+    }
+    return '';
+  }
+
   // --- STORY DATASET ---
   const STORY_PARAGRAPHS = [
     "Chapter 1: Arrival in the Megabuilding.",
@@ -1089,6 +1096,9 @@
 
     getWsUrl() {
       if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
+        if (window.location.port === '8080') {
+          return 'ws://localhost:8000/ws';
+        }
         const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         return `${proto}//${window.location.host}/ws`;
       }
@@ -1592,7 +1602,7 @@
         }
         const formData = new FormData();
         formData.append('file', selectedUploadFile);
-        resp = await fetch('/api/upload-document', {
+        resp = await fetch(`${getApiBaseUrl()}/api/upload-document`, {
           method: 'POST',
           body: formData,
         });
@@ -1603,7 +1613,7 @@
           alert("Please enter narrative text to ingest.");
           return;
         }
-        resp = await fetch('/api/upload-document', {
+        resp = await fetch(`${getApiBaseUrl()}/api/upload-document`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text, title }),
@@ -1640,7 +1650,7 @@
 
   async function syncDocumentFromServer() {
     try {
-      const resp = await fetch('/api/document');
+      const resp = await fetch(`${getApiBaseUrl()}/api/document`);
       if (resp.ok) {
         const data = await resp.json();
         if (data.sentences && data.sentences.length > 0) {
@@ -1669,7 +1679,7 @@
 
   async function fetchModelConfig() {
     try {
-      const resp = await fetch('/api/config');
+      const resp = await fetch(`${getApiBaseUrl()}/api/config`);
       if (resp.ok) {
         const data = await resp.json();
         const llm = data.llm || {};
@@ -1719,7 +1729,7 @@
     };
 
     try {
-      const resp = await fetch('/api/config', {
+      const resp = await fetch(`${getApiBaseUrl()}/api/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -1743,7 +1753,7 @@
     }
     const t0 = performance.now();
     try {
-      const resp = await fetch('/api/ask', {
+      const resp = await fetch(`${getApiBaseUrl()}/api/ask`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: 'Hello, please confirm you are online.' })
@@ -1792,7 +1802,7 @@
       wsClient.send({ type: 'query_interruption', query: query });
     } else {
       try {
-        await fetch('/api/ask', {
+        await fetch(`${getApiBaseUrl()}/api/ask`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ query: query })
