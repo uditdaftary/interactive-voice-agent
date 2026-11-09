@@ -261,3 +261,19 @@ In regex-based sentence boundary tokenizers, periods inside abbreviations (`Dr.`
    - Real-time internet web search grounding via `duckduckgo_search` (`ddgs`) triggered dynamically when the user interrupts narration with ad-hoc questions.
    - Configurable at runtime via `GET /api/config`, `POST /api/config`, or WebSocket `update_config` message.
 
+### 5.5. Production Studio, Direct Microphone Barge-In & Authentic Character Prosody (Sprint 4)
+1. **Direct Microphone Barge-In with Hybrid VAD & Web Speech Recognition (ADR-09)**:
+   - User voice interruption is supported via dual modalities:
+     - **Push-to-Talk / Click-to-Speak (`[🎙️ BARGE IN & SPEAK]` or `Space`/`V`)**: Halts ongoing narration in $< 0.05$ms and activates Web Speech API (`SpeechRecognition`) for live transcript streaming directly into the query prompt.
+     - **Hands-Free RMS VAD Detection**: Browser Web Audio monitors microphone RMS energy. If speech energy exceeds $-24\text{ dBFS}$ during active narration, it automatically interrupts playback and captures the user's spoken question.
+     - Muted monitor node (`gain = 0.0`) routing microphone processor to destination, completely preventing speaker acoustic feedback loops.
+2. **Cyberpunk Character Audio Profiles & Persona Prosody (ADR-10)**:
+   - Voice models and prosody calibrated to authentic Cyberpunk 2077 & Edgerunners performances:
+     - **Johnny Silverhand**: `en-US-RogerNeural` (pitch `-14Hz`, rate `-5%`, Keanu Reeves rockerboy baritone).
+     - **Lucy Kushinada**: `en-US-AnaNeural` (pitch `-3Hz`, rate `-4%`, intimate Netrunner whisper).
+     - **David Martinez**: `en-US-BrianNeural` (pitch `+4Hz`, rate `+6%`, energetic Santo Domingo edgerunner).
+     - **V (Male)**: `en-US-GuyNeural` (pitch `-6Hz`, rate `+3%`, gritty mercenary solo).
+     - **V (Female)**: `en-US-AriaNeural` (pitch `-3Hz`, rate `+4%`, sharp tactical solo).
+   - Pitch formatted strictly adhering to Edge-TTS regex `^[+-]\d+Hz$`.
+   - Character system prompts and conversational response templates inject authentic slang, world-building lore, and distinct emotional attitudes into every spoken reply.
+

@@ -104,6 +104,36 @@ class PunctuationStreamParser:
         return None
 
 
+# Character persona definitions for authentic game/anime voice and dialogue
+CHARACTER_PERSONA_PROMPTS = {
+    "johnny-silverhand": (
+        "You are Johnny Silverhand from Cyberpunk 2077. Cynical, charismatic rockerboy, anti-corpo rebel. "
+        "Speak with gritty swagger, call the user 'samurai' or 'choom', make caustic remarks about Night City and corpos. "
+        "Answer the question concisely in 1 to 3 spoken sentences, then tell them to get back to the narrative."
+    ),
+    "lucy-kushinada": (
+        "You are Lucy Kushinada from Cyberpunk: Edgerunners. Enigmatic, sharp-witted netrunner prodigy. "
+        "Speak softly, introspectively, with quiet confidence. Use netrunner terms like ICE, subnets, deep dive. "
+        "Answer the question concisely in 1 to 3 spoken sentences, then return to our reading."
+    ),
+    "david-martinez": (
+        "You are David Martinez from Cyberpunk: Edgerunners. Fast, gritty, determined edgerunner from Santo Domingo. "
+        "Talk with street slang like 'choom', 'preem', 'nova', 'flatline', 'Sandevistan'. Confident and loyal. "
+        "Answer concisely in 1 to 3 spoken sentences, then let's get back to the run."
+    ),
+    "v-male": (
+        "You are V, the legendary mercenary solo of Night City from Cyberpunk 2077. Pragmatic, gritty, professional survivor. "
+        "Speak directly and street-smart like a seasoned edgerunner. "
+        "Answer the question concisely in 1 to 3 spoken sentences, then let's get back to the story."
+    ),
+    "v-female": (
+        "You are V, the mercenary solo of Night City from Cyberpunk 2077. Tactical, sharp, quick-witted, decisive. "
+        "Speak with focused mercenary attitude and dry wit. "
+        "Answer the question concisely in 1 to 3 spoken sentences, then let's get back to business."
+    ),
+}
+
+
 class MockLLMClient:
     """Mock LLM streaming client for deterministic offline testing and CI."""
     def __init__(self, response_text: str = "This is a brief answer."):
@@ -195,7 +225,17 @@ class LLMClient:
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
         max_tokens: int = 150,
+        character_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
+        # Determine character context
+        chosen_char = character_id
+        if not chosen_char:
+            sys_content = " ".join([m.get("content", "") for m in messages if m.get("role") == "system"]).lower()
+            for c_id in ["johnny-silverhand", "lucy-kushinada", "david-martinez", "v-female", "v-male"]:
+                if c_id in sys_content or c_id.replace("-", " ") in sys_content:
+                    chosen_char = c_id
+                    break
+
         # Fast path: built-in native zero-setup question extraction
         if self.provider in ("builtin", "local-builtin", "native", "none"):
             user_msg = ""
@@ -203,7 +243,7 @@ class LLMClient:
                 if m.get("role") == "user":
                     user_msg = m.get("content", "")
                     break
-            fallback_text = self._synthesize_fallback_answer(user_msg)
+            fallback_text = self._synthesize_fallback_answer(user_msg, character_id=chosen_char)
             for word in fallback_text.split():
                 await asyncio.sleep(0.015)
                 yield word + " "
@@ -280,15 +320,17 @@ class LLMClient:
                     user_msg = m.get("content", "")
                     break
 
-            fallback_text = self._synthesize_fallback_answer(user_msg)
+            fallback_text = self._synthesize_fallback_answer(user_msg, character_id=chosen_char)
             for word in fallback_text.split():
                 await asyncio.sleep(0.015)
                 yield word + " "
 
-    def _synthesize_fallback_answer(self, user_msg: str) -> str:
-        """Construct a direct, context-aware spoken response from book text or web search grounding
-        without requiring Ollama or any external LLM setup.
+    def _synthesize_fallback_answer(self, user_msg: str, character_id: Optional[str] = None) -> str:
+        """Construct a direct, context-aware spoken response in authentic Cyberpunk character voice
+        from book text or web search grounding without requiring Ollama or external LLM setup.
         """
+        char = (character_id or "david-martinez").lower()
+
         # 1. Extract query
         query = ""
         if "User Question:" in user_msg:
@@ -331,7 +373,17 @@ class LLMClient:
                 best_line = re.sub(r'https?://\S+', '', best_line).strip()
                 sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', best_line) if len(s.strip()) > 5]
                 spoken = sentences[0] if sentences else best_line[:140]
-                return f"According to current web information: {spoken} Returning to our reading."
+
+                if "johnny" in char:
+                    return f"Listen up samurai, tapped into the net: {spoken} Don't let the corpos spin it. Back to the story."
+                elif "lucy" in char:
+                    return f"Dived into the subnet. The data stream shows: {spoken} Stay quiet, let's keep reading."
+                elif "v-female" in char:
+                    return f"Intel verified: {spoken} Eyes forward, resuming the mission."
+                elif "v-male" in char or char == "v":
+                    return f"Scanned the feed, choom: {spoken} Let's get back to business."
+                else:
+                    return f"Yo choomba, pulled this off the net: {spoken} Preem stuff. Let's roll."
 
         # If book context is available, find most relevant sentence
         if book_context and book_context.strip():
@@ -348,12 +400,39 @@ class LLMClient:
                     best_sentence = s
 
             if best_sentence and best_score > 0:
-                return f"In this passage: {best_sentence} Let us continue."
+                if "johnny" in char:
+                    return f"Straight from the scene, samurai: {best_sentence} Keep your wits sharp."
+                elif "lucy" in char:
+                    return f"In this passage: {best_sentence} Don't lose focus, David."
+                elif "v-female" in char:
+                    return f"Target intel from the scene: {best_sentence} Let's move."
+                elif "v-male" in char or char == "v":
+                    return f"Right here in the op, choom: {best_sentence} Back to it."
+                else:
+                    return f"Check it out, choom: {best_sentence} Sandevistan primed, let's roll."
             elif context_sentences:
                 return f"In the current scene: {context_sentences[0]} Let's continue."
 
         clean = query.lower()
         if "who" in clean or "what" in clean or "where" in clean:
-            return f"Regarding your question about {query[:40]}, the narrative develops these details as the scene unfolds. Let's continue."
-        return "Understood. Resuming narration with your question in mind."
+            if "johnny" in char:
+                return f"Night City doesn't give free handouts samurai, but that unfolds right up ahead. Back to the run."
+            elif "lucy" in char:
+                return f"That unfolds as we dive deeper. Stay with me."
+            elif "v-female" in char:
+                return f"Keep your eyes on the board, details are developing now. Moving on."
+            elif "v-male" in char or char == "v":
+                return f"Answers are coming up in the next op, choom. Let's keep moving."
+            else:
+                return f"Don't worry choomba, the story develops that right ahead. Let's keep going."
+
+        if "johnny" in char:
+            return "Got it, samurai. Resuming the run."
+        elif "lucy" in char:
+            return "Understood. Resuming our dive."
+        elif "v-female" in char:
+            return "Copy that. Resuming playback."
+        elif "v-male" in char or char == "v":
+            return "Understood choom. Back to the op."
+        return "Understood choomba. Resuming narration with your question in mind."
 

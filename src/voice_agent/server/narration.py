@@ -11,7 +11,12 @@ from typing import List, Optional
 import numpy as np
 
 from voice_agent.document.parser import DocumentContent
-from voice_agent.llm.client import LLMClient, PunctuationStreamParser, search_web
+from voice_agent.llm.client import (
+    CHARACTER_PERSONA_PROMPTS,
+    LLMClient,
+    PunctuationStreamParser,
+    search_web,
+)
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.schemas import (
     CursorUpdateMessage,
@@ -185,25 +190,30 @@ class NarrationEngine:
                 ))
                 web_grounding = await search_web(query, max_results=3)
 
-            # 3. Assemble LLM prompt
+            # 3. Assemble in-character LLM prompt
             context_block = f"Book Context: \"{current_context}\""
             if web_grounding:
                 context_block += f"\n\nLive Internet Web Search Results:\n{web_grounding}"
 
+            character_prompt = CHARACTER_PERSONA_PROMPTS.get(
+                voice_id,
+                (
+                    "You are an interactive conversational voice audiobook narrator. "
+                    "The user interrupted the book narration to ask you a question. "
+                    "Answer concisely, helpfully, and naturally in 1 to 3 spoken sentences. "
+                    "Use the provided book context and web search results when answering."
+                ),
+            )
+
             messages = [
                 {
                     "role": "system",
-                    "content": (
-                        "You are an interactive conversational voice audiobook narrator. "
-                        "The user interrupted the book narration to ask you a question. "
-                        "Answer concisely, helpfully, and naturally in 1 to 3 spoken sentences. "
-                        "Use the provided book context and web search results when answering."
-                    )
+                    "content": character_prompt,
                 },
                 {
                     "role": "user",
-                    "content": f"{context_block}\n\nUser Question: {query}"
-                }
+                    "content": f"{context_block}\n\nUser Question: {query}",
+                },
             ]
 
             # 4. Stream LLM tokens to Prompt Envelope
@@ -217,7 +227,7 @@ class NarrationEngine:
                 reply="...",
             ))
 
-            async for token in self.llm.stream_generate(messages):
+            async for token in self.llm.stream_generate(messages, character_id=voice_id):
                 accumulated_reply += token
                 # Periodic telemetry update
                 await self.manager.broadcast_json(PromptEnvelopeMessage(

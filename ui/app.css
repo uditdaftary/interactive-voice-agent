@@ -576,6 +576,124 @@ code, .mono { font-family: var(--mono); font-stretch: 90%; font-variation-settin
   border-radius: 0;
 }
 
+/* Production Studio UI Enhancements */
+.mic-bargein-btn {
+  background: var(--sleeve);
+  border: 2px solid var(--critical);
+  color: var(--ink);
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  min-height: 44px;
+  transition: all 0.2s var(--ease);
+  position: relative;
+  overflow: hidden;
+}
+.mic-bargein-btn:hover {
+  background: rgba(224, 58, 47, 0.15);
+  border-color: var(--critical-ink);
+}
+.mic-bargein-btn.listening {
+  background: var(--critical);
+  color: var(--ground);
+  border-color: var(--critical);
+  animation: pulseMic 1.2s infinite alternate ease-in-out;
+}
+.mic-bargein-btn.listening svg {
+  stroke: var(--ground);
+}
+@keyframes pulseMic {
+  from { box-shadow: 0 0 0px rgba(224, 58, 47, 0.4); transform: scale(1); }
+  to { box-shadow: 0 0 18px rgba(224, 58, 47, 0.85); transform: scale(1.02); }
+}
+
+/* Live Speech Recognition Ticker */
+.speech-ticker {
+  background: var(--sleeve);
+  border: 1px solid var(--hair);
+  border-left: 3px solid var(--high);
+  padding: 8px 14px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--high);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.speech-ticker .pulse-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--critical);
+  border-radius: 50%;
+  animation: blink 0.8s infinite;
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
+
+/* Active sentence illuminated reading style */
+.narrative-p {
+  margin-bottom: 16px;
+  padding: 8px 14px;
+  border-left: 2px solid transparent;
+  transition: all 0.25s ease;
+}
+.narrative-p.active-sentence {
+  border-left: 3px solid var(--high);
+  background: rgba(232, 182, 34, 0.05);
+  color: var(--ink);
+}
+.narrative-p:not(.active-sentence) {
+  color: var(--ink-3);
+  opacity: 0.65;
+}
+.narrative-p:not(.active-sentence):hover {
+  opacity: 0.9;
+}
+
+/* Audio Autoplay Unlock Floating Banner */
+.audio-unlock-banner {
+  background: var(--high);
+  color: var(--ground);
+  padding: 10px 18px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  margin-bottom: 16px;
+  border: 1px solid var(--ink);
+  box-shadow: 0 4px 18px rgba(232, 182, 34, 0.35);
+  transition: transform 0.15s ease;
+}
+.audio-unlock-banner:hover {
+  transform: translateY(-1px);
+}
+
+/* Character Persona Card In Roster */
+.persona-quote {
+  font-size: 11.5px;
+  color: var(--ink-2);
+  font-style: italic;
+  margin-top: 2px;
+}
+.persona-tag {
+  display: inline-block;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-family: var(--mono);
+  background: rgba(239, 237, 230, 0.08);
+  color: var(--ink-2);
+  margin-right: 6px;
+}
+
 /* Responsive */
 @media (max-width: 1100px) {
   .hud-grid { grid-template-columns: 1fr; }

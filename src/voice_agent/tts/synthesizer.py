@@ -17,17 +17,57 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Character voice mappings to Edge TTS neural voices
+# Character audio profiles with authentic Cyberpunk prosody and Edge-TTS neural models
+CHARACTER_AUDIO_PROFILES = {
+    "johnny-silverhand": {
+        "voice": "en-US-RogerNeural",
+        "pitch_hz": -14,
+        "rate_offset": -5,
+        "name": "Johnny Silverhand",
+        "persona": "Rebel Rockerboy / Keanu Baritone",
+        "quote": "Wake up, samurai. We got a city to burn.",
+    },
+    "lucy-kushinada": {
+        "voice": "en-US-AnaNeural",
+        "pitch_hz": -3,
+        "rate_offset": -4,
+        "name": "Lucy Kushinada",
+        "persona": "Netrunner Prodigy / Intimate Whisper",
+        "quote": "I don't look back anymore. Keep your head down, David.",
+    },
+    "david-martinez": {
+        "voice": "en-US-BrianNeural",
+        "pitch_hz": 4,
+        "rate_offset": 6,
+        "name": "David Martinez",
+        "persona": "Santo Domingo Solo / Streetkid Energetic",
+        "quote": "I'm built different, choomba. Fast as light.",
+    },
+    "v-male": {
+        "voice": "en-US-GuyNeural",
+        "pitch_hz": -6,
+        "rate_offset": 3,
+        "name": "V (Male)",
+        "persona": "Mercenary Solo / Gritty Raspy Baritone",
+        "quote": "Night City always collects its debt. Let's make this quick.",
+    },
+    "v-female": {
+        "voice": "en-US-AriaNeural",
+        "pitch_hz": -3,
+        "rate_offset": 4,
+        "name": "V (Female)",
+        "persona": "Tactical Solo / Crisp Dynamic Sharp",
+        "quote": "Eyes sharp, weapons hot. Let's see what they got.",
+    },
+}
+
+# Compatibility voice map
 VOICE_MAP_EDGE = {
-    "david-martinez": "en-US-ChristopherNeural",
-    "lucy-kushinada": "en-US-JennyNeural",
-    "v-male": "en-US-GuyNeural",
-    "v-female": "en-US-AriaNeural",
-    "johnny-silverhand": "en-US-EricNeural",
+    k: v["voice"] for k, v in CHARACTER_AUDIO_PROFILES.items()
 }
 
 # Fallback voice map
-DEFAULT_EDGE_VOICE = "en-US-ChristopherNeural"
+DEFAULT_EDGE_VOICE = "en-US-BrianNeural"
 
 
 async def synthesize_speech_edge(
@@ -35,20 +75,36 @@ async def synthesize_speech_edge(
     voice_id: str = "david-martinez",
     cadence: float = 1.0,
 ) -> Optional[bytes]:
-    """Synthesize speech audio using edge-tts. Returns MP3/audio bytes."""
+    """Synthesize speech audio using edge-tts with authentic Cyberpunk character prosody."""
     clean_text = text.strip()
     if not clean_text:
         return None
 
-    edge_voice = VOICE_MAP_EDGE.get(voice_id, DEFAULT_EDGE_VOICE)
+    profile = CHARACTER_AUDIO_PROFILES.get(voice_id, {
+        "voice": DEFAULT_EDGE_VOICE,
+        "pitch_hz": 0,
+        "rate_offset": 0,
+    })
+    edge_voice = profile.get("voice", DEFAULT_EDGE_VOICE)
 
-    # Cadence rate modifier in edge-tts: e.g. "+10%", "-15%"
-    rate_pct = int(round((cadence - 1.0) * 100))
-    rate_str = f"+{rate_pct}%" if rate_pct >= 0 else f"{rate_pct}%"
+    # Cadence combined with character rate offset
+    base_rate_offset = profile.get("rate_offset", 0)
+    cadence_offset = int(round((cadence - 1.0) * 100))
+    total_rate = base_rate_offset + cadence_offset
+    rate_str = f"{total_rate:+d}%"
+
+    # Edge-TTS regex pitch format strictly requires ^[+-]\d+Hz$
+    pitch_hz = profile.get("pitch_hz", 0)
+    pitch_str = f"{pitch_hz:+d}Hz"
 
     try:
         import edge_tts
-        communicate = edge_tts.Communicate(clean_text, edge_voice, rate=rate_str)
+        communicate = edge_tts.Communicate(
+            clean_text,
+            edge_voice,
+            rate=rate_str,
+            pitch=pitch_str,
+        )
         audio_chunks = []
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":

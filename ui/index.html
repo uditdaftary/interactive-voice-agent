@@ -98,24 +98,155 @@
     </div>
   </header>
 
+  <!-- Audio Autoplay Unlock Alert Banner -->
+  <div id="audio-unlock-banner" class="audio-unlock-banner" onclick="unlockAudioPlayback()">
+    <span>🎧 NEURAL AUDIOBOOK READY — CLICK ANYWHERE TO ENABLE SOUND [▶]</span>
+    <span style="font-weight:normal; opacity:0.8;">DISMISS ✕</span>
+  </div>
+
   <!-- ========================================== -->
   <!-- MAIN 2-COLUMN UNIFIED HUD GRID             -->
   <!-- ========================================== -->
   <main class="hud-grid">
 
     <!-- ---------------------------------------- -->
-    <!-- LEFT COLUMN: AUDIO ENGINE & BARGE-IN     -->
+    <!-- LEFT COLUMN: READER & VOICE BARGE-IN     -->
     <!-- ---------------------------------------- -->
     <div style="display:flex; flex-direction:column; gap:24px;">
 
-      <!-- PANEL 1: DYNAMIC VOICE GRAPH VISUALIZER -->
+      <!-- PANEL 1: NARRATIVE READER & TELEPROMPTER -->
       <section class="panel">
         <div class="panel-head">
           <div style="display:flex; align-items:center; gap:10px;">
-            <span class="mono faint">VA 010</span>
+            <h2>Continuous Narrative Stream &amp; Cursor</h2>
+            <span class="mono faint" style="font-size:11px; margin-left:8px;" id="header-doc-title">[BOOK: Night City Run]</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:12px;">
+            <div class="mono faint" style="font-size:12px;">
+              SENTENCE: <span class="num text-white" id="counter-sentence">1 / 8</span>
+            </div>
+            <button class="btn" style="min-height:30px; padding:0 8px; font-size:11px;" onclick="openDocumentUploadModal()">+ INGEST</button>
+          </div>
+        </div>
+
+        <div class="panel-body">
+          
+          <!-- Continuous Reading Text Surface -->
+          <div class="narrative-box" id="narrative-container">
+            <!-- Dynamically populated and illuminated by JS script -->
+          </div>
+
+          <!-- Reader Controls: Cadence Stepper, Prev, Next, Play/Pause -->
+          <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; border-top:1px solid var(--hair); padding-top:12px;">
+            <div style="display:flex; align-items:center; gap:10px; font-family:var(--mono); font-size:12px;">
+              <span class="faint">SPEED:</span>
+              <div class="btn-group" id="cadence-btn-group">
+                <button onclick="setCadence(0.8, this)">0.8x</button>
+                <button class="active" onclick="setCadence(1.0, this)">1.0x</button>
+                <button onclick="setCadence(1.2, this)">1.2x</button>
+              </div>
+            </div>
+
+            <div style="display:flex; align-items:center; gap:8px;">
+              <button class="btn" style="min-height:36px; padding:0 12px; font-size:12px;" onclick="prevSentence()">PREV</button>
+              <button class="btn live" onclick="togglePlayPause()" id="btn-playback-toggle" style="min-height:36px; padding:0 14px; font-size:12px;" title="Space to toggle">
+                <span id="btn-playback-label">PAUSE NARRATION</span>
+                <span class="tab" style="width:36px;">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 3v10M11 3v10"/></svg>
+                </span>
+              </button>
+              <button class="btn" style="min-height:36px; padding:0 12px; font-size:12px;" onclick="nextSentence()">NEXT</button>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- PANEL 2: DIRECT MICROPHONE BARGE-IN & SPOKEN INTERRUPT -->
+      <section class="panel">
+        <div class="panel-head">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <h2>Sub-50ms Barge-In Wave Disruption</h2>
+          </div>
+          <span class="state-pill narrating" id="bargein-status-pill"><i></i>ARMED</span>
+        </div>
+
+        <div class="panel-body">
+          
+          <!-- Direct Barge-In Action Bar -->
+          <div style="display:grid; grid-template-columns: 1.4fr 1fr; gap:12px;">
+            <button type="button" class="btn danger mic-bargein-btn" id="btn-voice-bargein" onclick="startDirectVoiceBargeIn()" title="Click or Press Space/V to speak">
+              <span style="font-weight:600;">🎙️ BARGE IN &amp; SPEAK</span>
+              <span class="tab">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="6" r="3"/><path d="M4 6a4 4 0 0 0 8 0M8 10v4M5 14h6"/></svg>
+              </span>
+            </button>
+
+            <button type="button" class="btn" id="btn-handsfree-toggle" onclick="toggleHandsFree()" title="Auto-detect voice energy in browser mic">
+              <span style="font-size:11.5px;">⚡ AUTO-VOICE VAD: ON</span>
+              <span class="tab">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="4" fill="var(--high)"/><circle cx="8" cy="8" r="6"/></svg>
+              </span>
+            </button>
+          </div>
+
+          <!-- Live Speech Recognition Ticker -->
+          <div id="speech-ticker" class="speech-ticker" style="display:none;">
+            <span class="pulse-dot"></span>
+            <span id="speech-ticker-text">Listening to your voice... Speak your question</span>
+          </div>
+
+          <!-- Interactive Question Input Bar -->
+          <div class="interruption-bar" style="margin-top:0;">
+            <input type="text" id="interruption-query-input" class="interruption-input" placeholder="Ask about the book or search real-time info (e.g. 'Who is Lucy?', 'What is Sandevistan?')..." onkeydown="if(event.key==='Enter') submitInterruptionQuery()">
+            <button class="btn danger" style="min-height:44px;" onclick="submitInterruptionQuery()">
+              <span>ASK AGENT</span>
+              <span class="tab">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 8h10M9 4l4 4-4 4"/></svg>
+              </span>
+            </button>
+          </div>
+
+          <!-- Q&A Context Envelope (Appears upon Barge-In) -->
+          <div id="dialogue-envelope" style="display:none;" class="envelope-box">
+            <div style="display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--hair-2); padding-bottom:6px;">
+              <span class="state-pill listening" id="env-status-pill"><i></i>PROMPT ENVELOPE ACTIVATED</span>
+              <span class="mono faint" id="env-character-tag">DAVID MARTINEZ // SANTO DOMINGO</span>
+            </div>
+            <div style="font-size:13.5px;"><span class="faint mono">Context:</span> <span class="mono text-white" id="env-local-ctx">"David Martinez stood at the edge of the catwalk..."</span></div>
+            <div style="font-size:13.5px;"><span class="faint mono">Query:</span> <span class="mono" style="color:var(--high);">"Wait, whose scav vehicle is idling down in the alley?"</span></div>
+            <div style="font-size:13.5px;"><span class="faint mono">Reply:</span> <span class="mono text-white">"The scav vehicle is an armored recon van belonging to the Maelstrom gang. Stay clear of their optical scanners."</span></div>
+            <div class="faint mono" style="font-size:11.5px; margin-top:2px;">↳ Resumption Cue: <em style="color:var(--ink);">"Returning to our story..."</em> (+4 words pre-roll)</div>
+          </div>
+
+          <!-- Mini Disruption Waveform Canvas -->
+          <div class="visualizer-frame" style="height:90px;">
+            <canvas id="bargein-wave-canvas" class="visualizer-canvas" width="680" height="90"></canvas>
+            <div class="visualizer-overlay">
+              [VAD SENSITIVITY // SUB-50MS ATOMIC DRAIN]
+            </div>
+            <div id="bargein-flash-tag" class="visualizer-overlay-right num" style="color:var(--critical-ink); display:none;">
+              FLUSH: 0.04 ms
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+    </div>
+
+    <!-- ---------------------------------------- -->
+    <!-- RIGHT COLUMN: ACOUSTIC MONITOR & VOICES  -->
+    <!-- ---------------------------------------- -->
+    <div style="display:flex; flex-direction:column; gap:24px;">
+
+      <!-- PANEL 3: DYNAMIC VOICE GRAPH VISUALIZER -->
+      <section class="panel">
+        <div class="panel-head">
+          <div style="display:flex; align-items:center; gap:10px;">
             <h2>Dynamic Voice Graph &amp; Audio Visualizer</h2>
           </div>
-          <span class="mono num faint" id="visualizer-hz-tag">24,000 Hz // RING BUFFER</span>
+          <span class="mono num faint" id="visualizer-hz-tag">24,000 Hz // NEURAL SYNTHESIS</span>
         </div>
 
         <div class="panel-body">
@@ -153,139 +284,16 @@
             <div class="fft-bar" style="background:var(--ink-3); height:8%;"></div>
           </div>
 
-          <!-- Subsystem Parameters Table -->
-          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; font-family:var(--mono); font-size:12px; border-top:1px solid var(--hair); pt:12px; margin-top:4px;">
-            <div><span class="faint">BUFFER SINK:</span> <span class="num text-white">240,000 Samples</span></div>
-            <div style="text-align:right;"><span class="faint">DRAIN PERFORMANCE:</span> <span class="num" style="color:var(--high);">&lt; 0.05 ms</span></div>
-          </div>
-
         </div>
       </section>
 
-      <!-- PANEL 2: BARGE-IN DISRUPTION & ATOMIC DRAIN -->
+      <!-- PANEL 4: RESIDENT CHARACTER VOICE ROSTER -->
       <section class="panel">
         <div class="panel-head">
           <div style="display:flex; align-items:center; gap:10px;">
-            <span class="mono faint">VA 030</span>
-            <h2>Sub-50ms Barge-In Wave Disruption</h2>
-          </div>
-          <span class="state-pill narrating" id="bargein-status-pill"><i></i>ARMED</span>
-        </div>
-
-        <div class="panel-body">
-          
-          <!-- Mini Disruption Waveform Canvas -->
-          <div class="visualizer-frame" style="height:110px;">
-            <canvas id="bargein-wave-canvas" class="visualizer-canvas" width="680" height="110"></canvas>
-            <div class="visualizer-overlay">
-              [VAD MIC SENSITIVITY // 30MS FRAME]
-            </div>
-            <div id="bargein-flash-tag" class="visualizer-overlay-right num" style="color:var(--critical-ink); display:none;">
-              FLUSH: 0.04 ms
-            </div>
-          </div>
-
-          <!-- Interactive Action Buttons with 44px Tabs -->
-          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:14px;">
-            <button class="btn danger" onclick="triggerBargeIn()">
-              <span>SIMULATE MIC BARGE-IN</span>
-              <span class="tab">
-                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 4l8 8M12 4l-8 8"/></svg>
-              </span>
-            </button>
-
-            <button class="btn live" onclick="togglePlayPause()" id="btn-playback-toggle">
-              <span id="btn-playback-label">PAUSE NARRATION</span>
-              <span class="tab">
-                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 3v10M11 3v10"/></svg>
-              </span>
-            </button>
-          </div>
-
-        </div>
-      </section>
-
-    </div>
-
-    <!-- ---------------------------------------- -->
-    <!-- RIGHT COLUMN: READER & VOICE ROSTER      -->
-    <!-- ---------------------------------------- -->
-    <div style="display:flex; flex-direction:column; gap:24px;">
-
-      <!-- PANEL 3: NARRATIVE READER & RESUMPTION PROTOCOL -->
-      <section class="panel">
-        <div class="panel-head">
-          <div style="display:flex; align-items:center; gap:10px;">
-            <span class="mono faint">VA 020</span>
-            <h2>Continuous Narrative Stream &amp; Cursor</h2>
-            <span class="mono faint" style="font-size:11px; margin-left:8px;" id="header-doc-title">[BOOK: Night City Run]</span>
-          </div>
-          <div style="display:flex; align-items:center; gap:12px;">
-            <div class="mono faint" style="font-size:12px;">
-              SENTENCE: <span class="num text-white" id="counter-sentence">1 / 8</span>
-            </div>
-            <button class="btn" style="min-height:30px; padding:0 8px; font-size:11px;" onclick="openDocumentUploadModal()">+ INGEST</button>
-          </div>
-        </div>
-
-        <div class="panel-body">
-          
-          <!-- Continuous Reading Text Surface -->
-          <div class="narrative-box" id="narrative-container">
-            <!-- Dynamically populated and highlighted by JS script -->
-          </div>
-
-          <!-- Interactive Barge-In Question Bar -->
-          <div class="interruption-bar">
-            <input type="text" id="interruption-query-input" class="interruption-input" placeholder="Ask a question about the book or search real-time info (e.g. 'Who is Lucy?', 'Search web: latest news on AI')..." onkeydown="if(event.key==='Enter') submitInterruptionQuery()">
-            <button class="btn danger" style="min-height:44px;" onclick="submitInterruptionQuery()">
-              <span>ASK AGENT</span>
-              <span class="tab">
-                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 8h10M9 4l4 4-4 4"/></svg>
-              </span>
-            </button>
-          </div>
-
-          <!-- Q&A Context Envelope (Appears upon Barge-In) -->
-          <div id="dialogue-envelope" style="display:none;" class="envelope-box">
-            <div style="display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--hair-2); padding-bottom:6px;">
-              <span class="state-pill listening"><i></i>PROMPT ENVELOPE ACTIVATED</span>
-              <span class="mono faint">LOCAL QWEN 3.5 4B</span>
-            </div>
-            <div style="font-size:13.5px;"><span class="faint mono">Context:</span> <span class="mono text-white" id="env-local-ctx">"David Martinez stood at the edge of the catwalk..."</span></div>
-            <div style="font-size:13.5px;"><span class="faint mono">Query:</span> <span class="mono" style="color:var(--high);">"Wait, whose scav vehicle is idling down in the alley?"</span></div>
-            <div style="font-size:13.5px;"><span class="faint mono">Reply:</span> <span class="mono text-white">"The scav vehicle is an armored recon van belonging to the Maelstrom gang. Stay clear of their optical scanners."</span></div>
-            <div class="faint mono" style="font-size:11.5px; margin-top:2px;">↳ Resumption Cue: <em style="color:var(--ink);">"Returning to our story..."</em> (+4 words pre-roll)</div>
-          </div>
-
-          <!-- Reader Controls: Cadence Stepper & Navigation -->
-          <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; border-top:1px solid var(--hair); padding-top:12px;">
-            <div style="display:flex; align-items:center; gap:10px; font-family:var(--mono); font-size:12px;">
-              <span class="faint">CADENCE:</span>
-              <div class="btn-group" id="cadence-btn-group">
-                <button onclick="setCadence(0.8, this)">0.8x</button>
-                <button class="active" onclick="setCadence(1.0, this)">1.0x</button>
-                <button onclick="setCadence(1.2, this)">1.2x</button>
-              </div>
-            </div>
-
-            <div style="display:flex; align-items:center; gap:8px;">
-              <button class="btn" style="min-height:34px; padding:0 12px; font-size:12px;" onclick="prevSentence()">PREV</button>
-              <button class="btn" style="min-height:34px; padding:0 12px; font-size:12px;" onclick="nextSentence()">NEXT</button>
-            </div>
-          </div>
-
-        </div>
-      </section>
-
-      <!-- PANEL 4: RESIDENT CHARACTER VOICE SELECTOR -->
-      <section class="panel">
-        <div class="panel-head">
-          <div style="display:flex; align-items:center; gap:10px;">
-            <span class="mono faint">VA 040</span>
             <h2>Resident Character Voice Roster</h2>
           </div>
-          <span class="mono faint" style="font-size:12px;">ZERO-SHOT REFERENCE CLONING</span>
+          <span class="mono faint" style="font-size:12px;">CYBERPUNK 2077 PERSONAS</span>
         </div>
 
         <div class="panel-body" style="padding:0;">
@@ -357,7 +365,7 @@
   <div class="modal-dialog">
     <div class="modal-head">
       <div style="display:flex; align-items:center; gap:10px;">
-        <span class="mono faint">VA DOC 01</span>
+        <span class="mono faint">DOCUMENT // INGESTION</span>
         <h2 style="font-size:18px;">Ingest Narrative Document (Ebook / PDF / EPUB / TXT)</h2>
       </div>
       <button class="btn" style="min-height:32px; padding:0 10px;" onclick="closeDocumentUploadModal()">✕</button>
@@ -411,7 +419,7 @@
   <div class="modal-dialog">
     <div class="modal-head">
       <div style="display:flex; align-items:center; gap:10px;">
-        <span class="mono faint">VA CFG 02</span>
+        <span class="mono faint">STUDIO // CONFIG</span>
         <h2 style="font-size:18px;">Model &amp; Live Web Search Configuration</h2>
       </div>
       <button class="btn" style="min-height:32px; padding:0 10px;" onclick="closeModelConfigModal()">✕</button>
@@ -502,14 +510,64 @@
 
   // --- RESIDENT CHARACTER VOICES ---
   const VOICES = [
-    { id: "david-martinez", name: "David Martinez", timbre: "Streetkid Gritty Cadence", sr: "24.0 kHz", wpm: "120 WPM", freqMod: 1.2, active: true },
-    { id: "lucy-kushinada", name: "Lucy Kushinada", timbre: "Netrunner Intimate Whisper", sr: "24.0 kHz", wpm: "105 WPM", freqMod: 0.9, active: false },
-    { id: "v-male", name: "V (Male)", timbre: "Mercenary Raspy Baritone", sr: "24.0 kHz", wpm: "115 WPM", freqMod: 1.4, active: false },
-    { id: "v-female", name: "V (Female)", timbre: "Tactical Dynamic Sharp", sr: "24.0 kHz", wpm: "118 WPM", freqMod: 1.1, active: false },
-    { id: "johnny-silverhand", name: "Johnny Silverhand", timbre: "Rockerboy Analog Rebel", sr: "24.0 kHz", wpm: "98 WPM", freqMod: 1.6, active: false }
+    {
+      id: "johnny-silverhand",
+      name: "Johnny Silverhand",
+      role: "Rebel Rockerboy",
+      timbre: "Keanu Baritone (-14Hz)",
+      quote: "Wake up, samurai. We got a city to burn.",
+      sr: "24.0 kHz",
+      wpm: "98 WPM",
+      freqMod: 1.6,
+      active: false
+    },
+    {
+      id: "lucy-kushinada",
+      name: "Lucy Kushinada",
+      role: "Netrunner Prodigy",
+      timbre: "Intimate Whisper (-3Hz)",
+      quote: "I don't look back anymore. Keep your head down, David.",
+      sr: "24.0 kHz",
+      wpm: "105 WPM",
+      freqMod: 0.9,
+      active: false
+    },
+    {
+      id: "david-martinez",
+      name: "David Martinez",
+      role: "Santo Domingo Solo",
+      timbre: "Streetkid Energetic (+4Hz)",
+      quote: "I'm built different, choomba. Fast as light.",
+      sr: "24.0 kHz",
+      wpm: "120 WPM",
+      freqMod: 1.2,
+      active: true
+    },
+    {
+      id: "v-male",
+      name: "V (Male)",
+      role: "Mercenary Solo",
+      timbre: "Raspy Baritone (-6Hz)",
+      quote: "Night City always collects its debt. Let's make this quick.",
+      sr: "24.0 kHz",
+      wpm: "115 WPM",
+      freqMod: 1.4,
+      active: false
+    },
+    {
+      id: "v-female",
+      name: "V (Female)",
+      role: "Tactical Solo",
+      timbre: "Dynamic Sharp (-3Hz)",
+      quote: "Eyes sharp, weapons hot. Let's see what they got.",
+      sr: "24.0 kHz",
+      wpm: "118 WPM",
+      freqMod: 1.1,
+      active: false
+    }
   ];
 
-  let activeVoice = VOICES[0];
+  let activeVoice = VOICES[2]; // Default to David Martinez
 
   function renderVoiceRoster() {
     const tbody = document.getElementById('voice-roster-body');
@@ -523,11 +581,14 @@
 
       tr.innerHTML = `
         <td style="padding-left:18px;">
-          <span style="display:block; width:8px; height:8px; background:${v.active ? 'var(--ink)' : 'transparent'}; border:${v.active ? 'none' : '1px solid var(--ink-3)'};"></span>
+          <span style="display:block; width:8px; height:8px; background:${v.active ? 'var(--high)' : 'transparent'}; border:${v.active ? 'none' : '1px solid var(--ink-3)'};"></span>
         </td>
         <td>
-          <strong style="font-weight:500;">${v.name}</strong>
-          <div class="mono faint" style="font-size:11px;">models/voices/${v.id}.wav</div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <strong style="font-weight:600; color:${v.active ? 'var(--high)' : 'var(--ink)'};">${v.name}</strong>
+            <span class="persona-tag">${v.role}</span>
+          </div>
+          <div class="persona-quote">"${v.quote}"</div>
         </td>
         <td class="mono mute">${v.timbre}</td>
         <td class="mono num">${v.sr}</td>
@@ -538,6 +599,8 @@
 
     const activeEl = document.getElementById('header-active-voice');
     if (activeEl) activeEl.innerText = activeVoice.name;
+    const envCharTag = document.getElementById('env-character-tag');
+    if (envCharTag) envCharTag.innerText = `${activeVoice.name.toUpperCase()} // ${activeVoice.role.toUpperCase()}`;
   }
 
   function selectVoice(id, sendWs = true) {
@@ -587,8 +650,7 @@
     STORY_PARAGRAPHS.forEach((p, sIdx) => {
       const pEl = document.createElement('p');
       pEl.dataset.sidx = sIdx;
-      pEl.style.marginBottom = '14px';
-      pEl.style.color = (sIdx === currentSentenceIdx) ? 'var(--ink)' : 'var(--ink-3)';
+      pEl.className = 'narrative-p' + (sIdx === currentSentenceIdx ? ' active-sentence' : '');
 
       const words = p.split(/\s+/);
       words.forEach((w, wIdx) => {
@@ -607,6 +669,15 @@
   }
 
   function updateWordHighlight() {
+    document.querySelectorAll('.narrative-p').forEach((p) => {
+      const s = parseInt(p.dataset.sidx, 10);
+      if (s === currentSentenceIdx) {
+        p.classList.add('active-sentence');
+      } else {
+        p.classList.remove('active-sentence');
+      }
+    });
+
     wordsArray.forEach(el => {
       const s = parseInt(el.dataset.sIdx, 10);
       const w = parseInt(el.dataset.wIdx, 10);
@@ -724,6 +795,136 @@
     }
     if (wsClient && wsClient.isConnected) {
       wsClient.send({ type: 'playback_control', action: 'prev' });
+    }
+  }
+
+  // --- DIRECT MICROPHONE BARGE-IN & SPEECH RECOGNITION ---
+  let speechRecognizer = null;
+  let isVoiceListening = false;
+  let handsFreeDetectionEnabled = true;
+
+  function unlockAudioPlayback() {
+    if (wsClient) {
+      wsClient.initAudioContext();
+      if (wsClient.audioContext && wsClient.audioContext.state === 'suspended') {
+        wsClient.audioContext.resume().then(() => {
+          const banner = document.getElementById('audio-unlock-banner');
+          if (banner) banner.style.display = 'none';
+        }).catch(() => {});
+      } else {
+        const banner = document.getElementById('audio-unlock-banner');
+        if (banner) banner.style.display = 'none';
+      }
+    }
+  }
+
+  function toggleHandsFree() {
+    handsFreeDetectionEnabled = !handsFreeDetectionEnabled;
+    const btn = document.getElementById('btn-handsfree-toggle');
+    if (btn) {
+      btn.innerHTML = handsFreeDetectionEnabled 
+        ? `<span>⚡ AUTO-VOICE VAD: ON</span><span class="tab"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="4" fill="var(--high)"/><circle cx="8" cy="8" r="6"/></svg></span>`
+        : `<span>⚡ AUTO-VOICE VAD: OFF</span><span class="tab"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6"/></svg></span>`;
+    }
+  }
+
+  function initSpeechRecognition() {
+    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRec) {
+      console.warn("Web Speech API not supported in this browser. Falling back to text prompt.");
+      return null;
+    }
+    const recognizer = new SpeechRec();
+    recognizer.continuous = false;
+    recognizer.interimResults = true;
+    recognizer.lang = 'en-US';
+
+    recognizer.onstart = () => {
+      isVoiceListening = true;
+      updateBargeInButtonUI(true);
+    };
+
+    recognizer.onresult = (event) => {
+      let transcript = '';
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        transcript += event.results[i][0].transcript;
+      }
+      const input = document.getElementById('interruption-query-input');
+      if (input) input.value = transcript;
+
+      const ticker = document.getElementById('speech-ticker');
+      if (ticker) {
+        ticker.style.display = 'flex';
+        const textEl = document.getElementById('speech-ticker-text');
+        if (textEl) textEl.innerText = transcript || 'Listening to your voice...';
+      }
+    };
+
+    recognizer.onerror = (event) => {
+      console.warn("Speech recognition notice:", event.error);
+      isVoiceListening = false;
+      updateBargeInButtonUI(false);
+    };
+
+    recognizer.onend = () => {
+      isVoiceListening = false;
+      updateBargeInButtonUI(false);
+      const input = document.getElementById('interruption-query-input');
+      if (input && input.value.trim().length > 0) {
+        submitInterruptionQuery();
+      }
+    };
+
+    return recognizer;
+  }
+
+  function updateBargeInButtonUI(listening) {
+    const btn = document.getElementById('btn-voice-bargein');
+    const ticker = document.getElementById('speech-ticker');
+    if (btn) {
+      if (listening) {
+        btn.classList.add('listening');
+        const span = btn.querySelector('span');
+        if (span) span.innerText = '🔴 LISTENING... SPEAK NOW';
+      } else {
+        btn.classList.remove('listening');
+        const span = btn.querySelector('span');
+        if (span) span.innerText = '🎙️ BARGE IN & SPEAK';
+      }
+    }
+    if (!listening && ticker && (!document.getElementById('interruption-query-input').value)) {
+      ticker.style.display = 'none';
+    }
+  }
+
+  function startDirectVoiceBargeIn() {
+    unlockAudioPlayback();
+    // 1. Drain / halt narration in < 0.05ms
+    if (wsClient) {
+      wsClient.stopAllAudio();
+    }
+    triggerBargeIn();
+
+    // 2. Initialize and trigger Speech Recognition
+    if (!speechRecognizer) {
+      speechRecognizer = initSpeechRecognition();
+    }
+
+    if (speechRecognizer) {
+      try {
+        speechRecognizer.start();
+      } catch (e) {
+        try { speechRecognizer.stop(); } catch(err) {}
+        setTimeout(() => {
+          try { speechRecognizer.start(); } catch(err) {}
+        }, 80);
+      }
+    } else {
+      const input = document.getElementById('interruption-query-input');
+      if (input) {
+        input.focus();
+        input.placeholder = "Speak aloud or type your question here...";
+      }
     }
   }
 
@@ -1463,6 +1664,19 @@
         this.micProcessor.onaudioprocess = (e) => {
           if (!this.isConnected || this.micSource !== 'browser') return;
           const input = e.inputBuffer.getChannelData(0);
+
+          // Hands-free voice barge-in detection
+          if (handsFreeDetectionEnabled && currentState === 'NARRATING' && !isVoiceListening) {
+            let sumSquares = 0.0;
+            for (let i = 0; i < input.length; i++) {
+              sumSquares += input[i] * input[i];
+            }
+            const rms = Math.sqrt(sumSquares / input.length);
+            if (rms > 0.065) {
+              startDirectVoiceBargeIn();
+            }
+          }
+
           const pcm16 = new Int16Array(input.length);
           for (let i = 0; i < input.length; i++) {
             const s = Math.max(-1, Math.min(1, input[i]));
@@ -1471,7 +1685,12 @@
           this.send(pcm16.buffer);
         };
         source.connect(this.micProcessor);
-        this.micProcessor.connect(this.audioContext.destination);
+
+        // Mute monitor to prevent audio feedback loop
+        const monitorMute = this.audioContext.createGain();
+        monitorMute.gain.value = 0.0;
+        this.micProcessor.connect(monitorMute);
+        monitorMute.connect(this.audioContext.destination);
       } catch (err) {
         console.warn("Browser mic access unavailable or denied:", err.message);
       }
@@ -1824,6 +2043,9 @@
   window.setCadence = setCadence;
   window.togglePlayPause = togglePlayPause;
   window.triggerBargeIn = triggerBargeIn;
+  window.startDirectVoiceBargeIn = startDirectVoiceBargeIn;
+  window.toggleHandsFree = toggleHandsFree;
+  window.unlockAudioPlayback = unlockAudioPlayback;
   window.setMasterVolume = setMasterVolume;
   window.toggleMute = toggleMute;
   window.openDocumentUploadModal = openDocumentUploadModal;
@@ -1849,6 +2071,22 @@
     set: (p) => { isPlaying = p; }
   });
 
+  // --- GLOBAL KEYBOARD SHORTCUTS ---
+  window.addEventListener('keydown', (e) => {
+    // Avoid capturing inside inputs or textareas
+    if (['input', 'textarea', 'select'].includes((document.activeElement?.tagName || '').toLowerCase())) {
+      return;
+    }
+    if (e.code === 'Space') {
+      e.preventDefault();
+      unlockAudioPlayback();
+      togglePlayPause();
+    } else if (e.code === 'KeyV' && !e.repeat) {
+      e.preventDefault();
+      startDirectVoiceBargeIn();
+    }
+  });
+
   // --- INITIALIZATION ---
   window.addEventListener('DOMContentLoaded', () => {
     renderVoiceRoster();
@@ -1871,7 +2109,7 @@
 
     // User gesture unlocking for AudioContext
     const unlockAudio = () => {
-      wsClient.initAudioContext();
+      unlockAudioPlayback();
       window.removeEventListener('click', unlockAudio);
       window.removeEventListener('keydown', unlockAudio);
     };

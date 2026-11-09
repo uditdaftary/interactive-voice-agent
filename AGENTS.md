@@ -191,3 +191,34 @@ All issues triaged into two independent architecture teams cross-communicating v
    - Created `tests/test_document_and_api.py`.
    - Validated complete test suite: 123/123 tests passing with 100% pass rate.
 
+---
+
+## 7. Sprint 4: Production Audio Studio, Direct Barge-In & Authentic Character Profiles
+
+*Executed to transition UI from an ability/benchmark showcase to an actual production-grade software experience, implement direct microphone barge-in, and integrate authentic Cyberpunk character voices and personas.*
+
+### 7.1. Domain Lead Assignments
+1. **Character Voice & Audio Prosody Lead**:
+   - Implemented authentic Cyberpunk neural voice profiles and calibrated prosody in `voice_agent.tts.synthesizer`:
+     - Johnny Silverhand: `en-US-RogerNeural` (Keanu baritone, pitch `-14Hz`, rate `-5%`).
+     - Lucy Kushinada: `en-US-AnaNeural` (intimate Netrunner whisper, pitch `-3Hz`, rate `-4%`).
+     - David Martinez: `en-US-BrianNeural` (Santo Domingo edgerunner, pitch `+4Hz`, rate `+6%`).
+     - V (Male): `en-US-GuyNeural` (mercenary solo raspy baritone, pitch `-6Hz`, rate `+3%`).
+     - V (Female): `en-US-AriaNeural` (tactical solo dynamic sharp, pitch `-3Hz`, rate `+4%`).
+   - Validated Edge-TTS pitch string formatting adhering to `^[+-]\d+Hz$`.
+2. **Character Dialogue & Persona Lead**:
+   - Authored character-specific system prompts and response templates in `voice_agent.llm.client`.
+   - Formulates responses adhering to game lore, authentic street slang ("choom", "preem", "Sandevistan", "ICE", "corpo"), and distinctive character emotional tones.
+3. **Direct Microphone Barge-In Lead**:
+   - Integrated Web Speech API (`SpeechRecognition` / `webkitSpeechRecognition`) for real-time speech-to-text input.
+   - Built dual barge-in interaction:
+     - Push-to-Talk / Click-to-Speak button with pulsing recording ring (`@keyframes pulseMic`) and keyboard shortcuts (`Space` / `V`).
+     - Hands-Free Voice Detection: Web Audio RMS threshold monitoring automatically interrupting playback and capturing user questions when speaking aloud.
+   - Fixed microphone audio feedback loop by isolating processor output with a zero-gain muted monitor.
+4. **Production Studio UI/UX Lead**:
+   - Modernized `ui/index.html` and `ui/app.css` from a benchmark lab demo to **Cybervox Audio Studio**.
+   - Cleaned test labels ("VA 010", "VA 020", "SIMULATE BARGE-IN", "BUFFER SINK").
+   - Implemented an illuminated reading teleprompter with active sentence highlight, player transport bar (Prev, Next, Play/Pause, Speed), and audio autoplay unlock alert.
+5. **Testing & Verification Lead**:
+   - Verified 123/123 tests passing with 100% success rate.
+
