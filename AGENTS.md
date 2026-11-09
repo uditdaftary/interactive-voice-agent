@@ -107,3 +107,35 @@ Per architectural recommendation, the high-fidelity UI/UX and visual design work
    - Prompt context: $\le 2048\text{ tokens}$.
    - VRAM usage: $\le 3100\text{ MB}$ (leaving $\ge 500\text{ MB}$ headroom on RTX 3050).
 3. **Verification Before Completion**: Never declare a task complete without executing `pytest` on the relevant test suite and confirming 100% test pass evidence.
+
+
+---
+
+## 5. Sprint 2: Post-Sprint Adversarial Scrutiny & Competitive Resolution Protocol
+
+*Executed immediately upon completion of the Unified HUD & WebSocket Server development sprint.*
+
+### 5.1. Phase 1: Adversarial Scrutiny Pass (4 Specialized Auditors)
+*Skills Applied: `/code-review-and-quality` (5 axes) and `/bugs-are-annoying` (adversarial bug hunting)*
+1. **Auditor 1 (`WebSocket & Protocol Auditor`)**:
+   - Focus: `src/voice_agent/server/`, WebSocket framing, connection lifecycle, state race conditions.
+2. **Auditor 2 (`Audio Loopback & DSP Auditor`)**:
+   - Focus: `src/voice_agent/audio/virtual_device.py`, 24kHz PCM downmix, sub-50ms atomic drain verification.
+3. **Auditor 3 (`VAD & Hybrid Mic Auditor`)**:
+   - Focus: Browser WebAudio vs sounddevice hybrid bridge, 30ms hop alignment, false-positive barge-in resistance.
+4. **Auditor 4 (`Frontend HUD & Canvas Auditor`)**:
+   - Focus: `ui/index.html`, `ui/app.css`, 60 FPS canvas performance, word cursor drift, memory leaks.
+
+**Action**: All findings compiled into `bugs.md` and posted via GitHub CLI:
+- Individual GitHub issues created (`gh issue create`).
+- PR review comments posted on active feature branches.
+
+### 5.2. Phase 2: Competing Solution Architecture (2 Cross-Communicating Teams)
+All issues triaged into two independent architecture teams cross-communicating via `send_message`:
+* **Team Alpha (Subagents A1 & A2)**: Lead DSP/Audio Engineer + Systems Architect -> `docs/TEAM_ALPHA_UNITED_PROPOSAL.md`.
+* **Team Beta (Subagents B1 & B2)**: Concurrency/Network Lead + Frontend Performance Architect -> `docs/TEAM_BETA_UNITED_SOLUTION_PROPOSAL.md`.
+
+### 5.3. Phase 3: Lead Evaluation & Fixer Execution (4 Fixers)
+*Skills Applied: `/test-driven-development` and `/verification-before-completion`*
+- The Lead Coordinator compares Alpha and Beta proposals, selects the superior technical moves, and dispatches 4 Fixer subagents (`Fixer 1: Protocol`, `Fixer 2: Audio/VAD`, `Fixer 3: HUD/Canvas`, `Fixer 4: Integration`).
+- All fixes verified with 100% pytest pass evidence before issue closure.
