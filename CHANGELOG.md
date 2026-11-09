@@ -5,6 +5,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [0.6.1] - 2026-11-09
+
+### Conversational Speech Sensitivity, Pre-Roll Buffering & Lore Grounding Disambiguation
+*Resolved premature voice listening cutoffs on standard microphones, eliminated Australopithecus fossil hallucinations on character queries via contextual disambiguation, and added pre-roll audio buffering.*
+
+### Fixed & Enhanced
+- **Speech Turn Sensitivity & Premature Cutoff Prevention (`voice_agent.stt.accumulator`, `voice_agent.stt.recognizer`, `ui/index.html`)**:
+  - Lowered `SpeechTurnAccumulator.energy_threshold` from `0.04` to `0.015` to capture quiet/headset microphones.
+  - Increased silence segmentation timeout from `650ms` to `1400ms` (server-side) and `1800ms` (client-side) to accommodate natural human conversational pauses.
+  - Added 4-frame rolling pre-roll audio ring buffer to capture initial plosives and consonants before energy threshold trigger.
+  - Lowered peak amplitude silence filter from `0.01` to `0.004` to allow Faster-Whisper's Silero VAD to process faint voices.
+  - Disconnected `recognizer.onend` from calling `stopDirectVoiceBargeIn()`, preventing browser Web Speech timeouts from killing active mic sessions prematurely.
+  - Added `fallback_query` to `VoiceEndMessage` (`src/voice_agent/server/schemas.py`, `websocket.py`) to preserve client-side speech preview if audio frame stream is quiet.
+- **Lore Contextual Disambiguation & Web Grounding (`src/voice_agent/llm/client.py`)**:
+  - Upgraded DuckDuckGo search integration to modern `ddgs` library (v9.16.1), resolving deprecation failures.
+  - Character and lore queries (e.g. "who is lucy", "david", "arasaka") automatically anchor with lore context ("Cyberpunk"), completely eliminating unrelated web search results (e.g., Australopithecus afarensis hominid fossils, Beatles songs).
+  - Enhanced `sanitize_web_snippet()` to strip leading dangling punctuation and quotation marks.
+  - Enforced query term containment in fallback candidate sentence scoring (`_synthesize_fallback_answer`), actively rejecting hominid, fossil, skeleton, and song lyrics.
+- **Testing & Verification**:
+  - 100% test pass rate across the full test suite (149/149 tests passing).
+
+---
+
 ## [0.6.0] - 2026-11-09
 
 ### Server-Side Neural Speech Recognition & Turn-Taking Voice Interpretation

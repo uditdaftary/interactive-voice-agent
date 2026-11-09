@@ -166,6 +166,8 @@ def sanitize_web_snippet(text: str) -> str:
     # Remove empty or language-only parens left by non-ascii character stripping
     text = re.sub(r'\([A-Za-z\s]*:\s*\)', '', text)
     text = re.sub(r'\(\s*\)', '', text)
+    # Strip any dangling punctuation/quotes/parens at the beginning of snippet
+    text = re.sub(r'^[^\w]+', '', text)
     # Collapse multiple whitespaces
     text = re.sub(r'\s+', ' ', text).strip()
     return text
@@ -182,6 +184,13 @@ def search_web_sync(query: str, max_results: int = 3) -> str:
         search_q = query_lower.replace("arakas", "arasaka")
     elif "sande" in query_lower and "sandevistan" not in query_lower:
         search_q = query_lower.replace("sande", "sandevistan")
+
+    # Disambiguate short character queries (e.g. "who is lucy", "who is david", "what is arasaka")
+    words = [w for w in query_lower.split() if w not in {"who", "is", "what", "tell", "me", "about", "the"}]
+    for name in ["lucy", "david", "rebecca", "maine", "kiwi", "dorio", "smasher", "silverhand", "johnny", "arasaka"]:
+        if name in words and "cyberpunk" not in query_lower and "edgerunners" not in query_lower:
+            search_q = f"{search_q} Cyberpunk"
+            break
 
     try:
         try:
@@ -447,29 +456,39 @@ class LLMClient:
             scored_web = []
             for sent in candidate_web:
                 s_lower = sent.lower()
-                score = 0
-                for qt in query_terms:
-                    if qt in s_lower:
-                        score += 4
-                if any(kw in s_lower for kw in ['is a', 'is an', 'is the', 'megacorporation', 'specializing in', 'security division', 'developed by']):
-                    score += 6
-                elif any(kw in s_lower for kw in ['corporation', 'founded', 'weapons', 'cyberware', 'character', 'known for']):
-                    score += 2
-                if score > 0:
-                    scored_web.append((score, sent))
+                # MUST match at least one query term
+                matching_terms = [qt for qt in query_terms if qt in s_lower]
+                if not matching_terms:
+                    continue
+
+                # Filter out irrelevant hominid/fossil/album/song disambiguations
+                if any(dis in s_lower for dis in ['hominid', 'fossil', 'australopithecus', 'skeleton', 'paleoanthropolog', 'album', 'song', 'track listing', 'discography']):
+                    continue
+
+                score = len(matching_terms) * 5
+
+                # Strong bonus for definition / role markers
+                if any(kw in s_lower for kw in ['is a', 'is an', 'is the', 'netrunner', 'megacorporation', 'mercenary', 'character in', 'specializing in', 'deuteragonist', 'co-lead']):
+                    score += 8
+                elif any(kw in s_lower for kw in ['corporation', 'founded', 'weapons', 'cyberware', 'crew', 'night city', 'edgerunner']):
+                    score += 4
+
+                clean_sent = re.sub(r'^[^\w]+', '', sent.strip()).strip()
+                if clean_sent:
+                    scored_web.append((score, clean_sent))
 
             scored_web.sort(key=lambda x: x[0], reverse=True)
             if scored_web:
-                # Select top 1-2 sentences ensuring no trailing '...' and full thought
+                # Select top sentence ensuring no trailing '...' and full thought
                 top_sent = scored_web[0][1].strip()
                 if not top_sent.endswith(('.', '!', '?')):
                     top_sent += '.'
                 best_web_fact = top_sent
 
-                # If short, add second relevant sentence if available
+                # If short, add second relevant sentence if available and substantive
                 if len(top_sent) < 90 and len(scored_web) > 1:
                     second_sent = scored_web[1][1].strip()
-                    if second_sent and second_sent != top_sent:
+                    if second_sent and second_sent != top_sent and len(second_sent.split()) >= 6:
                         if not second_sent.endswith(('.', '!', '?')):
                             second_sent += '.'
                         best_web_fact = f"{top_sent} {second_sent}"

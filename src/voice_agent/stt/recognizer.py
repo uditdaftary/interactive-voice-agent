@@ -76,7 +76,7 @@ class STTEngine:
             audio_np = np.mean(audio_np, axis=-1)
 
         # Check for near-total silence
-        if audio_np.size == 0 or np.max(np.abs(audio_np)) < 0.01:
+        if audio_np.size == 0 or np.max(np.abs(audio_np)) < 0.004:
             return ""
 
         # 1. Primary: faster-whisper

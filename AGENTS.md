@@ -273,5 +273,28 @@ All issues triaged into two independent architecture teams cross-communicating v
    - Implemented STT transcription latency benchmark in `tests/test_benchmarks.py`.
    - Verified 100% test pass rate across the full test suite (148+ tests).
 
+---
+
+## 10. Sprint 5.1: Conversational Speech Sensitivity & Grounding Disambiguation
+
+*Executed to eliminate premature voice barge-in timeouts on desktop microphones, preserve initial plosives via pre-roll audio buffering, upgrade web search grounding to `ddgs`, and disambiguate character queries.*
+
+### 10.1. Domain Lead Assignments
+1. **Audio DSP & VAD Sensitivity Lead**:
+   - Lowered `SpeechTurnAccumulator.energy_threshold` to `0.015` and expanded conversational pause timeout to `1400ms`.
+   - Implemented 4-chunk rolling pre-roll ring buffer in `SpeechTurnAccumulator` capturing initial consonants before speech onset detection.
+   - Reduced silence amplitude gate in `STTEngine` to `0.004` peak to allow Faster-Whisper Silero VAD to process faint voices.
+2. **Web Grounding & Disambiguation Lead**:
+   - Upgraded search library to `ddgs` (v9.16.1).
+   - Added character contextual anchoring: queries for character names automatically append "Cyberpunk" if not present.
+   - Enhanced `sanitize_web_snippet` to eliminate leading dangling punctuation.
+   - Enforced query term presence and hominid/fossil filtering in extractive fallback formulation.
+3. **HUD Audio & Protocol Lead**:
+   - Decoupled Web Speech API timeout in `ui/index.html` from stopping the active microphone session.
+   - Lowered client-side RMS threshold to `0.015` and increased pause timeout to `1800ms`.
+   - Added `fallback_query` to `VoiceEndMessage` for zero-loss speech preview fallback.
+4. **Testing & Verification Lead**:
+   - Verified 149/149 tests passing with 100% success rate.
+
 
 

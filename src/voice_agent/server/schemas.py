@@ -101,6 +101,7 @@ class VoiceEndMessage(BaseProtocolMessage):
     """Client notification that user voice utterance has concluded."""
 
     type: Literal["voice_end"] = "voice_end"
+    fallback_query: Optional[str] = Field(default=None, description="Optional client preview transcript if available")
 
 
 ClientMessage = Union[

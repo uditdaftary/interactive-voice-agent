@@ -116,6 +116,15 @@ In regex-based sentence boundary tokenizers, periods inside abbreviations (`Dr.`
       - Precompute and cache the 2ms half-cosine micro-fadeout window during `AudioRingBuffer.__init__` to achieve $\le 0.02\text{ms}$ drain latency under full concurrency load.
       - Guard HUD canvas animations via the Page Visibility API (`document.hidden` / `visibilitychange`) to prevent queue backlog in background tabs, and enforce single-timer invariance across all teleprompter cadence and navigation transitions.
     - *Rationale*: Eliminates head-of-line broadcast blocking, eliminates acoustic step pulses and false barge-in triggers on mic toggle, guarantees teleprompter word highlighting synchrony with physical DAC playback, and protects client-side CPU resources.
+12. **ADR-12: Server-Side Neural Speech Recognition & Turn-Taking VAD Accumulation**
+    - *Decision*: Run Faster-Whisper (`tiny.en`, INT8, CPU) inside the Python backend and route real-time 16kHz PCM audio frames through an energy VAD accumulator (`SpeechTurnAccumulator`).
+    - *Rationale*: Eliminates fragile reliance on browser Web Speech API cloud STT while remaining within the 4GB GPU VRAM budget.
+13. **ADR-13: Conversational Speech Sensitivity, Pre-Roll Buffering & Lore Grounding Disambiguation**
+    - *Decision*:
+      - Lower STT accumulator energy threshold to $0.015$ and expand pause segmentation timeout to $1400\text{ ms}$ (server) / $1800\text{ ms}$ (client) with a 4-frame rolling pre-roll buffer.
+      - Maintain client microphone recording across Web Speech API `onend` timeouts to prevent premature listening abortion.
+      - Automatically anchor character/lore queries with context ("Cyberpunk") during web search, enforce query term presence in extractive synthesis, and filter out hominid/fossil/album disambiguation artifacts.
+    - *Rationale*: Guarantees that quiet desktop microphones and natural conversational pauses do not abort speech capture mid-sentence, while ensuring web search responses answer about the intended fictional character rather than unrelated Wikipedia fossils or songs.
 
 ---
 
@@ -308,5 +317,21 @@ In regex-based sentence boundary tokenizers, periods inside abbreviations (`Dr.`
    - `[🎙️ BARGE IN & SPEAK]` button / `V` key starts live microphone recording and streams PCM16 frames over WebSocket.
    - Dynamically updates query input and HUD speech ticker with server-side transcripts in real time.
    - Automatically submits query upon final transcript receipt and renders Prompt Envelope with live LLM response and pre-roll resumption cues.
+
+### 5.8. Conversational Speech Sensitivity, Pre-Roll Buffering & Lore Grounding Disambiguation (Sprint 5.1 / ADR-13)
+1. **Robust Audio Capture & Sensitivity Tuning (`voice_agent.stt.accumulator`, `voice_agent.stt.recognizer`)**:
+   - Lowered STT accumulator energy threshold from $0.04$ to $0.015$, accommodating low-gain microphones and headset hardware without failing to detect voice onset.
+   - Expanded conversational silence timeout from $650\text{ ms}$ to $1400\text{ ms}$, preventing premature utterance termination during natural human speaking pauses.
+   - Integrated 4-frame rolling pre-roll ring buffer ($120\text{ ms}$) in `SpeechTurnAccumulator` so initial plosive consonants (`p`, `t`, `k`, `b`) before energy threshold breach are completely preserved.
+   - Lowered silence peak amplitude check from $0.01$ to $0.004$, delegating faint-voice discrimination to Faster-Whisper's neural Silero VAD.
+2. **Client Microphone Lifecycle Decoupling (`ui/index.html`)**:
+   - Decoupled Web Speech API `recognizer.onend` from calling `stopDirectVoiceBargeIn()`, preventing browser-side speech recognition timeouts from killing the active microphone streaming session.
+   - Increased client conversational pause timeout to $1800\text{ ms}$ and lowered RMS threshold to $0.015$.
+   - Added `fallback_query` to `VoiceEndMessage` (`voice_agent.server.schemas`, `websocket.py`) allowing graceful transcript recovery if audio transmission is quiet.
+3. **Lore Context Disambiguation & Web Sanity (`voice_agent.llm.client`)**:
+   - Upgraded web search to `ddgs` library (v9.16.1).
+   - Anchors character and lore lookups (e.g. "who is lucy", "david", "arasaka") with narrative universe context ("Cyberpunk"), preventing unrelated search hits (e.g. Lucy Australopithecus fossil).
+   - Sanitizes web snippets by stripping leading/trailing non-alphanumeric punctuation and filtering out hominid/fossil/album disambiguation keywords.
+   - Enforced query term presence in extractive synthesis candidate sentences, guaranteeing direct answers to user queries.
 
 

@@ -11,9 +11,9 @@ class SpeechTurnAccumulator:
     def __init__(
         self,
         sample_rate: int = 16000,
-        energy_threshold: float = 0.04,
-        silence_timeout_ms: int = 650,
-        min_speech_duration_ms: int = 400,
+        energy_threshold: float = 0.015,
+        silence_timeout_ms: int = 1400,
+        min_speech_duration_ms: int = 200,
     ):
         self.sample_rate = sample_rate
         self.energy_threshold = energy_threshold
@@ -21,6 +21,7 @@ class SpeechTurnAccumulator:
         self.min_speech_duration_ms = min_speech_duration_ms
         self.is_speaking: bool = False
         self._speech_buffer: List[bytes] = []
+        self._pre_roll_buffer: List[bytes] = []
         self._speech_duration_ms: float = 0.0
         self._silence_duration_ms: float = 0.0
         self._last_speech_time: float = 0.0
@@ -45,7 +46,8 @@ class SpeechTurnAccumulator:
         if rms >= self.energy_threshold:
             if not self.is_speaking:
                 self.is_speaking = True
-                self._speech_buffer = []
+                self._speech_buffer = list(self._pre_roll_buffer)
+                self._pre_roll_buffer = []
                 self._speech_duration_ms = 0.0
                 self._silence_duration_ms = 0.0
                 self._speech_start_time = now
@@ -72,6 +74,11 @@ class SpeechTurnAccumulator:
                 self.reset()
                 if speech_duration >= self.min_speech_duration_ms:
                     return utterance
+        else:
+            # Maintain rolling pre-roll buffer of last 4 chunks
+            self._pre_roll_buffer.append(pcm_chunk)
+            if len(self._pre_roll_buffer) > 4:
+                self._pre_roll_buffer.pop(0)
 
         return None
 
@@ -81,12 +88,17 @@ class SpeechTurnAccumulator:
             utterance = b"".join(self._speech_buffer)
             self.reset()
             return utterance
+        elif self._pre_roll_buffer:
+            utterance = b"".join(self._pre_roll_buffer)
+            self.reset()
+            return utterance
         return None
 
     def reset(self):
         """Reset internal accumulator state."""
         self.is_speaking = False
         self._speech_buffer = []
+        self._pre_roll_buffer = []
         self._speech_duration_ms = 0.0
         self._silence_duration_ms = 0.0
         self._last_speech_time = 0.0

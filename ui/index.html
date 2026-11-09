@@ -872,13 +872,12 @@
     };
 
     recognizer.onend = () => {
-      // Silence detected by browser speech recognition
+      // Do not kill voice barge-in session if browser Web Speech API times out;
+      // server-side Faster-Whisper continues buffering 16kHz PCM audio
       if (isVoiceListening) {
-        stopDirectVoiceBargeIn();
+        try { recognizer.start(); } catch(e) {}
       }
     };
-
-    return recognizer;
   }
 
   function updateBargeInButtonUI(listening) {
@@ -928,7 +927,7 @@
     if (ticker) {
       ticker.style.display = 'flex';
       const textEl = document.getElementById('speech-ticker-text');
-      if (textEl) textEl.innerText = 'Listening to your voice... Speak your question';
+      if (textEl) textEl.innerText = '🔴 RECORDING: Speak your question, then click STOP...';
     }
 
     // 4. Initialize and trigger Speech Recognition (optional browser preview)
@@ -963,14 +962,20 @@
       try { speechRecognizer.stop(); } catch(e) {}
     }
 
+    const input = document.getElementById('interruption-query-input');
+    const existingVal = input ? input.value.trim() : '';
+
+    const tickerText = document.getElementById('speech-ticker-text');
+    if (tickerText) {
+      tickerText.innerText = '⚡ Transcribing voice via Faster-Whisper...';
+    }
+
     // Send voice_end over WebSocket to flush server accumulator and transcribe immediately
     if (wsClient && wsClient.isConnected) {
-      wsClient.send({ type: 'voice_end' });
+      wsClient.send({ type: 'voice_end', fallback_query: existingVal });
     } else {
-      const input = document.getElementById('interruption-query-input');
-      const val = input ? input.value.trim() : '';
-      if (val.length > 0) {
-        submitInterruptionQuery(val);
+      if (existingVal.length > 0) {
+        submitInterruptionQuery(existingVal);
       }
     }
   }
@@ -1805,14 +1810,14 @@
               sumSq += input[i] * input[i];
             }
             const rms = Math.sqrt(sumSq / input.length);
-            if (rms > 0.035) {
+            if (rms > 0.015) {
               this._clientVoiceDetected = true;
               this._clientSilenceStart = 0;
             } else if (this._clientVoiceDetected) {
               const now = performance.now();
               if (!this._clientSilenceStart) {
                 this._clientSilenceStart = now;
-              } else if (now - this._clientSilenceStart > 750) {
+              } else if (now - this._clientSilenceStart > 1800) {
                 this._clientVoiceDetected = false;
                 this._clientSilenceStart = 0;
                 stopDirectVoiceBargeIn();
