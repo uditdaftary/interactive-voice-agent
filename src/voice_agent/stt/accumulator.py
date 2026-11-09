@@ -1,0 +1,93 @@
+import time
+from typing import List, Optional
+import numpy as np
+
+
+class SpeechTurnAccumulator:
+    """Buffers real-time microphone PCM chunks, identifies active speech turns
+    via energy thresholding, and detects conversational pauses for transcription.
+    """
+
+    def __init__(
+        self,
+        sample_rate: int = 16000,
+        energy_threshold: float = 0.04,
+        silence_timeout_ms: int = 650,
+        min_speech_duration_ms: int = 400,
+    ):
+        self.sample_rate = sample_rate
+        self.energy_threshold = energy_threshold
+        self.silence_timeout_ms = silence_timeout_ms
+        self.min_speech_duration_ms = min_speech_duration_ms
+        self.is_speaking: bool = False
+        self._speech_buffer: List[bytes] = []
+        self._speech_duration_ms: float = 0.0
+        self._silence_duration_ms: float = 0.0
+        self._last_speech_time: float = 0.0
+        self._speech_start_time: float = 0.0
+
+    def feed(self, pcm_chunk: bytes) -> Optional[bytes]:
+        """Feed a 16-bit PCM chunk. Returns full utterance bytes when user finishes speaking."""
+        if not pcm_chunk or len(pcm_chunk) < 2:
+            return None
+
+        # Truncate any partial sample (if odd number of bytes)
+        valid_len = len(pcm_chunk) - (len(pcm_chunk) % 2)
+        pcm16 = np.frombuffer(pcm_chunk[:valid_len], dtype=np.int16)
+        if len(pcm16) == 0:
+            return None
+
+        float_samples = pcm16.astype(np.float32) / 32768.0
+        rms = float(np.sqrt(np.mean(float_samples ** 2)))
+        chunk_duration_ms = (len(pcm16) / self.sample_rate) * 1000.0
+        now = time.monotonic()
+
+        if rms >= self.energy_threshold:
+            if not self.is_speaking:
+                self.is_speaking = True
+                self._speech_buffer = []
+                self._speech_duration_ms = 0.0
+                self._silence_duration_ms = 0.0
+                self._speech_start_time = now
+
+            self._last_speech_time = now
+            self._speech_buffer.append(pcm_chunk)
+            self._speech_duration_ms += chunk_duration_ms
+            self._silence_duration_ms = 0.0
+            return None
+
+        # Silence chunk
+        if self.is_speaking:
+            self._speech_buffer.append(pcm_chunk)
+            self._silence_duration_ms += chunk_duration_ms
+            wall_silence_ms = (now - self._last_speech_time) * 1000.0 if self._last_speech_time > 0 else 0.0
+            effective_silence_ms = max(self._silence_duration_ms, wall_silence_ms)
+
+            if effective_silence_ms >= self.silence_timeout_ms:
+                speech_duration = max(
+                    self._speech_duration_ms,
+                    (self._last_speech_time - self._speech_start_time) * 1000.0,
+                )
+                utterance = b"".join(self._speech_buffer)
+                self.reset()
+                if speech_duration >= self.min_speech_duration_ms:
+                    return utterance
+
+        return None
+
+    def flush(self) -> Optional[bytes]:
+        """Manually flush and return accumulated speech (e.g. on client speech_end event)."""
+        if self._speech_buffer:
+            utterance = b"".join(self._speech_buffer)
+            self.reset()
+            return utterance
+        return None
+
+    def reset(self):
+        """Reset internal accumulator state."""
+        self.is_speaking = False
+        self._speech_buffer = []
+        self._speech_duration_ms = 0.0
+        self._silence_duration_ms = 0.0
+        self._last_speech_time = 0.0
+        self._speech_start_time = 0.0
