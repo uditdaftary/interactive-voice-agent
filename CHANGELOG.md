@@ -5,22 +5,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
-## [0.3.0] - Unreleased
+## [0.3.0] - 2026-11-09
 
 ### Unified Voice Agent HUD Dashboard & Full-Stack WebSocket Server
-*Full-stack integration of the single-page Catalog Sheet HUD with a local FastAPI WebSocket streaming server.*
+*Full-stack integration of the single-page Catalog Sheet HUD with a local FastAPI WebSocket streaming server, hybrid microphone switching, and virtual audio loopback.*
 
 ### Added
 - **Unified FastAPI Server & Static Host**:
-  - Unified local server hosting both the static HUD assets (`ui/`) and bi-directional WebSocket (`ws://localhost:8000/ws`).
-  - Bi-directional 24kHz audio PCM streaming and 30ms VAD event telemetry.
-- **Audio Virtual Device & Mock Loopback**:
-  - `VirtualAudioDevice` enabling headless test execution and automated CI verification without physical sound hardware.
+  - Unified local server hosting static HUD assets (`ui/index.html`, `ui/app.css`, `ui/fonts/`) at `http://localhost:8000/` and bi-directional WebSocket at `ws://localhost:8000/ws`.
+  - Zero-cloud offline execution with complete local asset delivery.
+- **WebSocket Streaming Protocol & Telemetry**:
+  - Bi-directional 24kHz 16-bit mono PCM audio streaming.
+  - 30ms VAD speech activity event broadcast (`speech_active`, `dbfs`, `noise_floor_dbfs`, `threshold_dbfs`).
+  - Active word cursor tracking updates synchronized with audio playhead DAC progress.
+  - Sub-50ms barge-in interruption signals with atomic queue drain notification.
+  - Structured prompt envelope telemetry and 16-bin FFT spectrum streams.
+- **Hybrid Microphone Ingestion Bridge**:
+  - Dynamic switcher between browser Web Audio API PCM capture (`getUserMedia`) and host Python hardware microphone (`sounddevice.InputStream`).
+  - Runtime toggleable via HUD control tab without restarting the server or breaking audio pipelines.
+- **Virtual Audio Loopback Device**:
+  - `VirtualAudioDevice` in-memory fallback generating synthetic audio frames for headless test execution and automated CI verification without physical sound hardware.
 - **Single-Page Catalog Sheet HUD**:
-  - 60 FPS live canvas dynamic voice graph visualizer and FFT spectrum.
-  - Continuous narrative teleprompter with word-level cursor token tracking in inverted Plot White.
-  - Sub-50ms barge-in disruption canvas with atomic queue drain latency benchmark.
-  - Resident character voice selector table (David Martinez, Lucy, V Male/Female, Johnny Silverhand).
+  - Strict conformance to "The Catalog Sheet" design system tokens (44px tabbed controls, 0px corner geometry, Ground `#0b0b0b`, Ink `#efede6`, Signal Yellow `#e8b622`, Fault Red `#e03a2f`).
+  - 60 FPS live canvas dynamic voice graph visualizer (waveform oscilloscope and 16-bar FFT spectrum).
+  - Continuous narrative reader with active word highlighting in inverted Plot White and resumption pre-roll cues in Signal Yellow.
+  - Sub-50ms barge-in disruption canvas and dynamic Q&A prompt envelope telemetry.
+  - Resident character voice selector table (David Martinez, Lucy, V Male, V Female, Johnny Silverhand) with WPM cadence and timbre modulation.
+  - Seamless offline simulation fallback when the WebSocket server is disconnected.
+- **Performance & Latency Benchmarks**:
+  - Automated latency benchmark verifying atomic buffer drain in $< 0.05\text{ms}$.
+  - End-to-end barge-in interruption latency benchmark from speech detection to playback halt in $< 50\text{ms}$.
+  - Automated 5-tier integration test suite covering static assets, WebSocket protocol, hybrid mic switching, and headless pipeline execution.
 - **Post-Sprint Adversarial Quality Protocol**:
   - 4-auditor adversarial review pass (`/code-review-and-quality` and `/bugs-are-annoying`).
   - Competing solution architecture teams (Team Alpha and Team Beta).

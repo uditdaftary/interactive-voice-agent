@@ -105,6 +105,9 @@ In regex-based sentence boundary tokenizers, periods inside abbreviations (`Dr.`
 9. **ADR-09: Decoupled Binary Audio & JSON Telemetry over WebSocket**
    - *Decision*: Multiplex structured JSON control messages (`state_sync`, `vad_event`, `cursor_update`, `barge_in`, `telemetry`, `prompt_envelope`) and raw binary 24kHz 16-bit mono PCM chunks over the same WebSocket connection.
    - *Rationale*: Avoids base64 encoding overhead (which adds ~33% bandwidth and CPU serialization cost in high-frequency audio frames) while preserving typed schema validation for state control and UI telemetry.
+10. **ADR-10: Three-Phase Adversarial Hardening and Competitive Architecture Protocol**
+    - *Decision*: Following any major development sprint, deploy a 4-auditor adversarial scrutiny team applying `/code-review-and-quality` and `/bugs-are-annoying`. Route all discovered defects to 2 independent architecture teams (Team Alpha and Team Beta) communicating via `send_message` to synthesize competing united proposals, from which the Lead Coordinator selects the best design moves for 4 Fixers to implement under TDD.
+    - *Rationale*: Mono-agent verification produces blind spots. Adversarial scrutiny combined with competing peer architecture produces battle-hardened DSP and concurrency stability.
 
 ---
 
@@ -235,11 +238,3 @@ In regex-based sentence boundary tokenizers, periods inside abbreviations (`Dr.`
 - **Browser Mic Mode**: Receives raw PCM chunks over WebSocket from client-side Web Audio API (`getUserMedia`).
 - **Host Mic Mode**: Reads from the server machine's physical microphone via `sounddevice.InputStream`.
 - **Virtual Audio Loopback**: In-memory test audio generator producing configurable silence, tones, or synthesized voice frames, enabling 100% headless automated test coverage without physical hardware dependencies.
-
-
-7. **ADR-07: Unified FastAPI WebSocket Architecture for 24kHz Audio & HUD Telemetry**
-   - *Decision*: Host a unified local FastAPI server on port 8000 serving static single-page HUD assets and exposing `ws://localhost:8000/ws` for bi-directional 24kHz PCM audio frames, 30ms VAD events, word cursor progress, and atomic drain signals.
-   - *Rationale*: Eliminates cross-origin and multi-port complexity, allowing the browser and backend to exchange high-throughput audio with sub-millisecond serialization overhead.
-8. **ADR-08: Three-Phase Adversarial Hardening and Competitive Architecture Protocol**
-   - *Decision*: Following any major development sprint, deploy a 4-auditor adversarial scrutiny team applying `/code-review-and-quality` and `/bugs-are-annoying`. Route all discovered defects to 2 independent architecture teams (Team Alpha and Team Beta) communicating via `send_message` to synthesize competing united proposals, from which the Lead Coordinator selects the best design moves for 4 Fixers to implement under TDD.
-   - *Rationale*: Mono-agent verification produces blind spots. Adversarial scrutiny combined with competing peer architecture produces battle-hardened DSP and concurrency stability.

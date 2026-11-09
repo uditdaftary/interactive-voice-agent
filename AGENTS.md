@@ -6,7 +6,7 @@
 
 ## 1. Multi-Agent System Overview
 
-This project was built and hardened using a coordinated multi-agent collective. To avoid mono-agent blind spots, work is divided across specialized roles with strict separation of concerns, formal reviews, and cross-agent communication protocols.
+This project is orchestrated using a decentralized, multi-agent collective. To scale engineering across complex full-stack voice, DSP, UI, and protocol requirements without context degradation or mono-agent blind spots, work is divided across specialized Sub-Orchestrators with strict domain boundaries, formal review gates, and cross-agent coordination protocols.
 
 ```
                               +--------------------------+
@@ -14,88 +14,104 @@ This project was built and hardened using a coordinated multi-agent collective. 
                               |   (Antigravity Assistant)|
                               +-------------+------------+
                                             |
-         +--------------------+-------------+--------------------+--------------------+
-         |                    |                                  |                    |
-         v                    v                                  v                    v
-  +--------------+    +----------------+                 +----------------+    +--------------+
-  | AUDITOR TEAM |    |   TEAM ALPHA   |                 |   TEAM BETA    |    |  FIXER TEAM  |
-  |  (4 Agents)  |    | (2 Architects) |                 | (2 Architects) |    |  (4 Agents)  |
-  +--------------+    +----------------+                 +----------------+    +--------------+
-  - Auditor 1: Audio  - A1: Lead Audio/DSP                - B1: Hardware/Sys    - Fixer 1: Audio
-  - Auditor 2: VAD    - A2: Orchestration                 - B2: Concurrency     - Fixer 2: VAD
-  - Auditor 3: Cursor          |                                  |             - Fixer 3: Cursor
-  - Auditor 4: LLM/HW          +------------ send_message --------+             - Fixer 4: LLM
+        +------------------+----------------+------------------+------------------+
+        |                  |                |                  |                  |
+        v                  v                v                  v                  v
++---------------+  +---------------+  +---------------+  +---------------+  +---------------+
+|  SUB-ORCH 1   |  |  SUB-ORCH 2   |  |  SUB-ORCH 3   |  |  SUB-ORCH 4   |  | DOCUMENTATION |
+|  (Backend &   |  | (Audio DSP &  |  | (Catalog Sheet|  | (Automated    |  |   CUSTODIAN   |
+|   Streaming)  |  |  Abstraction) |  | HUD Visuals)  |  | Test & Bench) |  | (Memory/Git)  |
++---------------+  +---------------+  +---------------+  +---------------+  +---------------+
 ```
 
 ---
 
-## 2. Agent Teams & Specializations
+## 2. Five-Domain Multi-Agent Topology (Sprint 2 / v0.3.0)
 
-### 2.1. Adversarial Scrutiny Team (Phase 1)
-*Applied `/code-review-and-quality` (5-axis: correctness, readability, architecture, security, performance) and `/bugs-are-annoying` (adversarial defect hunting).*
+Per user directive on multi-agent scale, execution fans out into 5 specialized Sub-Orchestrators acting as domain leads:
 
-1. **Auditor 1 (`Audio & Concurrency Auditor`)**:
-   - *Domain*: `src/voice_agent/audio/ring_buffer.py`, `pipeline.py`.
-   - *Key Findings*: Float truncation into digital silence (`BUG-A01`), 2D array broadcast crashes (`BUG-A02`), integer overflow acoustic shock (`BUG-A05`), heap allocations in hot path mutex (`BUG-A06`), zombie audio re-injection post-drain (`BUG-A07`), step-discontinuity pop on drain (`BUG-A08`).
-2. **Auditor 2 (`VAD & Acoustic Auditor`)**:
-   - *Domain*: `src/voice_agent/vad/energy_vad.py`, microphone streaming.
-   - *Key Findings*: Disconnection from real microphone (`BUG-V01`), missing AEC causing self-barge-in loops (`BUG-V02`), static threshold failure in noise/quiet (`BUG-V03`), permanent lockup on hardware DC bias (`BUG-V04`), float32 scale mismatch (`BUG-V05`), unbuffered chunk hangover corruption (`BUG-V06`), transient click sensitivity (`BUG-V07`).
-3. **Auditor 3 (`Orchestrator & Cursor Auditor`)**:
-   - *Domain*: `src/voice_agent/orchestrator/state_machine.py`, `cursor/tracker.py`, `cursor/splitter.py`.
-   - *Key Findings*: User unable to interrupt during `REPLYING` state (`BUG-O01`), state machine deadlock on callback exception (`BUG-O02`), missing thread safety (`BUG-O03`), disconnected audio-cursor progress (`BUG-O04`), type hazards with magic 100-char threshold (`BUG-O05`), abbreviations broken into fragments (`BUG-O06`), dialogue quotes unhandled (`BUG-O07`), invalid regex `[\b]` backspace token (`BUG-O08`).
-4. **Auditor 4 (`LLM & Hardware Auditor`)**:
-   - *Domain*: `src/voice_agent/llm/client.py`, `orchestrator/context.py`, hardware budgets.
-   - *Key Findings*: Infinite loop in stream parser on abbreviations (`BUG-L01`), decimals split mid-number (`BUG-L03`), ellipses emitting single dots (`BUG-L04`), trailing text lost without flush (`BUG-L05`), prompt injection vulnerabilities (`BUG-L06`), 4GB VRAM budget violations (`BUG-L07`, `BUG-L09`), subprocess worker zombies (`BUG-L08`), pipe buffer deadlocks (`BUG-L14`).
+### 2.1. Sub-Orchestrator 1: Backend & Real-Time Streaming (`sub_orch_backend_1`)
+- **Domain Scope**: `src/voice_agent/server/app.py`, `websocket.py`, `schemas.py`
+- **Responsibilities**:
+  - FastAPI application factory hosting static single-page HUD assets (`ui/`) at `http://localhost:8000/` and bi-directional streaming at `ws://localhost:8000/ws`.
+  - Typed Pydantic message schemas for client-server protocol (`state_sync`, `vad_event`, `cursor_update`, `barge_in`, `telemetry`, `prompt_envelope`).
+  - Active client connection manager and session state tracking.
+  - Graceful disconnection cleanup without dangling background tasks or memory leaks.
+- **Verification Gates**: 100% test pass on static asset routing, WebSocket handshakes, and binary audio frame handling.
+
+### 2.2. Sub-Orchestrator 2: Audio DSP & Hardware Abstraction (`sub_orch_audio_1`)
+- **Domain Scope**: `src/voice_agent/audio/loopback.py`, `hybrid.py`, `ring_buffer.py`
+- **Responsibilities**:
+  - Headless `VirtualAudioDevice` loopback generator producing synthetic PCM frames for hardware-free CI execution.
+  - `HybridMicrophoneBridge` dynamically switching between browser Web Audio API PCM streaming and host Python `sounddevice`.
+  - 30ms VAD telemetry streaming pipeline integration with adaptive noise floor and DC blocker.
+  - Sub-50ms barge-in interruption pipeline trigger and atomic buffer drain latency verification (< 0.05ms).
+- **Verification Gates**: Atomic drain latency benchmark < 0.05ms, zero-discontinuity half-cosine fadeout, smooth mic mode switching.
+
+### 2.3. Sub-Orchestrator 3: Single-Page Catalog Sheet HUD (`sub_orch_frontend_1`)
+- **Domain Scope**: `ui/index.html`, `ui/app.css`, `ui/fonts/`
+- **Responsibilities**:
+  - Strict conformance to "The Catalog Sheet" design system tokens (44px tabbed controls, 0px corner geometry, Ground `#0b0b0b`, Ink `#efede6`, Signal Yellow `#e8b622`, Fault Red `#e03a2f`).
+  - 60 FPS live canvas voice graph oscilloscope and dynamic 16-bar FFT frequency spectrum.
+  - Continuous narrative reader displaying streaming sentences with active word highlighting in inverted Plot White and pre-roll cues in Signal Yellow.
+  - Sub-50ms barge-in disruption canvas and dynamic Q&A prompt envelope telemetry.
+  - Resident character voice selector table (David Martinez, Lucy, V Male, V Female, Johnny Silverhand) with cadence WPM and timbre parameters.
+  - Seamless fallback to local interactive simulation mode when WebSocket server is disconnected.
+- **Verification Gates**: Zero 404 font/asset errors, verified 60 FPS canvas rendering, responsive 44px control layout.
+
+### 2.4. Sub-Orchestrator 4: Testing & Verification Benchmark Suite (`sub_orch_testing_1`)
+- **Domain Scope**: `tests/test_server_static.py`, `test_websocket_protocol.py`, `test_e2e_pipeline.py`, `test_benchmarks.py`
+- **Responsibilities**:
+  - 5-Tier test architecture management:
+    - Tier 1: 56 existing unit and DSP regression tests.
+    - Tier 2: FastAPI static asset serving and WebSocket protocol handshake tests.
+    - Tier 3: End-to-end audio streaming, hybrid mic switching, and virtual loopback tests.
+    - Tier 4: Latency benchmarks verifying atomic drain < 0.05ms and end-to-end barge-in < 50ms.
+    - Tier 5: Adversarial edge case, race condition, and stress testing.
+  - Maintain 100% headless test stability without physical audio hardware dependencies.
+- **Verification Gates**: 100% test pass rate across all tiers in `pytest -v`, zero flaky tests.
+
+### 2.5. Documentation Custodian (`custodian_doc_1`)
+- **Domain Scope**: `pyproject.toml`, `requirements.txt`, `MEMORY.md`, `CHANGELOG.md`, `AGENTS.md`
+- **Responsibilities**:
+  - Development environment baseline and dependency locking (`fastapi`, `uvicorn`, `websockets`, `httpx`).
+  - Git branching discipline on `feature/unified-hud-websocket-server` with conventional commit syntax.
+  - Architectural Decision Record (ADR) synchronization and WebSocket protocol schemas in `MEMORY.md`.
+  - Comprehensive changelog updates adhering to Keep a Changelog in `CHANGELOG.md`.
+  - Multi-agent cluster topology and operational registry maintenance in `AGENTS.md`.
+- **Verification Gates**: Clean git working tree, verified 56 existing regression tests pass on baseline changes.
 
 ---
 
-### 2.2. Solution Architecture Teams (Phase 2)
-*Cross-communicated via `send_message` to design competing, united architectural specifications.*
+## 3. Sub-Orchestrator Delegation & Cluster Coordination Protocols
 
-#### Team Alpha
-- **Subagent A1**: Lead Audio & DSP Systems Engineer
-- **Subagent A2**: Lead Orchestrator & State Machine Architect
-- *United Deliverable*: `docs/TEAM_ALPHA_UNITED_PROPOSAL.md`
-- *Core Contributions*: Designed the token-shielding architecture (`\uE000` sentinels), half-cosine micro-fadeout window on drain, and re-entrant `threading.RLock` state machine.
+To scale development without context degradation, each Sub-Orchestrator coordinates dedicated workers or discrete modular execution cycles:
 
-#### Team Beta
-- **Subagent B1**: Lead Real-Time Hardware & Systems Architect
-- **Subagent B2**: Lead Pipeline & Stream Concurrency Engineer
-- *United Deliverable*: `docs/TEAM_BETA_UNITED_SOLUTION_PROPOSAL.md`
-- *Core Contributions*: Designed the 4GB RTX 3050 VRAM budget envelope, zero-allocation `read_into` with silence fill, Win32 Job Object subprocess lifecycle management, and non-blocking stderr drain threads.
+### 3.1. Workspace Isolation Discipline
+- Every active agent operates within an exclusive directory under `.agents/teamwork/<agent_name>/`.
+- `.agents/teamwork/` is reserved strictly for operational metadata (`DISPATCH.md`, `BRIEFING.md`, `progress.md`, `handoff.md`).
+- Source code, tests, and documentation must never be written into `.agents/teamwork/`.
+- Strict exclusive write boundaries: Agents may only modify files within their assigned domain ownership.
 
----
+### 3.2. Communications & Handoff Standard
+- Inter-agent coordination is conducted via `send_message` with structured headers (`Context`, `Content`, `Action`).
+- Completed deliverables require a formal 5-component `handoff.md` report:
+  1. **Observation**: Exact file paths, line numbers, tool output verbatim.
+  2. **Logic Chain**: Direct causal steps from evidence to conclusion.
+  3. **Caveats**: Scope boundaries, assumptions, uninvestigated areas.
+  4. **Conclusion**: Concrete status and artifact locations.
+  5. **Verification Method**: Exact terminal commands to independently verify claims.
 
-### 2.3. Implementation & Fixer Team (Phase 3)
-*Applied `/test-driven-development` and `/verification-before-completion` to execute code fixes and verify tests.*
+### 3.3. Quality Review Gates (Verification Before Completion)
+- No agent may declare a task complete without executing `pytest` on relevant targets and providing verbatim pass logs.
+- Hardcoded test outputs, mock shortcuts, or facade implementations are strictly prohibited and flagged by the Forensic Auditor.
 
-1. **Fixer 1 (`Audio & DSP Engine`)**:
-   - *Target*: `src/voice_agent/audio/ring_buffer.py`, `tests/test_audio_buffer.py`.
-   - *Outcome*: 15 comprehensive unit tests written and passed (100%).
-2. **Fixer 2 (`VAD & Acoustic Ingestion`)**:
-   - *Target*: `src/voice_agent/vad/energy_vad.py`, `tests/test_vad.py`.
-   - *Outcome*: 9 comprehensive unit tests written and passed (100%).
-3. **Fixer 3 (`Cursor & State Machine`)**:
-   - *Target*: `src/voice_agent/cursor/splitter.py`, `cursor/tracker.py`, `orchestrator/state_machine.py`, `tests/test_cursor.py`, `tests/test_state_machine.py`.
-   - *Outcome*: 15 comprehensive unit tests written and passed (100%).
-4. **Fixer 4 (`LLM & Pipeline Coordinator`)**:
-   - *Target*: `src/voice_agent/llm/client.py`, `orchestrator/context.py`, `pipeline.py`, `run_agent.py`, `tests/test_llm.py`, `tests/test_context.py`, `tests/test_full_pipeline.py`.
-   - *Outcome*: 17 comprehensive unit/integration tests written and passed (100%).
+### 3.4. Dedicated Interactive UI/UX Design System Conformance
+- High-fidelity visual assets and CSS tokens strictly adhere to `DESIGN.md` ("The Catalog Sheet"):
+  - Palette: Ground `#0b0b0b`, Ink `#efede6`, Signal Yellow `#e8b622`, Fault Red `#e03a2f`, Sleeve `#121211`.
+  - Typography: Local Archivo (125% width display) and Martian Mono (tabular numerals) in `ui/fonts/`.
+  - Layout: 44px tabbed controls with right-edge action tabs and 0px border radius.
 
----
-
-## 3. Dedicated Interactive UI/UX Agent Session
-
-Per architectural recommendation, the high-fidelity UI/UX and visual design work is decoupled into a **dedicated interactive chat session** directly with the user.
-
-- **Workspace**: `C:\Projects\interactive-voice-agent`
-- **Active Skills**: `/impeccable`, `/brandkit`, `/high-end-visual-design`, `/animejs-animation`, `/motion-graphics`
-- **Artifacts Managed**: `ui/index.html`, `ui/app.css`, `ui/serve.py`, `DESIGN.md`
-- **Focus Areas**:
-  - Cyberpunk-themed Audio Visualizer HUD (neon oscilloscope, frequency spectrum bars).
-  - Narrative Reader panel with real-time word highlighting synced to audio playhead.
-  - Sub-50ms Barge-In Wave indicator (flashing instantaneous visual feedback upon user speech detection).
-  - Character Persona Voice Selector (David, Lucy, Johnny Silverhand, V Female, V Male).
 
 ---
 
