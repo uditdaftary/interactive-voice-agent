@@ -163,9 +163,12 @@ def sanitize_web_snippet(text: str) -> str:
     text = re.sub(r'^\s*\d{4}s\s*-\s*\d{4}s[A-Za-z]*\s*', '', text)
     # Ensure safe ascii printable representation to avoid Windows CP1252 encoding crashes
     text = text.encode('ascii', 'ignore').decode('ascii')
-    # Remove empty or language-only parens left by non-ascii character stripping
-    text = re.sub(r'\([A-Za-z\s]*:\s*\)', '', text)
+    # Remove empty or language-only parens left by non-ascii character stripping e.g. "(Japanese: or )"
+    text = re.sub(r'\([A-Za-z\s]*:\s*(?:or\s*)?\)', '', text)
+    text = re.sub(r'\(Japanese:[^)]*\)', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\(\s*\)', '', text)
+    # Clean whitespace around punctuation
+    text = re.sub(r'\s+([,.:;?!])', r'\1', text)
     # Strip any dangling punctuation/quotes/parens at the beginning of snippet
     text = re.sub(r'^[^\w]+', '', text)
     # Collapse multiple whitespaces
@@ -382,11 +385,16 @@ class LLMClient:
         if "interrupted your narration with this question: '" in user_msg:
             query = user_msg.split("interrupted your narration with this question: '")[1].split("'")[0].strip()
         elif "User Question:" in user_msg:
-            query = user_msg.split("User Question:")[-1].split("\n")[0].strip()
+            after = user_msg.split("User Question:")[-1]
+            lines = [l.strip() for l in after.split("\n") if l.strip()]
+            query = lines[0] if lines else ""
         elif "Query:" in user_msg:
-            query = user_msg.split("Query:")[-1].split("\n")[0].strip()
+            after = user_msg.split("Query:")[-1]
+            lines = [l.strip() for l in after.split("\n") if l.strip()]
+            query = lines[0] if lines else ""
         else:
-            query = user_msg.split("\n")[0].strip()
+            lines = [l.strip() for l in user_msg.split("\n") if l.strip()]
+            query = lines[0] if lines else ""
 
         # Clean query tokens
         query_terms = [t for t in re.findall(r'\b[a-z]{3,}\b', query.lower()) if t not in {'what', 'who', 'where', 'when', 'tell', 'about', 'this', 'that', 'from', 'with'}]
