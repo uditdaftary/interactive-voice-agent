@@ -15,6 +15,7 @@ import zipfile
 import pypdf
 
 from voice_agent.cursor.splitter import split_sentences
+from voice_agent.document.bm25 import build_rolling_windows
 
 
 @dataclass
@@ -26,6 +27,7 @@ class DocumentContent:
     total_sentences: int
     sentences: List[str] = field(default_factory=list)
     paragraphs: List[str] = field(default_factory=list)
+    passages: List[str] = field(default_factory=list)
 
     def to_dict(self):
         return {
@@ -35,6 +37,7 @@ class DocumentContent:
             "total_sentences": self.total_sentences,
             "sentences": self.sentences,
             "paragraphs": self.paragraphs,
+            "passages": self.passages,
         }
 
 
@@ -81,6 +84,7 @@ def _build_document_content(raw_text: str, title: str, filename: str) -> Documen
         paragraphs = sentences
 
     total_words = sum(len(s.split()) for s in sentences)
+    passages = build_rolling_windows(sentences)
 
     return DocumentContent(
         title=title or Path(filename).stem.replace("_", " ").title(),
@@ -89,6 +93,7 @@ def _build_document_content(raw_text: str, title: str, filename: str) -> Documen
         total_sentences=len(sentences),
         sentences=sentences,
         paragraphs=paragraphs,
+        passages=passages,
     )
 
 

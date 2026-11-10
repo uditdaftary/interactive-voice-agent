@@ -7,15 +7,21 @@ and real-time LLM query interruption with live internet web search grounding.
 import asyncio
 import logging
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import numpy as np
 
+from voice_agent.document.bm25 import BM25Index
 from voice_agent.document.parser import DocumentContent
 from voice_agent.llm.client import (
     CHARACTER_PERSONA_PROMPTS,
     LLMClient,
     PunctuationStreamParser,
     search_web,
+)
+from voice_agent.orchestrator.context import (
+    estimate_tokens,
+    sanitize_chatml,
+    truncate_to_tokens,
 )
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.schemas import (
@@ -52,6 +58,7 @@ class NarrationEngine:
         self.manager = connection_manager
         self.llm = llm_client or LLMClient()
         self.sentences: List[str] = list(initial_sentences or DEFAULT_STORY_SENTENCES)
+        self._bm25_index: BM25Index = BM25Index.from_sentences(self.sentences)
         self.document_title: str = "Night City: Santo Domingo Run"
         self.current_sentence_idx: int = 0
         self.current_word_idx: int = 0
@@ -64,6 +71,7 @@ class NarrationEngine:
         if not doc.sentences:
             return
         self.sentences = list(doc.sentences)
+        self._bm25_index = BM25Index.from_sentences(self.sentences)
         self.document_title = doc.title
         self.current_sentence_idx = 0
         self.current_word_idx = 0
@@ -164,41 +172,43 @@ class NarrationEngine:
         except Exception as exc:
             logger.error(f"Error in narration loop: {exc}")
 
-    def search_document_passages(self, query: str, max_passages: int = 3) -> List[str]:
-        """Search all sentences in the loaded document/prose for relevant passages matching the query."""
+    def search_document_passages_with_scores(
+        self,
+        query: str,
+        max_passages: int = 3,
+        current_sentence_idx: Optional[int] = None,
+    ) -> List[Tuple[str, float]]:
+        """Search all sentences/windows in the loaded document using Okapi BM25 and Gaussian proximity boost."""
         if not self.sentences or not query.strip():
             return []
 
-        query_clean = query.lower()
-        if "arakas" in query_clean:
-            query_clean += " arasaka"
-        if "sande" in query_clean and "sandevistan" not in query_clean:
-            query_clean += " sandevistan"
+        # Cyberpunk voice recognition alias normalization
+        query_norm = query.lower()
+        if "arakas" in query_norm:
+            query_norm += " arasaka"
+        if "sande" in query_norm and "sandevistan" not in query_norm:
+            query_norm += " sandevistan"
 
-        import re
-        stopwords = {
-            "what", "where", "when", "which", "whose", "who", "whom", "tell",
-            "about", "this", "that", "from", "with", "have", "been", "there",
-            "their", "they", "does", "could", "would", "should", "the", "and"
-        }
-        tokens = [w for w in re.findall(r'\b[a-z]{3,}\b', query_clean) if w not in stopwords]
-        if not tokens:
-            return []
+        scored = self._bm25_index.search(
+            query=query_norm,
+            top_k=max_passages,
+            current_sentence_idx=current_sentence_idx,
+        )
+        return [(text, score) for _, score, text in scored]
 
-        scored = []
-        for s in self.sentences:
-            s_low = s.lower()
-            score = 0
-            for t in tokens:
-                if t in s_low:
-                    score += 2
-                elif len(t) >= 4 and t[:4] in s_low:
-                    score += 1
-            if score > 0:
-                scored.append((score, s))
-
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [item[1] for item in scored[:max_passages]]
+    def search_document_passages(
+        self,
+        query: str,
+        max_passages: int = 3,
+        current_sentence_idx: Optional[int] = None,
+    ) -> List[str]:
+        """Search all sentences/windows in loaded document for relevant passages matching query."""
+        scored = self.search_document_passages_with_scores(
+            query=query,
+            max_passages=max_passages,
+            current_sentence_idx=current_sentence_idx,
+        )
+        return [text for text, _ in scored]
 
     async def handle_user_interruption(self, query: str) -> None:
         """Handle real-time barge-in question: grounds query with web search & book passages, queries LLM, speaks answer."""
@@ -224,12 +234,19 @@ class NarrationEngine:
             voice_id = self.manager.active_voice or "david-martinez"
             cadence = self.manager.cadence or 1.0
 
-            # 3. Retrieve relevant passages from document / uploaded notes
-            doc_passages = self.search_document_passages(query, max_passages=3)
+            # 3. Retrieve relevant passages with BM25 & Gaussian proximity boost
+            scored_passages = self.search_document_passages_with_scores(
+                query,
+                max_passages=3,
+                current_sentence_idx=self.current_sentence_idx,
+            )
+            doc_passages = [text for text, _ in scored_passages]
+            best_doc_score = scored_passages[0][1] if scored_passages else 0.0
+            is_authoritative = best_doc_score >= 2.5
 
-            # 4. Live Internet Web Search Grounding
+            # 4. Live Internet Web Search Grounding (skipped if document passage has high BM25 confidence >= 2.5)
             web_grounding = ""
-            if self.llm.web_search_enabled:
+            if self.llm.web_search_enabled and not is_authoritative:
                 await self.manager.broadcast_json(PromptEnvelopeMessage(
                     state="LISTENING",
                     context=f"Searching web and document for: {query[:50]}...",
@@ -238,15 +255,12 @@ class NarrationEngine:
                 ))
                 web_grounding = await search_web(query, max_results=3)
 
-            # 5. Assemble in-character prompt with full context
-            context_parts = []
-            if doc_passages:
-                context_parts.append("Passages from Document:\n" + "\n".join(f"- {p}" for p in doc_passages))
-            if current_context:
-                context_parts.append(f"Currently Reading Sentence: \"{current_context}\"")
-            if web_grounding:
-                context_parts.append(f"Live Internet Web Search Results:\n{web_grounding}")
-            context_block = "\n\n".join(context_parts)
+            # 5. Context Budgeting & ChatML Sanitization (enforces 2048-token limit for RTX 3050 4GB VRAM)
+            clean_query = sanitize_chatml(query)
+            clean_query = truncate_to_tokens(clean_query, max_tokens=256, from_end=False)
+            clean_current_context = sanitize_chatml(current_context)
+            clean_passages = [sanitize_chatml(p) for p in doc_passages]
+            clean_web_grounding = sanitize_chatml(web_grounding)
 
             character_prompt = CHARACTER_PERSONA_PROMPTS.get(
                 voice_id,
@@ -258,6 +272,29 @@ class NarrationEngine:
                 ),
             )
 
+            # Calculate token allowances
+            system_tokens = estimate_tokens(character_prompt) + 30
+            output_headroom = 256  # Reserved for 3-sentence generation
+            max_context_budget = 2048
+            available_user_tokens = max(256, max_context_budget - system_tokens - output_headroom)
+            query_tokens = estimate_tokens(clean_query)
+            remaining_context_budget = max(100, available_user_tokens - query_tokens)
+
+            context_parts = []
+            if clean_passages:
+                if is_authoritative:
+                    header = "Authoritative Document Passages (Primary Source of Truth):\n"
+                else:
+                    header = "Passages from Document:\n"
+                context_parts.append(header + "\n".join(f"- {p}" for p in clean_passages))
+            if clean_current_context:
+                context_parts.append(f"Currently Reading Sentence: \"{clean_current_context}\"")
+            if clean_web_grounding:
+                context_parts.append(f"Live Internet Web Search Results:\n{clean_web_grounding}")
+
+            raw_context_block = "\n\n".join(context_parts)
+            context_block = truncate_to_tokens(raw_context_block, max_tokens=remaining_context_budget, from_end=False)
+
             messages = [
                 {
                     "role": "system",
@@ -265,7 +302,7 @@ class NarrationEngine:
                 },
                 {
                     "role": "user",
-                    "content": f"{context_block}\n\nUser Question: {query}",
+                    "content": f"{context_block}\n\nUser Question: {clean_query}",
                 },
             ]
 
