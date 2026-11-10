@@ -123,3 +123,66 @@ def test_speech_turn_accumulator_export():
     from voice_agent.stt import SpeechTurnAccumulator as ExportedAccumulator
     assert ExportedAccumulator is SpeechTurnAccumulator
 
+
+def test_speech_turn_accumulator_monotonic_silence_timeout():
+    import time
+    # Low silence timeout for fast test execution (60ms)
+    acc = SpeechTurnAccumulator(sample_rate=16000, silence_timeout_ms=60, min_speech_duration_ms=50)
+    # Feed 100ms loud speech
+    t = np.linspace(0, 0.1, 1600, endpoint=False)
+    loud = (np.sin(2 * np.pi * 440 * t) * 16000).astype(np.int16).tobytes()
+    turn = acc.feed(loud)
+    assert turn is None
+    assert acc.is_speaking
+
+    # Sleep for 100ms to let monotonic clock elapse beyond 60ms timeout (robust against Windows timer quantum)
+    time.sleep(0.10)
+
+    # Feed a very short silence chunk (10ms: 160 samples), which alone is < 60ms audio duration
+    short_silence = np.zeros(160, dtype=np.int16).tobytes()
+    turn = acc.feed(short_silence)
+    # Monotonic elapsed time should trigger utterance completion
+    assert turn is not None
+    assert not acc.is_speaking
+
+
+def test_speech_turn_accumulator_handles_48khz_without_premature_cutoff():
+    import time
+    # Default silence timeout is 1400ms
+    acc = SpeechTurnAccumulator(sample_rate=16000, silence_timeout_ms=1400, min_speech_duration_ms=100)
+
+    # Feed 200ms of loud speech at 48kHz (9600 samples)
+    t = np.linspace(0, 0.2, 9600, endpoint=False)
+    loud_48k = (np.sin(2 * np.pi * 440 * t) * 16000).astype(np.int16).tobytes()
+    acc.feed(loud_48k)
+    assert acc.is_speaking
+
+    # Simulate 469ms of silence arriving in 48kHz chunks (2048 samples = 4096 bytes per chunk)
+    # 22512 samples at 16kHz would be 1407ms, which caused premature cut-off in Issue #16.
+    # But wall-clock time has NOT reached 1400ms.
+    chunk_48k_silence = np.zeros(2048, dtype=np.int16).tobytes()
+    for _ in range(11):
+        turn = acc.feed(chunk_48k_silence)
+        # Must NOT cut off prematurely at 469ms
+        assert turn is None
+        assert acc.is_speaking
+
+
+def test_speech_turn_accumulator_low_energy_speech_tolerance():
+    acc = SpeechTurnAccumulator(sample_rate=16000, energy_threshold=0.015)
+    # Start speech turn with loud chunk (RMS ~ 0.35)
+    t = np.linspace(0, 0.1, 1600, endpoint=False)
+    loud = (np.sin(2 * np.pi * 440 * t) * 16000).astype(np.int16).tobytes()
+    acc.feed(loud)
+    assert acc.is_speaking
+
+    # Feed lower energy speech (e.g. quiet syllable / phoneme: RMS ~ 0.012, below 0.015 but above low-energy tolerance)
+    # Amplitude ~ 400 corresponds to RMS ~ 400 / (sqrt(2)*32768) ~ 0.0086
+    # Let amplitude be 520 -> RMS ~ 0.0112
+    quiet = (np.sin(2 * np.pi * 440 * t) * 520).astype(np.int16).tobytes()
+    turn = acc.feed(quiet)
+    assert turn is None
+    # Must remain speaking due to hysteresis tolerance for active speech turns
+    assert acc.is_speaking
+
+

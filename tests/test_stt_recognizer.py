@@ -58,3 +58,48 @@ def test_stt_engine_fallback_mock():
     # When Google speech recognition fails/is offline, fallback_mock returns default
     result = engine.transcribe(sine_wave)
     assert result == "what is arasaka"
+
+
+def test_stt_engine_resamples_48khz_to_16khz():
+    from unittest.mock import MagicMock
+    engine = STTEngine(model_size="tiny.en", device="cpu", compute_type="int8", fallback_mock=True)
+    mock_model = MagicMock()
+    mock_segment = MagicMock()
+    mock_segment.text = "test transcription"
+    mock_model.transcribe.return_value = ([mock_segment], None)
+    engine._whisper_model = mock_model
+
+    # 1 second of 48kHz audio (48000 samples)
+    t = np.linspace(0, 1.0, 48000, endpoint=False)
+    audio_48k = (0.5 * np.sin(2 * np.pi * 440 * t) * 32767).astype(np.int16).tobytes()
+
+    text = engine.transcribe(audio_48k, sample_rate=48000)
+    assert text == "test transcription"
+
+    # Verify mock_model.transcribe received an audio array resampled to 16,000 samples
+    call_args = mock_model.transcribe.call_args
+    assert call_args is not None
+    resampled_audio = call_args[0][0]
+    assert len(resampled_audio) == 16000
+
+
+def test_stt_engine_whisper_initial_prompt_conditioning():
+    from unittest.mock import MagicMock
+    engine = STTEngine(model_size="tiny.en", device="cpu", compute_type="int8", fallback_mock=True)
+    mock_model = MagicMock()
+    mock_segment = MagicMock()
+    mock_segment.text = "sandevistan arasaka"
+    mock_model.transcribe.return_value = ([mock_segment], None)
+    engine._whisper_model = mock_model
+
+    t = np.linspace(0, 1.0, 16000, endpoint=False)
+    audio_16k = (0.5 * np.sin(2 * np.pi * 440 * t) * 32767).astype(np.int16).tobytes()
+
+    text = engine.transcribe(audio_16k, sample_rate=16000)
+    assert text == "sandevistan arasaka"
+
+    call_kwargs = mock_model.transcribe.call_args[1]
+    expected_prompt = "Cyberpunk 2077, Night City, Arasaka, Sandevistan, Johnny Silverhand, Lucy, David Martinez."
+    assert "initial_prompt" in call_kwargs
+    assert call_kwargs["initial_prompt"] == expected_prompt
+

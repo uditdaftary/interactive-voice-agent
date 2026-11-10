@@ -1791,13 +1791,33 @@
           if (!this.isConnected || this.micSource !== 'browser') return;
           const input = e.inputBuffer.getChannelData(0);
 
-          // Hands-free voice barge-in detection
+          // Downsample input from native sample rate to 16,000 Hz using linear interpolation
+          const sampleRate = this.audioContext.sampleRate;
+          const targetRate = 16000;
+          let downsampled;
+
+          if (sampleRate === targetRate) {
+            downsampled = input;
+          } else {
+            const ratio = sampleRate / targetRate;
+            const newLength = Math.round(input.length / ratio);
+            downsampled = new Float32Array(newLength);
+            for (let i = 0; i < newLength; i++) {
+              const origIndex = i * ratio;
+              const indexFloor = Math.floor(origIndex);
+              const indexCeil = Math.min(input.length - 1, indexFloor + 1);
+              const weight = origIndex - indexFloor;
+              downsampled[i] = input[indexFloor] * (1 - weight) + input[indexCeil] * weight;
+            }
+          }
+
+          // Hands-free voice barge-in detection on downsampled 16kHz buffer
           if (handsFreeDetectionEnabled && currentState === 'NARRATING' && !isVoiceListening) {
             let sumSquares = 0.0;
-            for (let i = 0; i < input.length; i++) {
-              sumSquares += input[i] * input[i];
+            for (let i = 0; i < downsampled.length; i++) {
+              sumSquares += downsampled[i] * downsampled[i];
             }
-            const rms = Math.sqrt(sumSquares / input.length);
+            const rms = downsampled.length > 0 ? Math.sqrt(sumSquares / downsampled.length) : 0;
             if (rms > 0.065) {
               startDirectVoiceBargeIn();
             }
@@ -1806,10 +1826,10 @@
           // Real-time conversational pause/silence detection during active voice listening
           if (isVoiceListening) {
             let sumSq = 0.0;
-            for (let i = 0; i < input.length; i++) {
-              sumSq += input[i] * input[i];
+            for (let i = 0; i < downsampled.length; i++) {
+              sumSq += downsampled[i] * downsampled[i];
             }
-            const rms = Math.sqrt(sumSq / input.length);
+            const rms = downsampled.length > 0 ? Math.sqrt(sumSq / downsampled.length) : 0;
             if (rms > 0.015) {
               this._clientVoiceDetected = true;
               this._clientSilenceStart = 0;
@@ -1828,9 +1848,9 @@
             this._clientSilenceStart = 0;
           }
 
-          const pcm16 = new Int16Array(input.length);
-          for (let i = 0; i < input.length; i++) {
-            const s = Math.max(-1, Math.min(1, input[i]));
+          const pcm16 = new Int16Array(downsampled.length);
+          for (let i = 0; i < downsampled.length; i++) {
+            const s = Math.max(-1, Math.min(1, downsampled[i]));
             pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
           }
           this.send(pcm16.buffer);

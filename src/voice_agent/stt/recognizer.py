@@ -75,6 +75,24 @@ class STTEngine:
         if audio_np.ndim > 1:
             audio_np = np.mean(audio_np, axis=-1)
 
+        # Defensive resampling: guarantee 16,000 Hz for STT models
+        if sample_rate != 16000 and audio_np.size > 0:
+            target_rate = 16000
+            try:
+                import math
+                from scipy import signal
+                gcd = math.gcd(int(sample_rate), target_rate)
+                up = target_rate // gcd
+                down = int(sample_rate) // gcd
+                audio_np = signal.resample_poly(audio_np, up, down).astype(np.float32)
+            except Exception as resample_err:
+                logger.debug("scipy resample_poly failed (%s), using linear interpolation fallback", resample_err)
+                orig_len = len(audio_np)
+                target_len = int(round(orig_len * (target_rate / sample_rate)))
+                orig_indices = np.linspace(0, orig_len - 1, num=target_len)
+                audio_np = np.interp(orig_indices, np.arange(orig_len), audio_np).astype(np.float32)
+            sample_rate = target_rate
+
         # Check for near-total silence
         if audio_np.size == 0 or np.max(np.abs(audio_np)) < 0.004:
             return ""
@@ -87,6 +105,7 @@ class STTEngine:
                     beam_size=3,
                     language="en",
                     vad_filter=True,
+                    initial_prompt="Cyberpunk 2077, Night City, Arasaka, Sandevistan, Johnny Silverhand, Lucy, David Martinez.",
                 )
                 text = " ".join([s.text.strip() for s in segments]).strip()
                 if text:

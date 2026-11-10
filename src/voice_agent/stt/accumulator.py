@@ -43,7 +43,10 @@ class SpeechTurnAccumulator:
         chunk_duration_ms = (len(pcm16) / self.sample_rate) * 1000.0
         now = time.monotonic()
 
-        if rms >= self.energy_threshold:
+        # Adaptive threshold with hysteresis: lower threshold for ongoing speech to preserve quiet phonemes
+        active_threshold = self.energy_threshold * 0.7 if self.is_speaking else self.energy_threshold
+
+        if rms >= active_threshold:
             if not self.is_speaking:
                 self.is_speaking = True
                 self._speech_buffer = list(self._pre_roll_buffer)
@@ -62,10 +65,18 @@ class SpeechTurnAccumulator:
         if self.is_speaking:
             self._speech_buffer.append(pcm_chunk)
             self._silence_duration_ms += chunk_duration_ms
-            wall_silence_ms = (now - self._last_speech_time) * 1000.0 if self._last_speech_time > 0 else 0.0
-            effective_silence_ms = max(self._silence_duration_ms, wall_silence_ms)
+            elapsed_silence_ms = (now - self._last_speech_time) * 1000.0 if self._last_speech_time > 0 else 0.0
 
-            if effective_silence_ms >= self.silence_timeout_ms:
+            # Monotonic wall-clock elapsed silence governs active voice turns to prevent
+            # sample-rate mismatches (e.g. 48kHz vs 16kHz) from triggering premature cut-offs.
+            # Offline / synthetic test feeds that pass an entire silence segment in a single chunk
+            # are also supported via chunk_duration_ms.
+            is_silence_timeout = (
+                elapsed_silence_ms >= self.silence_timeout_ms
+                or chunk_duration_ms >= self.silence_timeout_ms
+            )
+
+            if is_silence_timeout:
                 speech_duration = max(
                     self._speech_duration_ms,
                     (self._last_speech_time - self._speech_start_time) * 1000.0,

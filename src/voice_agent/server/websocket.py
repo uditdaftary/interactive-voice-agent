@@ -38,16 +38,30 @@ async def process_stt_utterance(
     manager: ConnectionManager,
     stt_engine: Any,
     engine: Optional[Any] = None,
+    fallback_query: Optional[str] = None,
 ) -> Optional[str]:
     """Transcribe accumulated utterance audio, broadcast transcript, and trigger interruption."""
     if not utterance:
+        if fallback_query and fallback_query.strip():
+            clean_text = fallback_query.strip()
+            logger.info("Empty utterance audio; routing fallback query: %s", clean_text)
+            msg = UserSpeechTranscriptMessage(
+                transcript=clean_text,
+                is_final=True,
+                latency_ms=0.0,
+            )
+            await manager.broadcast_json(msg)
+            if engine is not None and hasattr(engine, "handle_user_interruption"):
+                asyncio.create_task(engine.handle_user_interruption(clean_text))
+            return clean_text
         return None
+
     start_t = time.perf_counter()
     try:
         transcript = stt_engine.transcribe(utterance)
     except Exception as exc:
         logger.warning(f"STT transcription failed: {exc}")
-        return None
+        transcript = ""
 
     latency_ms = round((time.perf_counter() - start_t) * 1000.0, 2)
     if transcript and transcript.strip():
@@ -61,6 +75,25 @@ async def process_stt_utterance(
         if engine is not None and hasattr(engine, "handle_user_interruption"):
             asyncio.create_task(engine.handle_user_interruption(clean_text))
         return clean_text
+    else:
+        logger.debug(
+            "Faster-Whisper returned empty transcript for utterance (%d bytes, %.2f ms latency)",
+            len(utterance),
+            latency_ms,
+        )
+        if fallback_query and fallback_query.strip():
+            clean_text = fallback_query.strip()
+            logger.info("Using fallback query following empty STT transcript: %s", clean_text)
+            msg = UserSpeechTranscriptMessage(
+                transcript=clean_text,
+                is_final=True,
+                latency_ms=0.0,
+            )
+            await manager.broadcast_json(msg)
+            if engine is not None and hasattr(engine, "handle_user_interruption"):
+                asyncio.create_task(engine.handle_user_interruption(clean_text))
+            return clean_text
+
     return None
 
 
@@ -150,21 +183,23 @@ async def handle_client_text_message(
             acc = getattr(manager, "accumulator", None)
             active_stt = stt_engine or getattr(manager, "stt_engine", None)
             utterance = acc.flush() if acc is not None else None
+            fb = getattr(msg, "fallback_query", None)
             clean_text = None
             if utterance and active_stt is not None:
-                clean_text = await process_stt_utterance(utterance, manager, active_stt, engine)
-
-            if not clean_text and getattr(msg, "fallback_query", None):
-                fb = msg.fallback_query.strip()
-                if fb:
-                    out_msg = UserSpeechTranscriptMessage(
-                        transcript=fb,
-                        is_final=True,
-                        latency_ms=0.0,
-                    )
-                    await manager.broadcast_json(out_msg)
-                    if engine is not None and hasattr(engine, "handle_user_interruption"):
-                        asyncio.create_task(engine.handle_user_interruption(fb))
+                clean_text = await process_stt_utterance(
+                    utterance, manager, active_stt, engine, fallback_query=fb
+                )
+            elif fb and fb.strip():
+                clean_fb = fb.strip()
+                logger.info(f"Direct fallback query routing (no accumulated utterance): {clean_fb}")
+                out_msg = UserSpeechTranscriptMessage(
+                    transcript=clean_fb,
+                    is_final=True,
+                    latency_ms=0.0,
+                )
+                await manager.broadcast_json(out_msg)
+                if engine is not None and hasattr(engine, "handle_user_interruption"):
+                    asyncio.create_task(engine.handle_user_interruption(clean_fb))
 
 
 @router.websocket("/ws")
