@@ -5,6 +5,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [0.7.0] - 2026-11-10
+
+### Audio Downsampling, Search Relevance Overhaul & Okapi BM25 Passage Retrieval
+*Resolved 48kHz -> 16kHz microphone sample-rate mismatch and premature 469ms silence truncation (Issue #16), overhauled web search grounding with punctuation-free tokenization and interrogative filtering (Issue #17), and implemented a pure-Python Okapi BM25 ranking engine with rolling 3-sentence context windows (Issue #18).*
+
+### Fixed & Enhanced
+- **Client-Side Polyphase/Linear Downsampling & Defensive Resampling (Issue #16)**:
+  - In `ui/index.html` (`onaudioprocess`), implemented dynamic linear downsampling from `this.audioContext.sampleRate` ($48\text{kHz} / 44.1\text{kHz}$) to $16{,}000\text{ Hz}$ before converting to `pcm16` and streaming over WebSocket.
+  - In `src/voice_agent/stt/recognizer.py`, added defensive polyphase resampling via `scipy.signal.resample_poly` guaranteeing $16{,}000\text{ Hz}$ input for Faster-Whisper regardless of source sample rate.
+  - In `src/voice_agent/stt/accumulator.py`, converted conversational pause/silence timeout detection to track true monotonic wall-clock elapsed time (`time.monotonic() - self._last_speech_time`), eliminating the 3x time-acceleration defect that prematurely aborted speech at 469ms.
+  - Added low-energy speech hysteresis in `SpeechTurnAccumulator` preserving trailing consonants.
+  - Conditioned `WhisperModel.transcribe` with `initial_prompt` guiding acoustic decoding towards Cyberpunk terminology.
+- **Web Search Grounding Relevance & Interrogative Title Filtering (Issue #17)**:
+  - In `src/voice_agent/llm/client.py`, implemented punctuation-free tokenization using regex word boundaries `\b[a-z0-9_-]{2,}\b` and a 107-word English stopword set.
+  - Expanded lore and entity disambiguation across 18 Cyberpunk characters and 13 core world concepts (Relic, Blackwall, Sandevistan, Soulkiller, Cyberpsychosis, etc.).
+  - Increased DuckDuckGo retrieval depth (`max_results = 8`).
+  - Added an interrogative penalty (-20 score) to prevent echoing search result question titles as answers.
+  - Replaced definition-only keyword bias with information-density and predicate clause scoring (`killed by`, `stole`, `invented`, `developed`, `destroyed`, `died`, `shot`, `caused by`, `biochip`, `construct`, `ai`).
+- **Pure-Python Okapi BM25 Retrieval & Rolling Context Windows (Issue #18)**:
+  - Implemented `BM25Index` in `src/voice_agent/document/bm25.py` ($k_1 = 1.5, b = 0.75$, exact word boundary regex, non-negative Robertson-Spärck Jones IDF).
+  - Built rolling 3-sentence context windows ($W_i = [s_{i-1}, s_i, s_{i+1}]$) to retain subject antecedents and dialogue pronouns.
+  - Added playhead proximity Gaussian boost to prioritize passages near the active reading cursor.
+  - Established context provenance hierarchy: when top document passages have high BM25 scores ($\ge 2.5$), document context is designated primary ground truth and external search is bypassed.
+  - Clamped interruption queries to 256 tokens, stripped ChatML control tokens, and bounded context to 2048 tokens to safeguard RTX 3050 4GB VRAM.
+- **Testing & Verification**:
+  - Full test suite expanded from 149 to **205 tests** across all 5 tiers.
+  - **100% test pass rate (205/205 tests passing in 44.79s)**.
+
+---
+
 ## [0.6.1] - 2026-11-09
 
 ### Conversational Speech Sensitivity, Pre-Roll Buffering & Lore Grounding Disambiguation

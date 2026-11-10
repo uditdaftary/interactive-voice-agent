@@ -296,5 +296,33 @@ All issues triaged into two independent architecture teams cross-communicating v
 4. **Testing & Verification Lead**:
    - Verified 149/149 tests passing with 100% success rate.
 
+---
+
+## 11. Sprint 5.2: Audio Downsampling, Search Relevance Overhaul & Okapi BM25 Ranking Engine
+
+*Executed to eliminate the 48kHz -> 16kHz microphone sample-rate mismatch and premature 469ms silence cutoffs (Issue #16), overhaul web search grounding with punctuation-free tokenization and interrogative filtering (Issue #17), and implement a pure-Python Okapi BM25 ranking engine with rolling 3-sentence context windows (Issue #18).*
+
+### 11.1. Domain Lead Assignments
+1. **Fixer 1: STT & Audio Ingestion Pipeline Lead (Issue #16)**:
+   - Added client-side linear downsampling in `ui/index.html` from `audioContext.sampleRate` ($48\text{kHz} / 44.1\text{kHz}$) to $16{,}000\text{ Hz}$.
+   - Implemented defensive polyphase resampling in `STTEngine.transcribe` (`voice_agent.stt.recognizer`) via `scipy.signal.resample_poly` guaranteeing 16kHz for Faster-Whisper.
+   - Refactored `SpeechTurnAccumulator` (`voice_agent.stt.accumulator`) to track conversational pauses via monotonic elapsed wall-clock time (`time.monotonic() - self._last_speech_time`), fixing the 3x time-acceleration bug.
+   - Added `initial_prompt` conditioning in Faster-Whisper for Cyberpunk vocabulary.
+2. **Fixer 2: Web Search Relevance & Interrogative Filtering Lead (Issue #17)**:
+   - Built punctuation-free tokenization with regex word boundaries `\b[a-z0-9_-]{2,}\b` and 107-word English stopword set.
+   - Expanded lore and entity disambiguation across 18 characters and 13 core Cyberpunk concepts.
+   - Increased search depth to 8 results with warning logging on network errors.
+   - Applied -20 penalty to interrogatives and question titles to prevent echoing user queries as answers.
+   - Formulated factual predicate and information-density scoring.
+3. **Fixer 3: Okapi BM25 & Context Fusion Engine Lead (Issue #18)**:
+   - Implemented pure-Python `BM25Index` (`voice_agent.document.bm25`) with exact word boundaries and non-negative Robertson-Spärck Jones IDF.
+   - Built overlapping 3-sentence rolling context windows ($W_i = [s_{i-1}, s_i, s_{i+1}]$) preserving pronoun coreference.
+   - Implemented playhead proximity Gaussian boost in `NarrationEngine.search_document_passages`.
+   - Established context provenance hierarchy prioritizing document passages over external search when BM25 score $\ge 2.5$.
+   - Re-integrated `orchestrator.context` ChatML sanitization and 2048-token context budget.
+4. **Testing & Verification Lead**:
+   - Expanded test suite from 149 to 205 tests across all 5 tiers.
+   - 100% test pass rate (205/205 tests passing in 44.79s).
+
 
 

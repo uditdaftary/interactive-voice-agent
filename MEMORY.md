@@ -125,6 +125,15 @@ In regex-based sentence boundary tokenizers, periods inside abbreviations (`Dr.`
       - Maintain client microphone recording across Web Speech API `onend` timeouts to prevent premature listening abortion.
       - Automatically anchor character/lore queries with context ("Cyberpunk") during web search, enforce query term presence in extractive synthesis, and filter out hominid/fossil/album disambiguation artifacts.
     - *Rationale*: Guarantees that quiet desktop microphones and natural conversational pauses do not abort speech capture mid-sentence, while ensuring web search responses answer about the intended fictional character rather than unrelated Wikipedia fossils or songs.
+14. **ADR-14: Client-Side Audio Downsampling, Defensive Polyphase Resampling, Okapi BM25 Retrieval & Provenance Hierarchy**
+    - *Decision*:
+      - Downsample client microphone audio from hardware native rate ($48\text{kHz} / 44.1\text{kHz}$) to $16{,}000\text{ Hz}$ in Web Audio `onaudioprocess` before converting to 16-bit PCM.
+      - Implement defensive polyphase resampling in `STTEngine.transcribe()` via `scipy.signal.resample_poly` ensuring $16\text{kHz}$ input for Faster-Whisper.
+      - Track speech silence timeouts via monotonic elapsed wall-clock time (`time.monotonic() - self._last_speech_time`), eliminating the 3x time-acceleration defect in `SpeechTurnAccumulator`.
+      - Overhaul web search with punctuation-free tokenization `\b[a-z0-9_-]{2,}\b`, 107-word English stopword set, interrogative sentence penalties (-20 score) to prevent echoing question titles as answers, and factual predicate scoring.
+      - Implement pure-Python Okapi BM25 ranking ($k_1 = 1.5, b = 0.75$) with rolling 3-sentence context windows ($W_i = [s_{i-1}, s_i, s_{i+1}]$) and playhead proximity Gaussian boost.
+      - Establish context provenance hierarchy: when top document passages have BM25 score $\ge 2.5$, designate document context as primary ground truth and bypass external search.
+    - *Rationale*: Eliminates acoustic pitch/time warping (3x duration stretch and -19.02 semitone drop), prevents premature 469ms speech cutoffs, eliminates substring retrieval errors ("car" in "scars"), preserves subject antecedents across pronouns, and ensures authoritative document facts are never overwritten by unrelated web search results.
 
 ---
 
@@ -333,5 +342,24 @@ In regex-based sentence boundary tokenizers, periods inside abbreviations (`Dr.`
    - Anchors character and lore lookups (e.g. "who is lucy", "david", "arasaka") with narrative universe context ("Cyberpunk"), preventing unrelated search hits (e.g. Lucy Australopithecus fossil).
    - Sanitizes web snippets by stripping leading/trailing non-alphanumeric punctuation and filtering out hominid/fossil/album disambiguation keywords.
    - Enforced query term presence in extractive synthesis candidate sentences, guaranteeing direct answers to user queries.
+
+### 5.9. Client Downsampling, Web Search Overhaul & Okapi BM25 Ranking Engine (Sprint 5.2 / ADR-14)
+1. **Acoustic Alignment & Downsampling Pipeline (`ui/index.html`, `voice_agent.stt`)**:
+   - Web Audio dynamically resamples browser microphone input from native hardware sample rate ($48\text{kHz} / 44.1\text{kHz}$) down to $16{,}000\text{ Hz}$ in `onaudioprocess` before generating `pcm16` frames.
+   - `STTEngine.transcribe` applies defensive polyphase resampling (`scipy.signal.resample_poly`) to guarantee exactly 16kHz float32 arrays for Faster-Whisper, eliminating the 300% time dilation and $-19.02\text{ semitone}$ pitch drop.
+   - `SpeechTurnAccumulator` tracks conversational pauses using true monotonic wall-clock elapsed time (`time.monotonic() - self._last_speech_time`), preventing false premature 469ms turn termination.
+   - Faster-Whisper is conditioned with `initial_prompt` biasing acoustic decoding towards Cyberpunk terminology.
+2. **Web Grounding Relevance & Interrogative Title Filtering (`voice_agent.llm.client`)**:
+   - Punctuation-free tokenization with regex word boundaries `\b[a-z0-9_-]{2,}\b` and 107-word English stopword set.
+   - Context-aware lore anchoring covering 18 Cyberpunk characters and 13 world concepts (Relic, Blackwall, Sandevistan, Soulkiller, etc.).
+   - Increased DuckDuckGo retrieval depth (`max_results = 8`) with structured warning logs on network errors.
+   - Candidate sentence scoring applies a -20 penalty to interrogatives and question titles, preventing the agent from echoing the user's question back as an answer.
+   - Factual predicate scoring rewards causal and explanatory clauses (`killed by`, `stole`, `invented`, `developed`, `destroyed`, `died`, `shot`, `caused by`, `biochip`, `construct`, `ai`).
+3. **Pure-Python Okapi BM25 & Context Fusion Engine (`voice_agent.document.bm25`, `voice_agent.server.narration`)**:
+   - Implemented `BM25Index` ($k_1 = 1.5, b = 0.75$, exact word boundary regex, non-negative Robertson-Spärck Jones IDF).
+   - Rolling 3-sentence context windows ($W_i = [s_{i-1}, s_i, s_{i+1}]$) preserve subject antecedents across pronouns and dialogue turns.
+   - Playhead proximity Gaussian boost prioritizes passages near the active reading cursor.
+   - Provenance hierarchy prioritizes document passages over external search when BM25 score $\ge 2.5$.
+   - Enforced 2048-token context budget and ChatML control token stripping to guarantee safety on RTX 3050 4GB VRAM.
 
 
