@@ -1,6 +1,9 @@
 import re
 import asyncio
+import logging
 from typing import Any, AsyncGenerator, List, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 # Sentinel used to shield periods in abbreviations, decimals, and ellipses
 _SENTINEL = "\uE000"
@@ -176,24 +179,174 @@ def sanitize_web_snippet(text: str) -> str:
     return text
 
 
-def search_web_sync(query: str, max_results: int = 3) -> str:
+# Comprehensive 50+ Stopword Set
+DEFAULT_STOPWORDS = {
+    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are",
+    "as", "at", "be", "because", "been", "before", "being", "below", "between", "both", "but",
+    "by", "can", "could", "did", "do", "does", "doing", "down", "during", "each", "few", "for",
+    "from", "further", "had", "has", "have", "having", "he", "her", "here", "hers", "herself",
+    "him", "himself", "his", "how", "i", "if", "in", "into", "is", "it", "its", "itself", "just",
+    "me", "more", "most", "my", "myself", "no", "nor", "not", "of", "off", "on", "once", "only",
+    "or", "other", "our", "ours", "ourselves", "out", "over", "own", "same", "she", "should", "so",
+    "some", "such", "tell", "than", "that", "the", "their", "theirs", "them", "themselves", "then",
+    "there", "these", "they", "this", "those", "through", "to", "too", "under", "until", "up",
+    "very", "was", "we", "were", "what", "when", "where", "which", "while", "who", "whom", "why",
+    "will", "with", "would", "you", "your", "yours", "yourself", "yourselves"
+}
+
+# Cyberpunk Universe Anchoring Entities and Concepts
+CYBERPUNK_CHARACTERS = {
+    "lucy", "david", "rebecca", "maine", "kiwi", "dorio", "smasher",
+    "silverhand", "johnny", "arasaka", "yorinobu", "saburo", "takemura",
+    "panam", "judy", "alt cunningham", "kerry", "river"
+}
+
+CYBERPUNK_LORE = {
+    "relic", "blackwall", "sandevistan", "soulkiller", "cyberpsychosis",
+    "cyberware", "netrunner", "edgerunner", "braindance", "trauma team",
+    "militech", "kang tao", "night city"
+}
+
+# Question Title Patterns for Heavy Filtering Penalty (-20)
+INTERROGATIVE_PREFIXES = (
+    "how ", "why ", "can someone ", "what is ", "who was ", "who is ",
+    "what was ", "what are ", "where is ", "where was ", "when did ",
+    "how did ", "why did ", "what did ", "who did ", "did ", "can anyone ",
+    "is it ", "could someone "
+)
+
+# Predicate & Factual Clause Scoring Markers (+8 bonus)
+PREDICATE_FACT_MARKERS = (
+    "killed by", "stole", "invented", "developed", "destroyed", "died",
+    "shot", "caused by", "biochip", "construct", "ai", "subroutine",
+    "syndrome", "condition", "flatlined", "murdered by", "founded",
+    "cyberware", "weapons", "night city", "edgerunner", "rockerboy", "netrunner"
+)
+
+# Definition Markers (+8 bonus)
+DEFINITION_MARKERS = (
+    "is a", "is an", "is the", "known as", "deuteragonist", "protagonist",
+    "megacorporation", "mercenary", "character in", "specializing in",
+    "corporation", "co-lead"
+)
+
+# Forum and Social Junk Filters
+FORUM_JUNK_MARKERS = (
+    "reddit", "forum", "posted by", "view comments", "upvotes",
+    "discussion thread", "threads", "community", "replies"
+)
+
+# Irrelevant Paleontology/Music Disambiguation Filters
+DISAMBIGUATION_FILTERS = (
+    "hominid", "fossil", "australopithecus", "skeleton",
+    "paleoanthropolog", "album", "song", "track listing", "discography"
+)
+
+
+def extract_query_tokens(query: str, stopwords: Optional[set] = None) -> List[str]:
+    """Extract clean query terms using regex word boundaries, filtering out stopwords."""
+    if not query:
+        return []
+    stops = stopwords if stopwords is not None else DEFAULT_STOPWORDS
+    query_clean = query.lower()
+    raw_tokens = re.findall(r'\b[a-z0-9_-]{2,}\b', query_clean)
+    filtered = [t for t in raw_tokens if t not in stops]
+    tokens = filtered if filtered else raw_tokens
+    # Handle common Cyberpunk voice recognition typos
+    if ("arakas" in query_clean or "arakasa" in query_clean) and "arasaka" not in tokens:
+        tokens.append("arasaka")
+    if "sande" in query_clean and "sandevistan" not in tokens:
+        tokens.append("sandevistan")
+    return tokens
+
+
+def anchor_search_query(query: str) -> str:
+    """Normalize query typos and anchor Cyberpunk universe characters and concepts."""
+    if not query or not query.strip():
+        return ""
+    search_q = query
+    query_lower = query.lower()
+
+    # Normalize voice recognition typos for Cyberpunk world lore
+    if "arakas" in query_lower:
+        search_q = re.sub(r'arakas[a-z]*', 'arasaka', search_q, flags=re.IGNORECASE)
+        query_lower = search_q.lower()
+    if "sande" in query_lower and "sandevistan" not in query_lower:
+        search_q = re.sub(r'\bsande\b', 'sandevistan', search_q, flags=re.IGNORECASE)
+        query_lower = search_q.lower()
+
+    if "cyberpunk" not in query_lower and "edgerunners" not in query_lower:
+        anchored = False
+        multi_word_anchors = ("alt cunningham", "trauma team", "kang tao", "night city")
+        for phrase in multi_word_anchors:
+            if phrase in query_lower:
+                search_q = f"{search_q} Cyberpunk"
+                anchored = True
+                break
+
+        if not anchored:
+            tokens = set(re.findall(r'\b[a-z0-9_-]{2,}\b', query_lower))
+            single_word_anchors = (CYBERPUNK_CHARACTERS | CYBERPUNK_LORE) - set(multi_word_anchors)
+            if tokens & single_word_anchors:
+                search_q = f"{search_q} Cyberpunk"
+
+    return search_q
+
+
+def score_candidate_sentence(sent: str, query_terms: List[str]) -> int:
+    """Score candidate sentence from web search for relevance, factual density, and interrogative penalties."""
+    s_lower = sent.lower().strip()
+    clean_sent = re.sub(r'^[^\w]+', '', sent.strip()).strip()
+    if not clean_sent:
+        return -999
+
+    # Filter out irrelevant hominid/fossil/album/song disambiguations
+    if any(dis in s_lower for dis in DISAMBIGUATION_FILTERS):
+        return -999
+
+    # MUST match at least one query term
+    matching_terms = [qt for qt in query_terms if qt in s_lower]
+    if not matching_terms:
+        return 0
+
+    # 1. Base matching score: 5 points per non-stopword query term
+    score = len(matching_terms) * 5
+
+    # 2. Predicate / factual clause markers (+8 points base + bonus for multiple markers)
+    pred_matches = [m for m in PREDICATE_FACT_MARKERS if m in s_lower]
+    if pred_matches:
+        score += 8 + min(6, (len(pred_matches) - 1) * 2)
+
+    # 3. Definition markers (+8 points)
+    if any(marker in s_lower for marker in DEFINITION_MARKERS):
+        score += 8
+
+    # 4. Interrogative sentence penalty (-20 score)
+    # Applied if sentence ends in ? or starts with question patterns
+    is_question = (
+        sent.strip().endswith('?')
+        or sent.strip().rstrip('.!').endswith('?')
+        or s_lower.startswith(INTERROGATIVE_PREFIXES)
+    )
+    if is_question:
+        score -= 20
+
+    # 5. Forum junk and reddit headers penalty (-15 score)
+    if any(junk in s_lower for junk in FORUM_JUNK_MARKERS):
+        score -= 15
+
+    # 6. Short fragments (< 25 characters) penalty (-15 score)
+    if len(clean_sent) < 25:
+        score -= 15
+
+    return score
+
+
+def search_web_sync(query: str, max_results: int = 8) -> str:
     """Execute live internet web search to ground interruption queries."""
     if not query or not query.strip():
         return ""
-    # Normalize query typos for Cyberpunk world lore
-    search_q = query
-    query_lower = query.lower()
-    if "arakas" in query_lower:
-        search_q = query_lower.replace("arakas", "arasaka")
-    elif "sande" in query_lower and "sandevistan" not in query_lower:
-        search_q = query_lower.replace("sande", "sandevistan")
-
-    # Disambiguate short character queries (e.g. "who is lucy", "who is david", "what is arasaka")
-    words = [w for w in query_lower.split() if w not in {"who", "is", "what", "tell", "me", "about", "the"}]
-    for name in ["lucy", "david", "rebecca", "maine", "kiwi", "dorio", "smasher", "silverhand", "johnny", "arasaka"]:
-        if name in words and "cyberpunk" not in query_lower and "edgerunners" not in query_lower:
-            search_q = f"{search_q} Cyberpunk"
-            break
+    search_q = anchor_search_query(query)
 
     try:
         try:
@@ -210,11 +363,12 @@ def search_web_sync(query: str, max_results: int = 3) -> str:
             if title or body:
                 lines.append(f"- {title}: {body}")
         return "\n".join(lines)
-    except Exception:
+    except Exception as exc:
+        logger.warning("Live web search failed for query %r: %s", search_q, exc, exc_info=True)
         return ""
 
 
-async def search_web(query: str, max_results: int = 3) -> str:
+async def search_web(query: str, max_results: int = 8) -> str:
     """Async wrapper for live internet web search."""
     return await asyncio.to_thread(search_web_sync, query, max_results)
 
@@ -397,12 +551,7 @@ class LLMClient:
             query = lines[0] if lines else ""
 
         # Clean query tokens
-        query_terms = [t for t in re.findall(r'\b[a-z]{3,}\b', query.lower()) if t not in {'what', 'who', 'where', 'when', 'tell', 'about', 'this', 'that', 'from', 'with'}]
-        # Handle common Cyberpunk voice recognition typos
-        if "arakas" in query.lower() or "arakasa" in query.lower():
-            query_terms.append("arasaka")
-        if "sande" in query.lower():
-            query_terms.append("sandevistan")
+        query_terms = extract_query_tokens(query)
 
         # 2. Extract web search results if present; or trigger live search if enabled
         web_section = ""
@@ -413,11 +562,19 @@ class LLMClient:
             else:
                 web_section = after_web.strip()
         elif getattr(self, "web_search_enabled", True) and query:
-            web_section = search_web_sync(query)
+            web_section = search_web_sync(query, max_results=8)
 
         # 3. Extract document / book passages if present
         book_context = ""
-        for tag in ["Relevant Passages from Loaded Document:", "Passages from Document:", "Book Context:", "Currently Spoken Line:", "Context:"]:
+        for tag in [
+            "Authoritative Document Passages (Primary Source of Truth):",
+            "Authoritative Document Passages:",
+            "Relevant Passages from Loaded Document:",
+            "Passages from Document:",
+            "Book Context:",
+            "Currently Spoken Line:",
+            "Context:",
+        ]:
             if tag in user_msg:
                 after_tag = user_msg.split(tag)[1]
                 for stop_marker in ["Live Internet Web Search Results:", "User Question:", "Provide a direct"]:
@@ -453,36 +610,26 @@ class LLMClient:
                     continue
                 if ":" in line:
                     title, body = line.split(":", 1)
-                    line = f"{title}. {body}"
+                    title = title.strip()
+                    body = body.strip()
+                    if title.endswith(('.', '!', '?')):
+                        line = f"{title} {body}"
+                    else:
+                        line = f"{title}. {body}"
                 clean = sanitize_web_snippet(line)
                 for sent in re.split(r'(?<=[.!?])\s+', clean):
                     sent = sent.strip()
-                    # Filter junk
-                    if len(sent) > 15 and not any(skip in sent.lower() for skip in ['login', 'sign up', 'all rights reserved', 'cookie', 'wikipedia is']):
+                    # Filter basic junk
+                    if len(sent) > 10 and not any(skip in sent.lower() for skip in ['login', 'sign up', 'all rights reserved', 'cookie', 'wikipedia is']):
                         candidate_web.append(sent)
 
             scored_web = []
             for sent in candidate_web:
-                s_lower = sent.lower()
-                # MUST match at least one query term
-                matching_terms = [qt for qt in query_terms if qt in s_lower]
-                if not matching_terms:
-                    continue
-
-                # Filter out irrelevant hominid/fossil/album/song disambiguations
-                if any(dis in s_lower for dis in ['hominid', 'fossil', 'australopithecus', 'skeleton', 'paleoanthropolog', 'album', 'song', 'track listing', 'discography']):
-                    continue
-
-                score = len(matching_terms) * 5
-
-                # Strong bonus for definition / role markers
-                if any(kw in s_lower for kw in ['is a', 'is an', 'is the', 'netrunner', 'megacorporation', 'mercenary', 'character in', 'specializing in', 'deuteragonist', 'co-lead']):
-                    score += 8
-                elif any(kw in s_lower for kw in ['corporation', 'founded', 'weapons', 'cyberware', 'crew', 'night city', 'edgerunner']):
-                    score += 4
-
                 clean_sent = re.sub(r'^[^\w]+', '', sent.strip()).strip()
-                if clean_sent:
+                if not clean_sent:
+                    continue
+                score = score_candidate_sentence(clean_sent, query_terms)
+                if score > 0:
                     scored_web.append((score, clean_sent))
 
             scored_web.sort(key=lambda x: x[0], reverse=True)
@@ -496,12 +643,38 @@ class LLMClient:
                 # If short, add second relevant sentence if available and substantive
                 if len(top_sent) < 90 and len(scored_web) > 1:
                     second_sent = scored_web[1][1].strip()
-                    if second_sent and second_sent != top_sent and len(second_sent.split()) >= 6:
+                    if (
+                        second_sent
+                        and second_sent != top_sent
+                        and len(second_sent.split()) >= 6
+                        and not second_sent.endswith('?')
+                        and not second_sent.lower().startswith(INTERROGATIVE_PREFIXES)
+                    ):
                         if not second_sent.endswith(('.', '!', '?')):
                             second_sent += '.'
                         best_web_fact = f"{top_sent} {second_sent}"
 
         # 6. Synthesize the integrated response
+        is_book_query = bool(
+            "Authoritative Document Passages" in user_msg
+            or "Primary Source of Truth" in user_msg
+            or any(w in query.lower() for w in ["story", "book", "chapter", "scene", "passage", "narrative", "sentence", "reading"])
+            or (best_book_sent and not web_section)
+        )
+
+        # Context provenance hierarchy: prioritize book context when query is about book contents
+        if is_book_query and best_book_sent:
+            if "johnny" in char:
+                return f"Straight from the scene, samurai: {best_book_sent} Keep your wits sharp."
+            elif "lucy" in char:
+                return f"In this passage: {best_book_sent} Don't lose focus, David."
+            elif "v-female" in char:
+                return f"Target intel from the scene: {best_book_sent} Let's move."
+            elif "v-male" in char or char == "v":
+                return f"Right here in the op, choom: {best_book_sent} Back to it."
+            else:
+                return f"Check it out, choom: {best_book_sent} Sandevistan primed, let's roll."
+
         if best_web_fact:
             if best_book_sent and any(qt in best_book_sent.lower() for qt in query_terms):
                 clean_book = best_book_sent.lstrip("\"'")
