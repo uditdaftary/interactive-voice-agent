@@ -168,6 +168,12 @@ def test_bidirectional_binary_pcm_audio_streaming(isolated_app) -> None:
             pcm_chunk = b"\x01\x00" * 720
             ws.send_bytes(pcm_chunk)
 
+            import time
+            for _ in range(50):
+                if len(received_frames) >= 1:
+                    break
+                time.sleep(0.01)
+
             assert len(received_frames) == 1
             assert received_frames[0] == pcm_chunk
             assert len(received_frames[0]) == 1440

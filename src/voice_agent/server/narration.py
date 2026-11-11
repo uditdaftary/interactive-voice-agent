@@ -65,6 +65,8 @@ class NarrationEngine:
         self._narration_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
         self._is_replying = False
+        self._conversation_history: List[dict] = []
+        self._interruption_count: int = 0
 
     def load_document(self, doc: DocumentContent) -> None:
         """Load a parsed document (PDF, EPUB, TXT) into the active narrator."""
@@ -295,16 +297,23 @@ class NarrationEngine:
             raw_context_block = "\n\n".join(context_parts)
             context_block = truncate_to_tokens(raw_context_block, max_tokens=remaining_context_budget, from_end=False)
 
+            self._interruption_count += 1
+            current_turn = self._interruption_count
+
             messages = [
                 {
                     "role": "system",
                     "content": character_prompt,
                 },
-                {
-                    "role": "user",
-                    "content": f"{context_block}\n\nUser Question: {clean_query}",
-                },
             ]
+            # Inject up to 3 prior turns of conversational context for multi-turn dialogue
+            for prev_turn in self._conversation_history[-6:]:
+                messages.append(prev_turn)
+
+            messages.append({
+                "role": "user",
+                "content": f"{context_block}\n\nUser Question: {clean_query}",
+            })
 
             # 6. Stream LLM tokens to Prompt Envelope
             parser = PunctuationStreamParser()
@@ -329,17 +338,23 @@ class NarrationEngine:
 
             if not accumulated_reply.strip():
                 if "johnny" in voice_id:
-                    final_reply = "Got it, samurai. Keep your eyes on the road and your chrome hot. Back to the run."
+                    final_reply = "Got it, samurai. Keep your eyes on the road and your chrome hot. Ready when you are."
                 elif "lucy" in voice_id:
-                    final_reply = "Understood. The signal is clear—let's dive back into our narrative."
+                    final_reply = "Understood. The signal is clear. Ready to continue our narrative, David."
                 elif "v-female" in voice_id:
                     final_reply = "Copy that. Objectives locked and tactical feed active. Resuming mission."
                 elif "v-male" in voice_id or voice_id == "v":
-                    final_reply = "Understood choom. Keep your iron ready and stay frosty. Back to business."
+                    final_reply = "Understood choom. Keep your iron ready and stay frosty. Ready when you are."
                 else:
-                    final_reply = "Understood choomba! Chrome is spooled up and ready. Let's get right back to the run."
+                    final_reply = "Understood choomba! Chrome is spooled up and ready. Let's roll whenever you say!"
             else:
                 final_reply = accumulated_reply.strip()
+
+            # Record turns in multi-turn conversation history
+            self._conversation_history.append({"role": "user", "content": clean_query})
+            self._conversation_history.append({"role": "assistant", "content": final_reply})
+            if len(self._conversation_history) > 12:
+                self._conversation_history = self._conversation_history[-12:]
 
             # 7. Synthesize LLM answer to speech audio and stream to client
             audio_bytes, fmt = await synthesize_sentence(final_reply, voice_id=voice_id, cadence=cadence)
@@ -351,7 +366,23 @@ class NarrationEngine:
             playback_delay = max(2.0, reply_words / (2.2 * cadence))
             await asyncio.sleep(playback_delay)
 
-            # 8. Pre-Roll Resumption Cue & return to NARRATING
+            # 8. Conversational Turn-Taking Window: leave comms open for follow-up before auto-resuming
+            self.manager.set_state("LISTENING")
+            await self.manager.broadcast_json(PromptEnvelopeMessage(
+                state="LISTENING",
+                context=current_context,
+                query=query,
+                reply=final_reply,
+            ))
+            await self.manager.broadcast_json(self.manager.get_state_sync_message())
+
+            # Pause up to 2.5s for conversational follow-up or next utterance
+            for _ in range(25):
+                await asyncio.sleep(0.1)
+                if self._interruption_count != current_turn or self.manager.state != "LISTENING":
+                    return
+
+            # 9. Pre-Roll Resumption Cue & return to NARRATING
             await self.manager.broadcast_json(PromptEnvelopeMessage(
                 state="NARRATING",
                 context=current_context,
@@ -359,9 +390,62 @@ class NarrationEngine:
                 reply=final_reply,
                 pre_roll_words=4,
             ))
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(0.8)
 
-            # 9. Cleanly resume background narration
+            # 10. Cleanly resume background narration
+            self.manager.set_state("NARRATING")
+            await self.manager.broadcast_json(self.manager.get_state_sync_message())
+            self.start_narration()
+
+    async def handle_unrecognized_interruption(self) -> None:
+        """Handle cases where barge-in was triggered but speech could not be recognized."""
+        async with self._lock:
+            if self._narration_task and not self._narration_task.done():
+                self._narration_task.cancel()
+                try:
+                    await self._narration_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                self._narration_task = None
+
+            voice_id = self.manager.active_voice or "david-martinez"
+            cadence = self.manager.cadence or 1.0
+            current_context = self.sentences[self.current_sentence_idx] if self.sentences else ""
+
+            if "johnny" in voice_id:
+                recovery_text = "Static on the comms, samurai. Didn't catch that. Resuming the run."
+            elif "lucy" in voice_id:
+                recovery_text = "Signal dropped in the subnet. Let's return to the narrative, David."
+            elif "v-female" in voice_id or "v-male" in voice_id or voice_id == "v":
+                recovery_text = "Comms were fuzzy, choom—didn't copy that. Getting back to the op."
+            else:
+                recovery_text = "Couldn't hear ya over the street noise, choombatta! Let's get right back to the story."
+
+            self.manager.set_state("REPLYING")
+            await self.manager.broadcast_json(PromptEnvelopeMessage(
+                state="REPLYING",
+                context=current_context,
+                query="",
+                reply=recovery_text,
+            ))
+            await self.manager.broadcast_json(self.manager.get_state_sync_message())
+
+            audio_bytes, fmt = await synthesize_sentence(recovery_text, voice_id=voice_id, cadence=cadence)
+            if audio_bytes:
+                await self.manager.broadcast_bytes(audio_bytes)
+
+            await asyncio.sleep(2.0)
+
+            # Pre-Roll Resumption Cue & return to NARRATING
+            await self.manager.broadcast_json(PromptEnvelopeMessage(
+                state="NARRATING",
+                context=current_context,
+                query="",
+                reply=recovery_text,
+                pre_roll_words=4,
+            ))
+            await asyncio.sleep(0.8)
+
             self.manager.set_state("NARRATING")
             await self.manager.broadcast_json(self.manager.get_state_sync_message())
             self.start_narration()

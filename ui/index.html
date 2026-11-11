@@ -815,6 +815,9 @@
         const banner = document.getElementById('audio-unlock-banner');
         if (banner) banner.style.display = 'none';
       }
+      if (wsClient.micSource === 'browser') {
+        wsClient.startBrowserMicCapture().catch(() => {});
+      }
     }
   }
 
@@ -1768,6 +1771,13 @@
             ctxEl.innerText = `"${STORY_PARAGRAPHS[currentSentenceIdx]}"`;
           }
         }
+      } else if (msg.is_final) {
+        isVoiceListening = false;
+        updateBargeInButtonUI(false);
+        const textEl = document.getElementById('speech-ticker-text');
+        if (textEl) {
+          textEl.innerText = 'No clear voice detected. Standing by on comms...';
+        }
       }
     }
 
@@ -1810,9 +1820,11 @@
             let outCount = 0;
             while (phase < input.length) {
               const indexFloor = Math.floor(phase);
-              const indexCeil = Math.min(input.length - 1, indexFloor + 1);
+              const indexCeil = indexFloor + 1;
               const weight = phase - indexFloor;
-              outBuf[outCount++] = input[indexFloor] * (1 - weight) + input[indexCeil] * weight;
+              const s0 = input[indexFloor];
+              const s1 = indexCeil < input.length ? input[indexCeil] : input[indexFloor];
+              outBuf[outCount++] = s0 * (1 - weight) + s1 * weight;
               phase += ratio;
             }
             this._downsamplePhase = phase - input.length;
@@ -1826,7 +1838,7 @@
               sumSquares += downsampled[i] * downsampled[i];
             }
             const rms = downsampled.length > 0 ? Math.sqrt(sumSquares / downsampled.length) : 0;
-            if (rms > 0.020) {
+            if (rms > 0.013) {
               startDirectVoiceBargeIn();
             }
           }
@@ -1838,18 +1850,18 @@
               sumSq += downsampled[i] * downsampled[i];
             }
             const rms = downsampled.length > 0 ? Math.sqrt(sumSq / downsampled.length) : 0;
-            if (rms > 0.007) {
+            if (rms > 0.005) {
               this._clientVoiceDetected = true;
               this._clientSilenceStart = 0;
               const textEl = document.getElementById('speech-ticker-text');
-              if (textEl && (!textEl.innerText || textEl.innerText.startsWith('🔴 RECORDING:'))) {
+              if (textEl && (!textEl.innerText || textEl.innerText.startsWith('🔴 RECORDING:') || textEl.innerText.includes('Listening'))) {
                 textEl.innerText = '🔴 SPEAKING: Voice energy detected... Speak your question, then click STOP';
               }
             } else if (this._clientVoiceDetected) {
               const now = performance.now();
               if (!this._clientSilenceStart) {
                 this._clientSilenceStart = now;
-              } else if (now - this._clientSilenceStart > 1600) {
+              } else if (now - this._clientSilenceStart > 1500) {
                 this._clientVoiceDetected = false;
                 this._clientSilenceStart = 0;
                 stopDirectVoiceBargeIn();

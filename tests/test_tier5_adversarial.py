@@ -119,7 +119,16 @@ def test_concurrency_simultaneous_audio_streaming() -> None:
                 for ws in websockets:
                     ws.send_bytes(test_pcm)
 
-            assert len(received_chunks) == client_count * chunks_per_client
+            import time
+            expected_chunks = client_count * chunks_per_client
+            for _ in range(50):
+                with chunk_lock:
+                    if len(received_chunks) >= expected_chunks:
+                        break
+                time.sleep(0.01)
+
+            with chunk_lock:
+                assert len(received_chunks) == expected_chunks
 
     assert manager.connection_count == 0
 

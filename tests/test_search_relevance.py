@@ -147,11 +147,13 @@ def test_search_web_sync_depth_and_warning_logging(caplog):
     """Verify search_web_sync defaults to max_results=8 and logs warnings on exceptions."""
     with patch("voice_agent.llm.client.anchor_search_query") as mock_anchor:
         mock_anchor.return_value = "johnny silverhand Cyberpunk"
-        with patch("ddgs.DDGS", create=True) as mock_ddgs:
-            mock_inst = MagicMock()
-            mock_inst.text.side_effect = RuntimeError("DDGS rate limit exceeded")
-            mock_ddgs.return_value = mock_inst
-
+        mock_mod = MagicMock()
+        mock_ddgs = MagicMock()
+        mock_inst = MagicMock()
+        mock_inst.text.side_effect = RuntimeError("DDGS rate limit exceeded")
+        mock_ddgs.return_value = mock_inst
+        mock_mod.DDGS = mock_ddgs
+        with patch.dict("sys.modules", {"ddgs": mock_mod}):
             with caplog.at_level(logging.WARNING):
                 res = search_web_sync("who is johnny")
                 assert res == ""

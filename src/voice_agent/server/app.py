@@ -64,7 +64,7 @@ def get_stt_engine(app: FastAPI) -> Any:
             engine = manager.stt_engine
         else:
             from voice_agent.stt.recognizer import STTEngine
-            engine = STTEngine(fallback_mock=True)
+            engine = STTEngine(fallback_mock=False)
         app.state.stt_engine = engine
     return engine
 

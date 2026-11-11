@@ -95,38 +95,49 @@ class STTEngine:
 
         # Check for near-total silence
         max_amp = float(np.max(np.abs(audio_np))) if audio_np.size > 0 else 0.0
-        if audio_np.size == 0 or max_amp < 0.003:
+        if audio_np.size == 0 or max_amp < 0.002:
             return ""
 
-        # Normalize gain for quiet microphone audio so Faster-Whisper reliably detects speech
-        if 0.003 <= max_amp < 0.5:
-            audio_np = (audio_np / max_amp) * 0.75
+        # Bounded peak normalization: boost quiet microphone audio without over-amplifying noise floor
+        if 0.002 <= max_amp < 0.6:
+            gain = min(12.0, 0.75 / max_amp)
+            audio_np = audio_np * gain
 
         # 1. Primary: faster-whisper
         if self._whisper_model is not None:
-            # 1a. Attempt with vad_filter=True
-            try:
-                segments, info = self._whisper_model.transcribe(
-                    audio_np,
-                    beam_size=3,
-                    language="en",
-                    vad_filter=True,
-                    initial_prompt="Cyberpunk 2077, Night City, Arasaka, Sandevistan, Johnny Silverhand, Lucy, David Martinez.",
-                )
-                text = " ".join([s.text.strip() for s in segments]).strip()
-                if text:
-                    return text
-            except Exception as err:
-                logger.warning("faster-whisper transcription error (vad_filter=True): %s", err)
+            prompt = getattr(
+                self,
+                "initial_prompt",
+                "Cyberpunk 2077, Night City, Arasaka, Sandevistan, Johnny Silverhand, Lucy, David Martinez.",
+            )
+            # Short utterances (< 1.5s) can be over-aggressively pruned by Silero VAD; prefer vad_filter=False for them
+            duration_sec = audio_np.size / float(sample_rate)
+            use_vad_first = duration_sec >= 1.5
 
-            # 1b. Fallback: retry with vad_filter=False in case Silero VAD filtered soft phonemes
+            if use_vad_first:
+                # 1a. Attempt with vad_filter=True
+                try:
+                    segments, info = self._whisper_model.transcribe(
+                        audio_np,
+                        beam_size=3,
+                        language="en",
+                        vad_filter=True,
+                        initial_prompt=prompt,
+                    )
+                    text = " ".join([s.text.strip() for s in segments]).strip()
+                    if text:
+                        return text
+                except Exception as err:
+                    logger.warning("faster-whisper transcription error (vad_filter=True): %s", err)
+
+            # 1b. Direct / Fallback attempt with vad_filter=False
             try:
                 segments, info = self._whisper_model.transcribe(
                     audio_np,
                     beam_size=3,
                     language="en",
                     vad_filter=False,
-                    initial_prompt="Cyberpunk 2077, Night City, Arasaka, Sandevistan, Johnny Silverhand, Lucy, David Martinez.",
+                    initial_prompt=prompt,
                 )
                 text = " ".join([s.text.strip() for s in segments]).strip()
                 if text:

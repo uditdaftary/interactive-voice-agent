@@ -109,3 +109,59 @@ def test_conversational_lore_opinions():
     # Asking David about Sandevistan
     resp_d_sande = client._synthesize_fallback_answer("User Question: how does your sandevistan feel?", character_id="david-martinez")
     assert "spine" in resp_d_sande.lower() or "coolant" in resp_d_sande.lower() or "lightning" in resp_d_sande.lower()
+
+
+def test_conversational_gratitude_and_appreciation():
+    """Verify gratitude and compliments receive natural, appreciative character dialogue."""
+    client = LLMClient()
+
+    resp_j = client._synthesize_fallback_answer("User Question: thanks for the help johnny", character_id="johnny-silverhand")
+    assert "samurai" in resp_j.lower()
+    assert "watch" in resp_j.lower() or "backs" in resp_j.lower() or "ready" in resp_j.lower()
+
+    resp_d = client._synthesize_fallback_answer("User Question: thank you david, good job", character_id="david-martinez")
+    assert "choombatta" in resp_d.lower() or "crew" in resp_d.lower()
+
+    resp_l = client._synthesize_fallback_answer("User Question: thanks lucy", character_id="lucy-kushinada")
+    assert "david" in resp_l.lower()
+    assert "focus" in resp_l.lower() or "continue" in resp_l.lower()
+
+
+def test_conversational_acknowledgment_and_confirmation():
+    """Verify casual agreement (ok, got it, makes sense) yields turn-taking readiness."""
+    client = LLMClient()
+
+    resp_j = client._synthesize_fallback_answer("User Question: got it, makes sense", character_id="johnny-silverhand")
+    assert "samurai" in resp_j.lower()
+    assert "preem" in resp_j.lower() or "optics" in resp_j.lower() or "ready" in resp_j.lower()
+
+    resp_d = client._synthesize_fallback_answer("User Question: okay cool", character_id="david-martinez")
+    assert "nova" in resp_d.lower() or "sandevistan" in resp_d.lower() or "standby" in resp_d.lower()
+
+
+def test_conversational_continuation_commands():
+    """Verify resume/continue voice requests trigger immediate transition back to reading."""
+    client = LLMClient()
+
+    resp_j = client._synthesize_fallback_answer("User Question: continue reading", character_id="johnny-silverhand")
+    assert "picking" in resp_j.lower() or "samurai" in resp_j.lower()
+
+    resp_d = client._synthesize_fallback_answer("User Question: keep going, read on", character_id="david-martinez")
+    assert "choomba" in resp_d.lower() or "feed" in resp_d.lower() or "action" in resp_d.lower()
+
+
+def test_conversational_extended_lore_smasher_and_relic():
+    """Verify Adam Smasher and Relic inquiries yield rich lore dialogue."""
+    client = LLMClient()
+
+    resp_smasher = client._synthesize_fallback_answer("User Question: who is Adam Smasher?", character_id="johnny-silverhand")
+    assert "smasher" in resp_smasher.lower() or "arasaka" in resp_smasher.lower()
+    assert "borg" in resp_smasher.lower() or "monster" in resp_smasher.lower() or "twenty-three" in resp_smasher.lower()
+
+    resp_relic = client._synthesize_fallback_answer("User Question: what is the Relic?", character_id="johnny-silverhand")
+    assert "relic" in resp_relic.lower()
+    assert "biochip" in resp_relic.lower() or "engram" in resp_relic.lower() or "soulkiller" in resp_relic.lower()
+
+    resp_blackwall = client._synthesize_fallback_answer("User Question: what is the Blackwall?", character_id="lucy-kushinada")
+    assert "blackwall" in resp_blackwall.lower()
+    assert "ai" in resp_blackwall.lower() or "firewall" in resp_blackwall.lower() or "net" in resp_blackwall.lower()

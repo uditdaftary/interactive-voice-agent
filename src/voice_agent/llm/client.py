@@ -659,7 +659,22 @@ class LLMClient:
             else:
                 return "No problem choomba, holding the line right here. Take your time, Sandevistan's on standby whenever you're ready."
 
-        # Fast-Path Conversational Intent 5: Emotional Feedback & Excitement
+        # Fast-Path Conversational Intent 5: Agreement, Confirmation & Casual Chat
+        is_ack = (
+            any(w in clean_words for w in ["ok", "okay", "alright", "gotcha", "understood", "yep", "yeah", "sure", "nice"])
+            or any(p in clean for p in ["got it", "i see", "makes sense", "sounds good", "right on", "fair enough"])
+        )
+        if is_ack and len(clean_words) <= 4:
+            if "johnny" in char:
+                return "Preem. Keep your optics peeled and that chrome spooled. Ready whenever you give the word, samurai."
+            elif "lucy" in char:
+                return "Good. The subnet is stable. Let me know when you want to dive back in, David."
+            elif "v-female" in char or "v-male" in char or char == "v":
+                return "Understood. Standing by on secure comms until your signal, choom."
+            else:
+                return "Nova! Sandevistan is on standby. Ready to run the next part whenever you are, choom!"
+
+        # Fast-Path Conversational Intent 6: Emotional Feedback & Excitement
         is_reaction = any(w in clean_words for w in ["whoa", "wow", "crazy", "intense", "damn", "awesome", "cool", "preem", "nova", "wild"])
         if is_reaction:
             if "johnny" in char:
@@ -672,6 +687,42 @@ class LLMClient:
                 return "Things get wild fast out on these streets. Stay sharp, choom—let's see what happens next."
             else:
                 return "Hell yeah, choom! Adrenaline's pumping and the heat's rising. That's how we roll in Santo Domingo—let's keep this momentum going!"
+
+        # Fast-Path Conversational Intent 7: Gratitude & Appreciation
+        is_gratitude = any(w in clean_words for w in ["thanks", "thank", "thx", "appreciate", "grateful"]) or any(p in clean for p in ["thank you", "good job", "nice job"])
+        if is_gratitude:
+            if "johnny" in char:
+                return "Don't mention it, samurai. We watch each other's backs out here. Ready for more, or taking a breather?"
+            elif "lucy" in char:
+                return "Anytime, David. Just keep your focus sharp. What's on your mind next, or should we continue?"
+            elif "v-female" in char or "v-male" in char or char == "v":
+                return "All part of the contract, choom. Glad to have you on the feed. Holler when you're ready to proceed."
+            else:
+                return "Anytime choombatta! That's what a crew is for. Ready to keep rolling with the story?"
+
+        # Fast-Path Conversational Intent 8: Continuation / Resume Commands
+        is_continue = any(p in clean for p in ["continue", "keep reading", "go on", "keep going", "read on", "resume reading", "next sentence", "next chapter", "carry on", "start reading"])
+        if is_continue:
+            if "johnny" in char:
+                return "Picking right back up where we left off, samurai. Eyes on the prize."
+            elif "lucy" in char:
+                return "Re-linking to the story feed now, David. Resuming narrative."
+            elif "v-female" in char or "v-male" in char or char == "v":
+                return "Roger that. Resuming the log now, choom."
+            else:
+                return "You got it, choomba! Spooling up the feed and jumping back into the action!"
+
+        # Fast-Path Conversational Intent 9: System / Construct / AI Inquiries
+        is_ai_inquiry = any(p in clean for p in ["are you an ai", "who made you", "what are you", "are you real", "are you a bot", "are you human", "what kind of bot"])
+        if is_ai_inquiry:
+            if "johnny" in char:
+                return "I'm Johnny Silverhand—rockerboy engram trapped in your neural optics, giving you the real Night City rundown. Don't go mistaking me for some corporate chatbot, samurai."
+            elif "lucy" in char:
+                return "I'm an edgerunner running an encrypted neural handshake through your cyberdeck. We dive through these archives together, David."
+            elif "v-female" in char or "v-male" in char or char == "v":
+                return "Solo mercenary linked directly to your tactical HUD. Running live audio interpretation while we work through this archive, choom."
+            else:
+                return "I'm David Martinez! Running high-speed through your cyberware link so we can tear through this story together. Built different, choom!"
 
         # 2. Clean query tokens
         query_terms = extract_query_tokens(query)
@@ -732,46 +783,96 @@ class LLMClient:
             else:
                 return f"Check it out, choom: {best_book_sent} Sandevistan primed, let's roll."
 
-        # Conversational Intent 6: Character lore banter (opinions on comrades & entities)
-        if ("lucy" in clean_words or "kushinada" in clean_words) and any(w in clean for w in ["what do you think", "who is", "tell me", "trust", "opinion"]):
-            if "david" in char:
-                return "Lucy? She's nova, choom. Most brilliant netrunner in Night City and the reason I keep fighting. She dreams about the Moon, and I'm taking her there."
-            elif "johnny" in char:
-                return "Lucy's a sharp netrunner. Got that haunted Arasaka survivor look, but she's got serious fire in her ICE. Watch her back, samurai."
-            elif "lucy" in char:
-                return "You're asking about me? I don't look back at the past anymore. All that matters is looking ahead... to the Moon."
-            else:
-                return "Lucy's one of the cleanest netrunners in Pacifica. Slices through corpo ICE before they even know she's in their subnet. Respect."
+        # Character lore banter helper (opinions on comrades & entities)
+        def _get_lore_banter() -> Optional[str]:
+            if ("lucy" in clean_words or "kushinada" in clean_words) and any(w in clean for w in ["what do you think", "who is", "tell me", "trust", "opinion"]):
+                if "david" in char:
+                    return "Lucy? She's nova, choom. Most brilliant netrunner in Night City and the reason I keep fighting. She dreams about the Moon, and I'm taking her there."
+                elif "johnny" in char:
+                    return "Lucy's a sharp netrunner. Got that haunted Arasaka survivor look, but she's got serious fire in her ICE. Watch her back, samurai."
+                elif "lucy" in char:
+                    return "You're asking about me? I don't look back at the past anymore. All that matters is looking ahead... to the Moon."
+                else:
+                    return "Lucy's one of the cleanest netrunners in Pacifica. Slices through corpo ICE before they even know she's in their subnet. Respect."
 
-        if ("sandevistan" in clean_words or "sande" in clean_words) and any(w in clean for w in ["what is", "how does", "tell me", "cyberware", "spine"]):
-            if "david" in char:
-                return "The Sandevistan is military-grade cyberware along my spine. When it spools up, cold neural coolant rushes through and the whole world freezes while I move at hyper-speed. Preem chrome, choom."
-            elif "johnny" in char:
-                return "Sandevistan's a high-speed ticket to cyberpsychosis if you aren't careful, samurai. Chrome eats your soul if you let it. Use it, don't let it use you."
-            elif "lucy" in char:
-                return "Military-grade reflex accelerator. Burns through neural coolant and pushes the brain to the brink. David runs it harder than anyone should."
-            else:
-                return "Top-tier nervous system cyberware. Slows time in a firefight so you can outflank scavs and hit-squads. Essential chrome for a solo."
+            if ("sandevistan" in clean_words or "sande" in clean_words) and any(w in clean for w in ["what is", "how does", "tell me", "cyberware", "spine"]):
+                if "david" in char:
+                    return "The Sandevistan is military-grade cyberware along my spine. When it spools up, cold neural coolant rushes through and the whole world freezes while I move at hyper-speed. Preem chrome, choom."
+                elif "johnny" in char:
+                    return "Sandevistan's a high-speed ticket to cyberpsychosis if you aren't careful, samurai. Chrome eats your soul if you let it. Use it, don't let it use you."
+                elif "lucy" in char:
+                    return "Military-grade reflex accelerator. Burns through neural coolant and pushes the brain to the brink. David runs it harder than anyone should."
+                else:
+                    return "Top-tier nervous system cyberware. Slows time in a firefight so you can outflank scavs and hit-squads. Essential chrome for a solo."
 
-        if ("arasaka" in clean_words or "arakasa" in clean or "arakas" in clean) and any(w in clean for w in ["what is", "who is", "tell me", "corporation", "corpo", "tower"]):
-            if "johnny" in char:
-                return "Arasaka? The biggest, bloodiest megacorporation on Earth. Ruthless suits who think they own your soul and your chrome. I nuked their tower in 2023, and I'd do it again in a heartbeat."
-            elif "david" in char:
-                return "Arasaka's the undisputed king of Night City. Megacorp security, weapons, and black-ops ICE. They chew up street kids from Santo Domingo and spit out empty husks. Stay off their radar, choom."
-            elif "lucy" in char:
-                return "Arasaka is the corporate machine that stole my childhood. They trained us in deep subnets to dig through the Old Net. Don't ever trust a suit from Arasaka."
-            else:
-                return "Arasaka is the apex megacorp in Night City. Banking, corporate security, weapons manufacturing, and the Relic. Cross them and you end up flatlined."
+            if ("arasaka" in clean_words or "arakasa" in clean or "arakas" in clean) and any(w in clean for w in ["what is", "who is", "tell me", "corporation", "corpo", "tower"]):
+                if "johnny" in char:
+                    return "Arasaka? The biggest, bloodiest megacorporation on Earth. Ruthless suits who think they own your soul and your chrome. I nuked their tower in 2023, and I'd do it again in a heartbeat."
+                elif "david" in char:
+                    return "Arasaka's the undisputed king of Night City. Megacorp security, weapons, and black-ops ICE. They chew up street kids from Santo Domingo and spit out empty husks. Stay off their radar, choom."
+                elif "lucy" in char:
+                    return "Arasaka is the corporate machine that stole my childhood. They trained us in deep subnets to dig through the Old Net. Don't ever trust a suit from Arasaka."
+                else:
+                    return "Arasaka is the apex megacorp in Night City. Banking, corporate security, weapons manufacturing, and the Relic. Cross them and you end up flatlined."
 
-        if ("johnny" in clean_words or "silverhand" in clean_words) and any(w in clean for w in ["who is", "tell me", "what is", "opinion", "think"]):
-            if "johnny" in char:
-                return "You're looking at him, samurai. Rockerboy, lead guitar for Samurai, and the guy who put a thermonuclear charge in Arasaka Tower's elevator shaft."
-            elif "david" in char:
-                return "Johnny Silverhand? Legendary rockerboy solo who went out in a blaze of glory at Arasaka Tower. Pure rock and roll rebellion, choom."
-            elif "lucy" in char:
-                return "Johnny Silverhand is a ghost from 2023. An anti-corpo rebel whose construct is supposedly locked inside Arasaka's secure vault."
-            else:
-                return "Silverhand's a Night City legend. Terrorist to the corpos, folk hero to the streets. Died hitting Arasaka Tower back in 2023."
+            if ("johnny" in clean_words or "silverhand" in clean_words) and any(w in clean for w in ["who is", "tell me", "what is", "opinion", "think"]):
+                if "johnny" in char:
+                    return "You're looking at him, samurai. Rockerboy, lead guitar for Samurai, and the guy who put a thermonuclear charge in Arasaka Tower's elevator shaft."
+                elif "david" in char:
+                    return "Johnny Silverhand? Legendary rockerboy solo who went out in a blaze of glory at Arasaka Tower. Pure rock and roll rebellion, choom."
+                elif "lucy" in char:
+                    return "Johnny Silverhand is a ghost from 2023. An anti-corpo rebel whose construct is supposedly locked inside Arasaka's secure vault."
+                else:
+                    return "Silverhand's a Night City legend. Terrorist to the corpos, folk hero to the streets. Died hitting Arasaka Tower back in 2023."
+
+            if ("smasher" in clean_words or "adam smasher" in clean) and any(w in clean for w in ["who is", "tell me", "what is", "opinion", "think"]):
+                if "johnny" in char:
+                    return "Adam Smasher. Arasaka's metal monster. More cyberware than man, pure walking slaughter. He's the borg who took me down in 2023. If you ever see him, run or blow him to scrap."
+                elif "david" in char:
+                    return "Smasher... Arasaka's boogeyman. Full cyborg psycho who crushes edgerunners like bugs. Only way to survive him is to move faster than his targeting optics."
+                elif "lucy" in char:
+                    return "Adam Smasher is a demon in chrome. Arasaka's living weapon. Stay far out of his line of fire."
+                else:
+                    return "Adam Smasher. Head of Arasaka security, ninety-six percent cybernetic tank. Ultimate test for any solo in Night City."
+
+            if ("relic" in clean_words or "biochip" in clean_words) and any(w in clean for w in ["what is", "tell me", "how does", "who made"]):
+                if "johnny" in char:
+                    return "The Relic. Arasaka's top-secret biochip running Soulkiller tech. It's got an engram of my consciousness trapped inside. Shove it in your head, and my ghost starts taking over your brain."
+                elif "david" in char:
+                    return "The Relic is Arasaka's crown jewel biochip. Stolen prototype that stores human souls on carbon chips. The kind of tech people start wars over."
+                elif "lucy" in char:
+                    return "Arasaka's Secure Your Mind project. A prototype neural chip designed to house digital constructs of personalities. Deadly tech."
+                else:
+                    return "The Relic. Experimental biochip prototype. Placed in a dying skull, it overwrites the host's brain with the construct stored inside."
+
+            if "blackwall" in clean_words and any(w in clean for w in ["what is", "tell me", "how does"]):
+                if "lucy" in char:
+                    return "The Blackwall is an AI-powered firewall that separates our net from the Old Net—a chaotic graveyard filled with rogue military AIs. Once you touch the Blackwall, there is no coming back."
+                elif "johnny" in char:
+                    return "The Blackwall. NetWatch's flimsy ICE barrier keeping feral, rogue pre-collapse AIs from frying every brain in Night City."
+                elif "david" in char:
+                    return "That's NetWatch's deep ICE border. Beyond it are rogue demons from the data crash. Even Lucy gets chills talking about the Blackwall."
+                else:
+                    return "The Blackwall is the digital wall between survival and extinction. Stray past it, and rogue AIs melt your synaptic cortex in milliseconds."
+
+            if "night city" in clean and any(w in clean for w in ["what is", "tell me", "opinion", "think", "like"]):
+                if "johnny" in char:
+                    return "Night City. City of dreams, city of corpses. Neon gleam over blood and toxic smog. Best and worst place on the planet."
+                elif "david" in char:
+                    return "Night City's where you either make a name for yourself as a legend or die in an alleyway before twenty. But with the right crew, you own these streets."
+                elif "lucy" in char:
+                    return "Night City is a cage of plasteel and glass. Everyone is chasing a phantom dream. That's why I look to the stars."
+                else:
+                    return "Night City never sleeps and it never forgives. High-risk, high-reward contracts around every corner. Keep your weapons loaded."
+
+            return None
+
+        # If live web results were not injected, evaluate character lore banter first
+        has_live_web_results = "Live Internet Web Search Results:" in user_msg
+        if not has_live_web_results:
+            lore_resp = _get_lore_banter()
+            if lore_resp is not None:
+                return lore_resp
 
         # 5. Extract web search results if present; or trigger live search if enabled
         web_section = ""
@@ -846,50 +947,55 @@ class LLMClient:
                 full_body = best_web_fact
 
             if "johnny" in char:
-                return f"Here's the real story, samurai: {full_body} Keep your iron ready—let's get back to burning this city."
+                return f"Here's the real story, samurai: {full_body} What do you think—ready to jump back in, or got more on your mind?"
             elif "lucy" in char:
-                return f"Here is what the deep net reveals: {full_body} Stay close, let's continue our reading."
+                return f"Here is what the deep net reveals: {full_body} Stay sharp, David. What's our next move?"
             elif "v-female" in char:
-                return f"Here's the operational intel: {full_body} Objectives clear—resuming the gig."
+                return f"Here's the operational intel: {full_body} Objectives clear. Ready to resume the mission, or need more info?"
             elif "v-male" in char or char == "v":
-                return f"Got the word on the street, choom: {full_body} Stay sharp—let's jump right back into the op."
+                return f"Got the word on the street, choom: {full_body} What's your call—ready to jump back into the op?"
             else:
-                return f"Check it out, choom: {full_body} Sandevistan's primed, let's roll right back to the story!"
+                return f"Check it out, choom: {full_body} Preem intel, right? Let me know if you want to keep rolling!"
 
         # If only document / notes context is available
         if best_book_sent:
             if "johnny" in char:
-                return f"Straight from the scene, samurai: {best_book_sent} Keep your wits sharp."
+                return f"Straight from the scene, samurai: {best_book_sent} Keep your wits sharp. Ready to continue?"
             elif "lucy" in char:
-                return f"In this passage: {best_book_sent} Don't lose focus, David."
+                return f"In this passage: {best_book_sent} Don't lose focus, David. Shall we go on?"
             elif "v-female" in char:
-                return f"Target intel from the scene: {best_book_sent} Let's move."
+                return f"Target intel from the scene: {best_book_sent} Let's move when you're ready."
             elif "v-male" in char or char == "v":
-                return f"Right here in the op, choom: {best_book_sent} Back to it."
+                return f"Right here in the op, choom: {best_book_sent} Ready to roll on your mark."
             else:
-                return f"Check it out, choom: {best_book_sent} Sandevistan primed, let's roll."
+                return f"Check it out, choom: {best_book_sent} Sandevistan primed, ready when you are!"
+
+        # Lore banter fallback if web search or book context yielded no specific facts
+        lore_resp = _get_lore_banter()
+        if lore_resp is not None:
+            return lore_resp
 
         # Conversational Intent 7: Inquisitive question fallback (who/what/where/why)
         if "who" in clean or "what" in clean or "where" in clean or "why" in clean or "how" in clean:
             if "johnny" in char:
-                return "Night City doesn't give free handouts samurai, but that mystery unfolds right as we hit the next block. Keep your eyes sharp and your iron ready. Back to the run."
+                return "Night City doesn't give free handouts, samurai, but that mystery unfolds right as we hit the next block. Keep your eyes sharp and your iron ready. What's on your mind?"
             elif "lucy" in char:
-                return "There are encrypted layers to this that you only see when you dive deeper into the net. Stay close and keep your head down, David. Resuming our dive."
+                return "There are encrypted layers to this that you only see when you dive deeper into the net. Stay close and keep your head down, David. What else do you need?"
             elif "v-female" in char:
-                return "Tactical question. In Night City, the pieces fall into place once the op heats up. Moving to the next objective now."
+                return "Tactical question. In Night City, the pieces fall into place once the op heats up. Ready to push forward, or got more queries?"
             elif "v-male" in char or char == "v":
-                return "Good question, choom. Out in Night City, the answer usually comes down to who pulls the trigger first. Keep your optics peeled—resuming the gig."
+                return "Good question, choom. Out in Night City, the answer usually comes down to who pulls the trigger first. Keep your optics peeled—what's our next play?"
             else:
-                return "That's a wild thought, choom! Out here in Santo Domingo, you learn to trust your instincts and keep your feet moving. Sandevistan's primed, let's keep the story rolling!"
+                return "That's a wild thought, choom! Out here in Santo Domingo, you learn to trust your instincts and keep your feet moving. What do you think—ready to keep the story rolling?"
 
         # Default conversational closer
         if "johnny" in char:
             return "Got it, samurai. Keep your eyes on the road and your chrome hot. We've got a city to burn."
         elif "lucy" in char:
-            return "Understood. The signal is clear—let's dive back into our narrative."
+            return "Understood. The signal is clear. Ready to continue our narrative, David."
         elif "v-female" in char:
             return "Copy that. Objectives locked and tactical feed active. Resuming mission."
         elif "v-male" in char or char == "v":
-            return "Understood choom. Keep your iron ready and stay frosty. Back to business."
-        return "Understood choomba! Chrome is spooled up and ready. Let's get right back to the run."
+            return "Understood choom. Keep your iron ready and stay frosty. Ready when you are."
+        return "Understood choomba! Chrome is spooled up and ready. Let's roll whenever you say!"
 

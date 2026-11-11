@@ -153,7 +153,7 @@ class ConnectionManager:
         with self._lock:
             if self._stt_engine is None:
                 from voice_agent.stt.recognizer import STTEngine
-                self._stt_engine = STTEngine(fallback_mock=True)
+                self._stt_engine = STTEngine(fallback_mock=False)
             return self._stt_engine
 
     @stt_engine.setter
@@ -204,7 +204,7 @@ class ConnectionManager:
             current_gen = self._generation
             cb = self._barge_in_callback
             if self._accumulator is not None:
-                self._accumulator.reset()
+                self._accumulator.reset(preserve_pre_roll=True)
 
         if cb is not None:
             try:

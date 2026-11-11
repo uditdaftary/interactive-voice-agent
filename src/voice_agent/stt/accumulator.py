@@ -11,7 +11,7 @@ class SpeechTurnAccumulator:
     def __init__(
         self,
         sample_rate: int = 16000,
-        energy_threshold: float = 0.012,
+        energy_threshold: float = 0.010,
         silence_timeout_ms: int = 1400,
         min_speech_duration_ms: int = 150,
     ):
@@ -27,6 +27,7 @@ class SpeechTurnAccumulator:
         self._silence_duration_ms: float = 0.0
         self._last_speech_time: float = 0.0
         self._speech_start_time: float = 0.0
+
 
     def feed(self, pcm_chunk: bytes) -> Optional[bytes]:
         """Feed a 16-bit PCM chunk. Returns full utterance bytes when user finishes speaking."""
@@ -48,7 +49,7 @@ class SpeechTurnAccumulator:
         now = time.monotonic()
 
         # Adaptive threshold with hysteresis: lower threshold for ongoing speech to preserve quiet phonemes
-        active_threshold = self.energy_threshold * 0.6 if self.is_speaking else self.energy_threshold
+        active_threshold = self.energy_threshold * 0.5 if self.is_speaking else self.energy_threshold
 
         if rms >= active_threshold:
             if not self.is_speaking:
@@ -73,8 +74,6 @@ class SpeechTurnAccumulator:
 
             # Monotonic wall-clock elapsed silence governs active voice turns to prevent
             # sample-rate mismatches (e.g. 48kHz vs 16kHz) from triggering premature cut-offs.
-            # Offline / synthetic test feeds that pass an entire silence segment in a single chunk
-            # are also supported via chunk_duration_ms.
             is_silence_timeout = (
                 elapsed_silence_ms >= self.silence_timeout_ms
                 or chunk_duration_ms >= self.silence_timeout_ms
@@ -114,11 +113,12 @@ class SpeechTurnAccumulator:
             return utterance
         return None
 
-    def reset(self):
+    def reset(self, preserve_pre_roll: bool = False):
         """Reset internal accumulator state."""
         self.is_speaking = False
         self._speech_buffer = []
-        self._pre_roll_buffer = []
+        if not preserve_pre_roll:
+            self._pre_roll_buffer = []
         self._session_buffer = []
         self._speech_duration_ms = 0.0
         self._silence_duration_ms = 0.0

@@ -58,41 +58,45 @@ async def process_stt_utterance(
 
     start_t = time.perf_counter()
     try:
-        transcript = stt_engine.transcribe(utterance)
+        transcript = await asyncio.to_thread(stt_engine.transcribe, utterance)
     except Exception as exc:
         logger.warning(f"STT transcription failed: {exc}")
         transcript = ""
 
     latency_ms = round((time.perf_counter() - start_t) * 1000.0, 2)
-    if transcript and transcript.strip():
-        clean_text = transcript.strip()
+    clean_text = transcript.strip() if transcript else ""
+
+    if not clean_text and fallback_query and fallback_query.strip():
+        clean_text = fallback_query.strip()
+        logger.info("Using fallback query following empty STT transcript: %s", clean_text)
+
+    if clean_text:
         msg = UserSpeechTranscriptMessage(
             transcript=clean_text,
             is_final=True,
             latency_ms=latency_ms,
         )
-        await manager.broadcast_json(msg)
         if engine is not None and hasattr(engine, "handle_user_interruption"):
             asyncio.create_task(engine.handle_user_interruption(clean_text))
+        await manager.broadcast_json(msg)
         return clean_text
     else:
         logger.debug(
-            "Faster-Whisper returned empty transcript for utterance (%d bytes, %.2f ms latency)",
+            "STT returned empty transcript for utterance (%d bytes, %.2f ms latency)",
             len(utterance),
             latency_ms,
         )
-        if fallback_query and fallback_query.strip():
-            clean_text = fallback_query.strip()
-            logger.info("Using fallback query following empty STT transcript: %s", clean_text)
-            msg = UserSpeechTranscriptMessage(
-                transcript=clean_text,
-                is_final=True,
-                latency_ms=0.0,
-            )
-            await manager.broadcast_json(msg)
-            if engine is not None and hasattr(engine, "handle_user_interruption"):
-                asyncio.create_task(engine.handle_user_interruption(clean_text))
-            return clean_text
+        msg = UserSpeechTranscriptMessage(
+            transcript="",
+            is_final=True,
+            latency_ms=latency_ms,
+        )
+        await manager.broadcast_json(msg)
+        if engine is not None and hasattr(engine, "handle_unrecognized_interruption"):
+            asyncio.create_task(engine.handle_unrecognized_interruption())
+        elif manager.state in ("LISTENING", "BARGE_IN"):
+            manager.set_state("NARRATING")
+            await manager.broadcast_json(manager.get_state_sync_message())
 
     return None
 
@@ -246,14 +250,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             elif "bytes" in raw_msg and raw_msg["bytes"] is not None:
                 pcm_data = raw_msg["bytes"]
                 manager.on_audio_frame(pcm_data)
-                if manager.state in ("LISTENING", "BARGE_IN"):
-                    acc = getattr(manager, "accumulator", None)
-                    if acc is not None:
+                acc = getattr(manager, "accumulator", None)
+                if acc is not None:
+                    if manager.state in ("LISTENING", "BARGE_IN"):
                         utterance = acc.feed(pcm_data)
                         if utterance:
                             active_stt = stt_engine or getattr(manager, "stt_engine", None)
                             if active_stt is not None:
                                 await process_stt_utterance(utterance, manager, active_stt, engine)
+                    else:
+                        # Feed pre-roll buffer continuously during NARRATING so initial consonants are never lost
+                        acc.feed(pcm_data)
 
     except WebSocketDisconnect:
         logger.info("Client disconnected via WebSocketDisconnect.")
