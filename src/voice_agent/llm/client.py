@@ -358,29 +358,54 @@ def score_candidate_sentence(sent: str, query_terms: List[str]) -> int:
 
 
 def search_web_sync(query: str, max_results: int = 8) -> str:
-    """Execute live internet web search to ground interruption queries."""
+    """Execute live internet web search to ground interruption queries with multi-query fallback."""
     if not query or not query.strip():
         return ""
-    search_q = anchor_search_query(query)
 
     try:
         try:
             from ddgs import DDGS
         except ImportError:
             from duckduckgo_search import DDGS
-        results = list(DDGS().text(search_q, max_results=max_results))
-        if not results:
-            return ""
-        lines = []
-        for r in results:
-            title = sanitize_web_snippet(r.get("title", ""))
-            body = sanitize_web_snippet(r.get("body", ""))
-            if title or body:
-                lines.append(f"- {title}: {body}")
-        return "\n".join(lines)
-    except Exception as exc:
-        logger.warning("Live web search failed for query %r: %s", search_q, exc, exc_info=True)
+    except Exception as imp_err:
+        logger.warning("Failed to import DDGS: %s", imp_err)
         return ""
+
+    # Generate candidate queries in descending specificity
+    primary_q = anchor_search_query(query)
+    candidates = [primary_q]
+
+    tokens = extract_query_tokens(query)
+    if tokens:
+        kw_lore = " ".join(tokens)
+        if "cyberpunk" not in kw_lore.lower():
+            kw_lore = f"{kw_lore} Cyberpunk"
+        if kw_lore not in candidates:
+            candidates.append(kw_lore)
+        kw_plain = " ".join(tokens)
+        if kw_plain not in candidates:
+            candidates.append(kw_plain)
+    if query not in candidates:
+        candidates.append(query)
+
+    for search_q in candidates:
+        try:
+            results = list(DDGS().text(search_q, max_results=max_results))
+            if results:
+                lines = []
+                for r in results:
+                    title = sanitize_web_snippet(r.get("title", ""))
+                    body = sanitize_web_snippet(r.get("body", ""))
+                    if title or body:
+                        lines.append(f"- {title}: {body}")
+                if lines:
+                    return "\n".join(lines)
+        except Exception as exc:
+            logger.warning("Live web search failed for query %r: %s", search_q, exc)
+            continue
+
+    logger.warning("Live web search failed across candidate queries %s", candidates)
+    return ""
 
 
 async def search_web(query: str, max_results: int = 8) -> str:
@@ -728,6 +753,26 @@ class LLMClient:
             else:
                 return "Top-tier nervous system cyberware. Slows time in a firefight so you can outflank scavs and hit-squads. Essential chrome for a solo."
 
+        if ("arasaka" in clean_words or "arakasa" in clean or "arakas" in clean) and any(w in clean for w in ["what is", "who is", "tell me", "corporation", "corpo", "tower"]):
+            if "johnny" in char:
+                return "Arasaka? The biggest, bloodiest megacorporation on Earth. Ruthless suits who think they own your soul and your chrome. I nuked their tower in 2023, and I'd do it again in a heartbeat."
+            elif "david" in char:
+                return "Arasaka's the undisputed king of Night City. Megacorp security, weapons, and black-ops ICE. They chew up street kids from Santo Domingo and spit out empty husks. Stay off their radar, choom."
+            elif "lucy" in char:
+                return "Arasaka is the corporate machine that stole my childhood. They trained us in deep subnets to dig through the Old Net. Don't ever trust a suit from Arasaka."
+            else:
+                return "Arasaka is the apex megacorp in Night City. Banking, corporate security, weapons manufacturing, and the Relic. Cross them and you end up flatlined."
+
+        if ("johnny" in clean_words or "silverhand" in clean_words) and any(w in clean for w in ["who is", "tell me", "what is", "opinion", "think"]):
+            if "johnny" in char:
+                return "You're looking at him, samurai. Rockerboy, lead guitar for Samurai, and the guy who put a thermonuclear charge in Arasaka Tower's elevator shaft."
+            elif "david" in char:
+                return "Johnny Silverhand? Legendary rockerboy solo who went out in a blaze of glory at Arasaka Tower. Pure rock and roll rebellion, choom."
+            elif "lucy" in char:
+                return "Johnny Silverhand is a ghost from 2023. An anti-corpo rebel whose construct is supposedly locked inside Arasaka's secure vault."
+            else:
+                return "Silverhand's a Night City legend. Terrorist to the corpos, folk hero to the streets. Died hitting Arasaka Tower back in 2023."
+
         # 5. Extract web search results if present; or trigger live search if enabled
         web_section = ""
         if "Live Internet Web Search Results:" in user_msg:
@@ -801,15 +846,15 @@ class LLMClient:
                 full_body = best_web_fact
 
             if "johnny" in char:
-                return f"Listen up samurai, tapped into the net: {full_body} Don't let the corpos spin it. Back to the story."
+                return f"Here's the real story, samurai: {full_body} Keep your iron ready—let's get back to burning this city."
             elif "lucy" in char:
-                return f"Dived into the subnet. {full_body} Stay quiet, let's keep reading."
+                return f"Here is what the deep net reveals: {full_body} Stay close, let's continue our reading."
             elif "v-female" in char:
-                return f"Intel verified: {full_body} Eyes forward, resuming the mission."
+                return f"Here's the operational intel: {full_body} Objectives clear—resuming the gig."
             elif "v-male" in char or char == "v":
-                return f"Scanned the feed, choom: {full_body} Let's get back to business."
+                return f"Got the word on the street, choom: {full_body} Stay sharp—let's jump right back into the op."
             else:
-                return f"Yo choomba, pulled this off the net: {full_body} Preem stuff. Let's roll."
+                return f"Check it out, choom: {full_body} Sandevistan's primed, let's roll right back to the story!"
 
         # If only document / notes context is available
         if best_book_sent:
