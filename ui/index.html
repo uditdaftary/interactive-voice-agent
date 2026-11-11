@@ -1490,7 +1490,7 @@
     send(data) {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         try {
-          if (typeof data === 'string' || data instanceof ArrayBuffer) {
+          if (typeof data === 'string' || data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
             this.ws.send(data);
           } else {
             this.ws.send(JSON.stringify(data));
@@ -1782,16 +1782,20 @@
           audio: {
             channelCount: 1,
             echoCancellation: true,
-            noiseSuppression: true
+            noiseSuppression: true,
+            autoGainControl: true
           }
         });
+        if (this.audioContext && this.audioContext.state === 'suspended') {
+          await this.audioContext.resume().catch(() => {});
+        }
         const source = this.audioContext.createMediaStreamSource(this.micStream);
         this.micProcessor = this.audioContext.createScriptProcessor(2048, 1, 1);
         this.micProcessor.onaudioprocess = (e) => {
           if (!this.isConnected || this.micSource !== 'browser') return;
           const input = e.inputBuffer.getChannelData(0);
 
-          // Downsample input from native sample rate to 16,000 Hz using linear interpolation
+          // Downsample input from native sample rate to 16,000 Hz using continuous phase interpolation
           const sampleRate = this.audioContext.sampleRate;
           const targetRate = 16000;
           let downsampled;
@@ -1800,15 +1804,19 @@
             downsampled = input;
           } else {
             const ratio = sampleRate / targetRate;
-            const newLength = Math.round(input.length / ratio);
-            downsampled = new Float32Array(newLength);
-            for (let i = 0; i < newLength; i++) {
-              const origIndex = i * ratio;
-              const indexFloor = Math.floor(origIndex);
+            let phase = this._downsamplePhase || 0;
+            const maxOut = Math.ceil((input.length - phase) / ratio) + 2;
+            const outBuf = new Float32Array(maxOut);
+            let outCount = 0;
+            while (phase < input.length) {
+              const indexFloor = Math.floor(phase);
               const indexCeil = Math.min(input.length - 1, indexFloor + 1);
-              const weight = origIndex - indexFloor;
-              downsampled[i] = input[indexFloor] * (1 - weight) + input[indexCeil] * weight;
+              const weight = phase - indexFloor;
+              outBuf[outCount++] = input[indexFloor] * (1 - weight) + input[indexCeil] * weight;
+              phase += ratio;
             }
+            this._downsamplePhase = phase - input.length;
+            downsampled = outBuf.subarray(0, outCount);
           }
 
           // Hands-free voice barge-in detection on downsampled 16kHz buffer
@@ -1818,7 +1826,7 @@
               sumSquares += downsampled[i] * downsampled[i];
             }
             const rms = downsampled.length > 0 ? Math.sqrt(sumSquares / downsampled.length) : 0;
-            if (rms > 0.065) {
+            if (rms > 0.020) {
               startDirectVoiceBargeIn();
             }
           }
@@ -1830,14 +1838,18 @@
               sumSq += downsampled[i] * downsampled[i];
             }
             const rms = downsampled.length > 0 ? Math.sqrt(sumSq / downsampled.length) : 0;
-            if (rms > 0.015) {
+            if (rms > 0.007) {
               this._clientVoiceDetected = true;
               this._clientSilenceStart = 0;
+              const textEl = document.getElementById('speech-ticker-text');
+              if (textEl && (!textEl.innerText || textEl.innerText.startsWith('🔴 RECORDING:'))) {
+                textEl.innerText = '🔴 SPEAKING: Voice energy detected... Speak your question, then click STOP';
+              }
             } else if (this._clientVoiceDetected) {
               const now = performance.now();
               if (!this._clientSilenceStart) {
                 this._clientSilenceStart = now;
-              } else if (now - this._clientSilenceStart > 1800) {
+              } else if (now - this._clientSilenceStart > 1600) {
                 this._clientVoiceDetected = false;
                 this._clientSilenceStart = 0;
                 stopDirectVoiceBargeIn();

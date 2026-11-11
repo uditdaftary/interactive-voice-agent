@@ -5,6 +5,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [0.8.0] - 2026-11-11
+
+### Conversational Fluidity, Continuous Phase Resampling & Low-Gain STT Normalization
+*Eliminated robotic canned interruption templates with rich multi-tier conversational intent routing, implemented continuous-phase fractional downsampling to prevent audio sample drops, added automatic audio gain normalization for quiet microphones, and expanded test coverage to 213 tests.*
+
+### Fixed & Enhanced
+- **Continuous Phase Web Audio Downsampling & Gain Normalization (`ui/index.html`, `voice_agent.stt`)**:
+  - In `ui/index.html`, upgraded the 48kHz -> 16kHz linear downsampler to maintain continuous sub-sample fractional phase (`this._downsamplePhase`) across audio processor buffers, eliminating phase boundary glitches and sample drops.
+  - Enabled browser `autoGainControl: true` and added automatic `AudioContext.resume()` on user gesture to avoid suspended audio states.
+  - In `src/voice_agent/stt/recognizer.py`, added dynamic peak normalization boosting quiet microphone audio ($< 0.5$ peak scaled to $0.75$) so Faster-Whisper's acoustic model and VAD reliably detect speech without quiet phoneme dropping.
+  - Added dual-stage Whisper transcription: attempts primary transcription with `vad_filter=True`, then automatically falls back to `vad_filter=False` if soft speech was gated out by Silero VAD.
+  - In `src/voice_agent/stt/accumulator.py`, extended the rolling pre-roll buffer to 25 frames (~1000ms) to capture initial words and plosives, and added a resilient `_session_buffer` fallback ensuring quiet utterances are never discarded when manually stopped.
+- **Conversational Fluidity & Multi-Tier Character Intent Routing (`voice_agent.llm.client`, `voice_agent.server.narration`)**:
+  - Overhauled `CHARACTER_PERSONA_PROMPTS` across Johnny Silverhand, Lucy Kushinada, David Martinez, and V (Male/Female) to instruct 1-3 natural spoken conversational sentences with street banter, dark humor, and smooth bridges back to the reading, strictly banning markdown asterisks, stage directions, and bullet points.
+  - Implemented multi-tier conversational intent routing in `_synthesize_fallback_answer()`:
+    1. **Greetings & Social Check-ins**: "hey", "what's up", "you there" trigger direct, immersive character banter without canned robotic prefixes.
+    2. **Self-Identity & Lore Inquiries**: "who are you", "what's your story" trigger authentic first-person character backstory.
+    3. **Repeat & Playback Commands**: "repeat that", "what did you just say" dynamically quote the currently active reading sentence in character voice.
+    4. **Pause & Wait Requests**: "hold on", "pause", "wait a minute" provide responsive, in-character confirmation.
+    5. **Reactions & Exclamations**: "wow", "damn", "no way" acknowledge the drama of the active story.
+    6. **Character Lore Opinions**: Questions about comrades and cyberware (e.g. asking David about Lucy, or Johnny about Sandevistan) trigger authentic game lore opinions.
+    7. **Inquisitive Fallback & Dynamic Closers**: Replaced robotic repetitive templates ("Listen up samurai, tapped into the net...") with character-authentic banter and fluid conversational transitions.
+- **Testing & Verification**:
+  - Added `tests/test_conversational_dialogue.py` covering greetings, identity inquiries, repeat commands with context, pause commands, and lore banter across all character personas.
+  - Added quiet-speech session buffering and extended pre-roll tests in `tests/test_speech_accumulator.py`.
+  - **100% test pass rate across full test suite (213/213 tests passing in 67.84s)**.
+
+---
+
 ## [0.7.0] - 2026-11-10
 
 ### Audio Downsampling, Search Relevance Overhaul & Okapi BM25 Passage Retrieval

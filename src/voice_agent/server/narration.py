@@ -327,7 +327,19 @@ class NarrationEngine:
                     reply=accumulated_reply.strip(),
                 ))
 
-            final_reply = accumulated_reply.strip() or "I have processed your question. Let us return to the narrative."
+            if not accumulated_reply.strip():
+                if "johnny" in voice_id:
+                    final_reply = "Got it, samurai. Keep your eyes on the road and your chrome hot. Back to the run."
+                elif "lucy" in voice_id:
+                    final_reply = "Understood. The signal is clear—let's dive back into our narrative."
+                elif "v-female" in voice_id:
+                    final_reply = "Copy that. Objectives locked and tactical feed active. Resuming mission."
+                elif "v-male" in voice_id or voice_id == "v":
+                    final_reply = "Understood choom. Keep your iron ready and stay frosty. Back to business."
+                else:
+                    final_reply = "Understood choomba! Chrome is spooled up and ready. Let's get right back to the run."
+            else:
+                final_reply = accumulated_reply.strip()
 
             # 7. Synthesize LLM answer to speech audio and stream to client
             audio_bytes, fmt = await synthesize_sentence(final_reply, voice_id=voice_id, cadence=cadence)

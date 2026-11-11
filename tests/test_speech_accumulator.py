@@ -186,3 +186,48 @@ def test_speech_turn_accumulator_low_energy_speech_tolerance():
     assert acc.is_speaking
 
 
+def test_speech_turn_accumulator_quiet_speech_session_buffering_and_flush():
+    """Verify that quiet speech below threshold is retained in session buffer and returned on flush."""
+    acc = SpeechTurnAccumulator(sample_rate=16000, energy_threshold=0.02)
+    # Feed 300ms of quiet speech (amplitude ~ 200, RMS ~ 0.004 < 0.02)
+    t = np.linspace(0, 0.3, 4800, endpoint=False)
+    quiet_pcm = (np.sin(2 * np.pi * 440 * t) * 200).astype(np.int16).tobytes()
+
+    # Feed in 3 chunks of 1600 bytes
+    for i in range(0, len(quiet_pcm), 1600):
+        turn = acc.feed(quiet_pcm[i:i+1600])
+        assert turn is None
+
+    # is_speaking was not triggered due to low RMS
+    assert not acc.is_speaking
+
+    # Manual flush from client (e.g. STOP & TRANSCRIBE) MUST return the complete quiet audio
+    flushed = acc.flush()
+    assert flushed is not None
+    assert len(flushed) == len(quiet_pcm)
+    assert acc.flush() is None
+
+
+def test_speech_turn_accumulator_extended_preroll_captures_plosives():
+    """Verify up to 25 pre-roll chunks are captured and prepended when speech starts."""
+    acc = SpeechTurnAccumulator(sample_rate=16000)
+    # Feed 10 chunks of ambient background (160 samples each = 320 bytes)
+    ambient_chunk = np.zeros(160, dtype=np.int16).tobytes()
+    for _ in range(10):
+        acc.feed(ambient_chunk)
+
+    assert not acc.is_speaking
+    assert len(acc._pre_roll_buffer) == 10
+
+    # Feed loud speech onset
+    t = np.linspace(0, 0.1, 1600, endpoint=False)
+    loud = (np.sin(2 * np.pi * 440 * t) * 16000).astype(np.int16).tobytes()
+    acc.feed(loud)
+
+    assert acc.is_speaking
+    # Pre-roll chunks should have been moved into _speech_buffer plus the loud chunk
+    expected_chunks = 10 + 1
+    assert len(acc._speech_buffer) == expected_chunks
+
+
+

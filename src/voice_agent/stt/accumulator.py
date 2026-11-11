@@ -11,9 +11,9 @@ class SpeechTurnAccumulator:
     def __init__(
         self,
         sample_rate: int = 16000,
-        energy_threshold: float = 0.015,
+        energy_threshold: float = 0.012,
         silence_timeout_ms: int = 1400,
-        min_speech_duration_ms: int = 200,
+        min_speech_duration_ms: int = 150,
     ):
         self.sample_rate = sample_rate
         self.energy_threshold = energy_threshold
@@ -22,6 +22,7 @@ class SpeechTurnAccumulator:
         self.is_speaking: bool = False
         self._speech_buffer: List[bytes] = []
         self._pre_roll_buffer: List[bytes] = []
+        self._session_buffer: List[bytes] = []
         self._speech_duration_ms: float = 0.0
         self._silence_duration_ms: float = 0.0
         self._last_speech_time: float = 0.0
@@ -38,13 +39,16 @@ class SpeechTurnAccumulator:
         if len(pcm16) == 0:
             return None
 
+        # Track all incoming audio chunks during active listening session for zero-loss manual flush
+        self._session_buffer.append(pcm_chunk)
+
         float_samples = pcm16.astype(np.float32) / 32768.0
         rms = float(np.sqrt(np.mean(float_samples ** 2)))
         chunk_duration_ms = (len(pcm16) / self.sample_rate) * 1000.0
         now = time.monotonic()
 
         # Adaptive threshold with hysteresis: lower threshold for ongoing speech to preserve quiet phonemes
-        active_threshold = self.energy_threshold * 0.7 if self.is_speaking else self.energy_threshold
+        active_threshold = self.energy_threshold * 0.6 if self.is_speaking else self.energy_threshold
 
         if rms >= active_threshold:
             if not self.is_speaking:
@@ -86,9 +90,9 @@ class SpeechTurnAccumulator:
                 if speech_duration >= self.min_speech_duration_ms:
                     return utterance
         else:
-            # Maintain rolling pre-roll buffer of last 4 chunks
+            # Maintain rolling pre-roll buffer of up to 25 chunks (~1000ms) to capture initial plosives/words
             self._pre_roll_buffer.append(pcm_chunk)
-            if len(self._pre_roll_buffer) > 4:
+            if len(self._pre_roll_buffer) > 25:
                 self._pre_roll_buffer.pop(0)
 
         return None
@@ -97,6 +101,11 @@ class SpeechTurnAccumulator:
         """Manually flush and return accumulated speech (e.g. on client speech_end event)."""
         if self._speech_buffer:
             utterance = b"".join(self._speech_buffer)
+            self.reset()
+            return utterance
+        elif self._session_buffer:
+            # Resilient fallback: user spoke into mic but RMS was below threshold (e.g. quiet mic)
+            utterance = b"".join(self._session_buffer)
             self.reset()
             return utterance
         elif self._pre_roll_buffer:
@@ -110,6 +119,7 @@ class SpeechTurnAccumulator:
         self.is_speaking = False
         self._speech_buffer = []
         self._pre_roll_buffer = []
+        self._session_buffer = []
         self._speech_duration_ms = 0.0
         self._silence_duration_ms = 0.0
         self._last_speech_time = 0.0

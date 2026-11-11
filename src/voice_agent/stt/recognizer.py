@@ -94,11 +94,17 @@ class STTEngine:
             sample_rate = target_rate
 
         # Check for near-total silence
-        if audio_np.size == 0 or np.max(np.abs(audio_np)) < 0.004:
+        max_amp = float(np.max(np.abs(audio_np))) if audio_np.size > 0 else 0.0
+        if audio_np.size == 0 or max_amp < 0.003:
             return ""
+
+        # Normalize gain for quiet microphone audio so Faster-Whisper reliably detects speech
+        if 0.003 <= max_amp < 0.5:
+            audio_np = (audio_np / max_amp) * 0.75
 
         # 1. Primary: faster-whisper
         if self._whisper_model is not None:
+            # 1a. Attempt with vad_filter=True
             try:
                 segments, info = self._whisper_model.transcribe(
                     audio_np,
@@ -111,7 +117,22 @@ class STTEngine:
                 if text:
                     return text
             except Exception as err:
-                logger.warning("faster-whisper transcription error: %s", err)
+                logger.warning("faster-whisper transcription error (vad_filter=True): %s", err)
+
+            # 1b. Fallback: retry with vad_filter=False in case Silero VAD filtered soft phonemes
+            try:
+                segments, info = self._whisper_model.transcribe(
+                    audio_np,
+                    beam_size=3,
+                    language="en",
+                    vad_filter=False,
+                    initial_prompt="Cyberpunk 2077, Night City, Arasaka, Sandevistan, Johnny Silverhand, Lucy, David Martinez.",
+                )
+                text = " ".join([s.text.strip() for s in segments]).strip()
+                if text:
+                    return text
+            except Exception as err:
+                logger.warning("faster-whisper transcription error (vad_filter=False): %s", err)
 
         # 2. Secondary: SpeechRecognition fallback
         try:

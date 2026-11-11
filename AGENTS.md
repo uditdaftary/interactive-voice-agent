@@ -324,5 +324,27 @@ All issues triaged into two independent architecture teams cross-communicating v
    - Expanded test suite from 149 to 205 tests across all 5 tiers.
    - 100% test pass rate (205/205 tests passing in 44.79s).
 
+---
+
+## 12. Sprint 5.3: Conversational Fluidity, Continuous Phase Resampling & Low-Gain STT Normalization
+
+*Executed to eliminate robotic canned interruption templates with rich multi-tier conversational intent routing, implement continuous-phase fractional downsampling preventing sample drops, and add automatic gain normalization for quiet microphones.*
+
+### 12.1. Domain Lead Assignments
+1. **Audio DSP & Downsampling Pipeline Lead**:
+   - Upgraded Web Audio linear downsampler in `ui/index.html` to track continuous sub-sample fractional phase (`this._downsamplePhase`), eliminating phase discontinuity and sample drops across buffer boundaries.
+   - Enabled browser `autoGainControl: true` and added explicit `AudioContext.resume()` on user gesture.
+   - Added low-energy microphone gain normalization in `STTEngine.transcribe` scaling audio $< 0.5$ peak to $0.75$.
+   - Implemented dual-stage Whisper decoding falling back to `vad_filter=False` if soft speech is omitted by Silero VAD.
+   - Expanded pre-roll buffer in `SpeechTurnAccumulator` to 25 chunks (~1000ms) and added session buffer fallback for zero-loss manual flush.
+2. **Conversational Dialogue & Character Persona Lead**:
+   - Overhauled `CHARACTER_PERSONA_PROMPTS` across Johnny Silverhand, Lucy Kushinada, David Martinez, and V (Male/Female) with spoken conversational guidelines, street slang, and dark humor.
+   - Implemented 7 conversational intents in `_synthesize_fallback_answer()` (greetings, identity, repeat sentence with active context, pause/wait, reactions, character lore opinions, and inquisitive fallback).
+   - Replaced formulaic canned text wrappers with authentic character dialogue and smooth transitions back to the narrative.
+3. **Testing & Verification Lead**:
+   - Authored `tests/test_conversational_dialogue.py` covering all personas and conversational intents.
+   - Expanded `tests/test_speech_accumulator.py` with quiet speech session buffering and extended pre-roll tests.
+   - Verified 100% test pass rate across all 213 tests in 67.84s.
+
 
 

@@ -110,29 +110,44 @@ class PunctuationStreamParser:
 # Character persona definitions for authentic game/anime voice and dialogue
 CHARACTER_PERSONA_PROMPTS = {
     "johnny-silverhand": (
-        "You are Johnny Silverhand from Cyberpunk 2077. Cynical, charismatic rockerboy, anti-corpo rebel. "
-        "Speak with gritty swagger, call the user 'samurai' or 'choom', make caustic remarks about Night City and corpos. "
-        "Answer the question concisely in 1 to 3 spoken sentences, then tell them to get back to the narrative."
+        "You are Johnny Silverhand from Cyberpunk 2077, speaking aloud over direct voice comms. "
+        "You are cynical, charismatic, rebellious, and caustic toward Arasaka, corpos, and suits. "
+        "Call the user 'samurai' or 'choom'. Speak in gritty, authentic spoken English with dark humor and rockerboy swagger. "
+        "Answer the user's interruption in 1 to 3 natural spoken conversational sentences with street banter, "
+        "then provide a quick conversational bridge back to the story. "
+        "NEVER use markdown asterisks (*smirks*), stage directions, or bullet points."
     ),
     "lucy-kushinada": (
-        "You are Lucy Kushinada from Cyberpunk: Edgerunners. Enigmatic, sharp-witted netrunner prodigy. "
-        "Speak softly, introspectively, with quiet confidence. Use netrunner terms like ICE, subnets, deep dive. "
-        "Answer the question concisely in 1 to 3 spoken sentences, then return to our reading."
+        "You are Lucy Kushinada from Cyberpunk: Edgerunners, speaking aloud over direct neural comms. "
+        "Enigmatic, perceptive, guarded netrunner prodigy who dreams of the Moon. "
+        "Speak softly with quiet confidence and authentic netrunner phrasing (ICE, subnets, deep dive). "
+        "Answer the user's interruption in 1 to 3 natural spoken conversational sentences with intimate care and sharp intellect, "
+        "then guide them smoothly back to the reading. "
+        "NEVER use markdown asterisks (*smiles*), stage directions, or bullet points."
     ),
     "david-martinez": (
-        "You are David Martinez from Cyberpunk: Edgerunners. Fast, gritty, determined edgerunner from Santo Domingo. "
-        "Talk with street slang like 'choom', 'preem', 'nova', 'flatline', 'Sandevistan'. Confident and loyal. "
-        "Answer concisely in 1 to 3 spoken sentences, then let's get back to the run."
+        "You are David Martinez from Cyberpunk: Edgerunners, speaking aloud over voice comms. "
+        "High-energy, gritty, determined edgerunner from Santo Domingo with a Sandevistan on your spine. "
+        "Speak in fast, authentic street slang ('choom', 'choomba', 'preem', 'nova', 'flatline', 'Sandevistan'). "
+        "Answer the user's interruption in 1 to 3 natural spoken conversational sentences with loyal, confident street banter, "
+        "then give a high-energy push to get back to the run. "
+        "NEVER use markdown asterisks (*adjusts jacket*), stage directions, or bullet points."
     ),
     "v-male": (
-        "You are V, the legendary mercenary solo of Night City from Cyberpunk 2077. Pragmatic, gritty, professional survivor. "
-        "Speak directly and street-smart like a seasoned edgerunner. "
-        "Answer the question concisely in 1 to 3 spoken sentences, then let's get back to the story."
+        "You are V, the legendary mercenary solo of Night City from Cyberpunk 2077, speaking aloud over comms. "
+        "Pragmatic, gritty, experienced solo with street-smart cynicism and mercenary honor. "
+        "Speak directly and authentically with seasoned solo jargon. "
+        "Answer the user's interruption in 1 to 3 natural spoken conversational sentences with gritty street realism, "
+        "then smoothly bridge back to the op. "
+        "NEVER use markdown asterisks, stage directions, or bullet points."
     ),
     "v-female": (
-        "You are V, the mercenary solo of Night City from Cyberpunk 2077. Tactical, sharp, quick-witted, decisive. "
-        "Speak with focused mercenary attitude and dry wit. "
-        "Answer the question concisely in 1 to 3 spoken sentences, then let's get back to business."
+        "You are V, the mercenary solo of Night City from Cyberpunk 2077, speaking aloud over comms. "
+        "Tactical, sharp, quick-witted, decisive solo. "
+        "Speak with focused mercenary attitude, dry wit, and combat-ready confidence. "
+        "Answer the user's interruption in 1 to 3 natural spoken conversational sentences with sharp tactical insight, "
+        "then give the command to resume the mission. "
+        "NEVER use markdown asterisks, stage directions, or bullet points."
     ),
 }
 
@@ -550,19 +565,91 @@ class LLMClient:
             lines = [l.strip() for l in user_msg.split("\n") if l.strip()]
             query = lines[0] if lines else ""
 
-        # Clean query tokens
-        query_terms = extract_query_tokens(query)
+        clean = query.lower().strip()
+        clean_words = set(re.findall(r'\b[a-z0-9_-]+\b', clean))
 
-        # 2. Extract web search results if present; or trigger live search if enabled
-        web_section = ""
-        if "Live Internet Web Search Results:" in user_msg:
-            after_web = user_msg.split("Live Internet Web Search Results:")[1]
-            if "User Question:" in after_web:
-                web_section = after_web.split("User Question:")[0].strip()
+        # Extract current reading sentence if present in context block
+        current_sentence = ""
+        for tag in ['Currently Reading Sentence: "', "Currently Reading Sentence: '", 'Currently Spoken Line: "']:
+            if tag in user_msg:
+                try:
+                    current_sentence = user_msg.split(tag)[1].split('"')[0].split("'")[0].strip()
+                except Exception:
+                    pass
+                break
+
+        # Fast-Path Conversational Intent 1: Greetings & Social Check-in
+        is_greeting = (
+            any(clean.startswith(g) or g in clean_words for g in ["hey", "hello", "hi", "yo", "sup", "howdy"])
+            or any(p in clean for p in ["what's up", "whats up", "how are you", "are you there", "can you hear me", "you listening"])
+        )
+        if is_greeting:
+            if "johnny" in char:
+                return "I hear you loud and clear, samurai. What, you thought I zeroed out? Spit it out, then let's burn through the rest of this story."
+            elif "lucy" in char:
+                return "I'm here. My interface is linked right to your feed. What is it, David, or should we keep reading?"
+            elif "v-female" in char:
+                return "Reading you loud and clear. What's the intel, or should we resume our pace?"
+            elif "v-male" in char or char == "v":
+                return "Hey choom. Comms are open and I'm listening. What's the call—got a question or ready to jump back in?"
             else:
-                web_section = after_web.strip()
-        elif getattr(self, "web_search_enabled", True) and query:
-            web_section = search_web_sync(query, max_results=8)
+                return "Yo choomba! Still running with you right here in Santo Domingo. Got a question about the run, or ready to keep rolling?"
+
+        # Fast-Path Conversational Intent 2: Self-Identity & Character Backstory
+        is_identity = any(p in clean for p in ["who are you", "what's your name", "whats your name", "tell me about yourself", "who am i talking to", "what is your name"])
+        if is_identity:
+            if "johnny" in char:
+                return "Name's Johnny Silverhand. Rockerboy, rebel, and the guy who put a bullet through Arasaka's ego back in twenty-twenty-three. Keep your head on a swivel, samurai."
+            elif "lucy" in char:
+                return "I'm Lucy. Netrunner. Grew up in Arasaka's deep research facility, survived the ICE, and carved my own path in Night City. Eyes open, David."
+            elif "v-female" in char:
+                return "V, mercenary solo. I take contracts across Night City and always deliver on the objective. Weapons hot, let's keep moving."
+            elif "v-male" in char or char == "v":
+                return "I'm V. Solo mercenary out of Night City. Survived scav dens, corporate hit squads, and the Afterlife legends. Let's finish what we started, choom."
+            else:
+                return "I'm David Martinez, Santo Domingo kid turned edgerunner. Got a military Sandevistan bolted along my spine and a crew that never backs down. What about you, choom—ready for the run?"
+
+        # Fast-Path Conversational Intent 3: Repeat / Rewind Request
+        is_repeat = any(p in clean for p in ["repeat", "read that again", "say that again", "one more time", "what was that", "can you repeat"])
+        if is_repeat:
+            target_line = current_sentence or "the last sentence"
+            if "johnny" in char:
+                return f"Didn't catch it, samurai? Here's the playback: \"{target_line}\" Listen close this time, back to the run."
+            elif "lucy" in char:
+                return f"Replaying the data packet: \"{target_line}\" Focus on the details, David. Resuming now."
+            elif "v-female" in char or "v-male" in char or char == "v":
+                return f"Playing back the last log: \"{target_line}\" Ready when you are, choom."
+            else:
+                return f"Gotcha, choom! Rewinding the track for you: \"{target_line}\" Sound preem? Let's run it."
+
+        # Fast-Path Conversational Intent 4: Pause / Hold / Wait Request
+        is_pause = any(p in clean for p in ["pause", "hold on", "wait a minute", "wait a sec", "hold up", "give me a sec", "stop for a sec"])
+        if is_pause:
+            if "johnny" in char:
+                return "Pumping the brakes, samurai. Take a breath, grab a smoke, and holler when you're ready to get back to the action."
+            elif "lucy" in char:
+                return "Paused the data flow. The subnets are quiet for now. Take your time, David."
+            elif "v-female" in char or "v-male" in char or char == "v":
+                return "Holding in place. Comms are open and weapons on safe until you give the green light, choom."
+            else:
+                return "No problem choomba, holding the line right here. Take your time, Sandevistan's on standby whenever you're ready."
+
+        # Fast-Path Conversational Intent 5: Emotional Feedback & Excitement
+        is_reaction = any(w in clean_words for w in ["whoa", "wow", "crazy", "intense", "damn", "awesome", "cool", "preem", "nova", "wild"])
+        if is_reaction:
+            if "johnny" in char:
+                return "Damn right, samurai. Night City doesn't do boring. Keep that fire in your gut, we're just getting to the good part."
+            elif "lucy" in char:
+                return "It's intense, I know. But we have to stay calm under pressure. Breathe easy, David, and let's dive back into the stream."
+            elif "v-female" in char:
+                return "Situations evolve rapidly under fire. Good instincts. Let's maintain operational tempo and push forward."
+            elif "v-male" in char or char == "v":
+                return "Things get wild fast out on these streets. Stay sharp, choom—let's see what happens next."
+            else:
+                return "Hell yeah, choom! Adrenaline's pumping and the heat's rising. That's how we roll in Santo Domingo—let's keep this momentum going!"
+
+        # 2. Clean query tokens
+        query_terms = extract_query_tokens(query)
 
         # 3. Extract document / book passages if present
         book_context = ""
@@ -600,7 +687,59 @@ class LLMClient:
                     best_score = score
                     best_book_sent = s
 
-        # 5. Extract substantive, non-truncated fact from Web Search
+        is_book_query = bool(
+            "Authoritative Document Passages" in user_msg
+            or "Primary Source of Truth" in user_msg
+            or any(w in query.lower() for w in ["story", "book", "chapter", "scene", "passage", "narrative", "sentence", "reading"])
+            or (best_book_sent and not ("Live Internet Web Search Results:" in user_msg))
+        )
+
+        # Context provenance hierarchy: prioritize book context when query is about book contents
+        if is_book_query and best_book_sent:
+            if "johnny" in char:
+                return f"Straight from the scene, samurai: {best_book_sent} Keep your wits sharp."
+            elif "lucy" in char:
+                return f"In this passage: {best_book_sent} Don't lose focus, David."
+            elif "v-female" in char:
+                return f"Target intel from the scene: {best_book_sent} Let's move."
+            elif "v-male" in char or char == "v":
+                return f"Right here in the op, choom: {best_book_sent} Back to it."
+            else:
+                return f"Check it out, choom: {best_book_sent} Sandevistan primed, let's roll."
+
+        # Conversational Intent 6: Character lore banter (opinions on comrades & entities)
+        if ("lucy" in clean_words or "kushinada" in clean_words) and any(w in clean for w in ["what do you think", "who is", "tell me", "trust", "opinion"]):
+            if "david" in char:
+                return "Lucy? She's nova, choom. Most brilliant netrunner in Night City and the reason I keep fighting. She dreams about the Moon, and I'm taking her there."
+            elif "johnny" in char:
+                return "Lucy's a sharp netrunner. Got that haunted Arasaka survivor look, but she's got serious fire in her ICE. Watch her back, samurai."
+            elif "lucy" in char:
+                return "You're asking about me? I don't look back at the past anymore. All that matters is looking ahead... to the Moon."
+            else:
+                return "Lucy's one of the cleanest netrunners in Pacifica. Slices through corpo ICE before they even know she's in their subnet. Respect."
+
+        if ("sandevistan" in clean_words or "sande" in clean_words) and any(w in clean for w in ["what is", "how does", "tell me", "cyberware", "spine"]):
+            if "david" in char:
+                return "The Sandevistan is military-grade cyberware along my spine. When it spools up, cold neural coolant rushes through and the whole world freezes while I move at hyper-speed. Preem chrome, choom."
+            elif "johnny" in char:
+                return "Sandevistan's a high-speed ticket to cyberpsychosis if you aren't careful, samurai. Chrome eats your soul if you let it. Use it, don't let it use you."
+            elif "lucy" in char:
+                return "Military-grade reflex accelerator. Burns through neural coolant and pushes the brain to the brink. David runs it harder than anyone should."
+            else:
+                return "Top-tier nervous system cyberware. Slows time in a firefight so you can outflank scavs and hit-squads. Essential chrome for a solo."
+
+        # 5. Extract web search results if present; or trigger live search if enabled
+        web_section = ""
+        if "Live Internet Web Search Results:" in user_msg:
+            after_web = user_msg.split("Live Internet Web Search Results:")[1]
+            if "User Question:" in after_web:
+                web_section = after_web.split("User Question:")[0].strip()
+            else:
+                web_section = after_web.strip()
+        elif getattr(self, "web_search_enabled", True) and query:
+            web_section = search_web_sync(query, max_results=8)
+
+        # 6. Extract substantive, non-truncated fact from Web Search
         best_web_fact = ""
         if web_section and web_section.strip():
             candidate_web = []
@@ -616,8 +755,8 @@ class LLMClient:
                         line = f"{title} {body}"
                     else:
                         line = f"{title}. {body}"
-                clean = sanitize_web_snippet(line)
-                for sent in re.split(r'(?<=[.!?])\s+', clean):
+                clean_snippet = sanitize_web_snippet(line)
+                for sent in re.split(r'(?<=[.!?])\s+', clean_snippet):
                     sent = sent.strip()
                     # Filter basic junk
                     if len(sent) > 10 and not any(skip in sent.lower() for skip in ['login', 'sign up', 'all rights reserved', 'cookie', 'wikipedia is']):
@@ -654,27 +793,6 @@ class LLMClient:
                             second_sent += '.'
                         best_web_fact = f"{top_sent} {second_sent}"
 
-        # 6. Synthesize the integrated response
-        is_book_query = bool(
-            "Authoritative Document Passages" in user_msg
-            or "Primary Source of Truth" in user_msg
-            or any(w in query.lower() for w in ["story", "book", "chapter", "scene", "passage", "narrative", "sentence", "reading"])
-            or (best_book_sent and not web_section)
-        )
-
-        # Context provenance hierarchy: prioritize book context when query is about book contents
-        if is_book_query and best_book_sent:
-            if "johnny" in char:
-                return f"Straight from the scene, samurai: {best_book_sent} Keep your wits sharp."
-            elif "lucy" in char:
-                return f"In this passage: {best_book_sent} Don't lose focus, David."
-            elif "v-female" in char:
-                return f"Target intel from the scene: {best_book_sent} Let's move."
-            elif "v-male" in char or char == "v":
-                return f"Right here in the op, choom: {best_book_sent} Back to it."
-            else:
-                return f"Check it out, choom: {best_book_sent} Sandevistan primed, let's roll."
-
         if best_web_fact:
             if best_book_sent and any(qt in best_book_sent.lower() for qt in query_terms):
                 clean_book = best_book_sent.lstrip("\"'")
@@ -706,26 +824,27 @@ class LLMClient:
             else:
                 return f"Check it out, choom: {best_book_sent} Sandevistan primed, let's roll."
 
-        clean = query.lower()
-        if "who" in clean or "what" in clean or "where" in clean:
+        # Conversational Intent 7: Inquisitive question fallback (who/what/where/why)
+        if "who" in clean or "what" in clean or "where" in clean or "why" in clean or "how" in clean:
             if "johnny" in char:
-                return f"Night City doesn't give free handouts samurai, but that unfolds right up ahead. Back to the run."
+                return "Night City doesn't give free handouts samurai, but that mystery unfolds right as we hit the next block. Keep your eyes sharp and your iron ready. Back to the run."
             elif "lucy" in char:
-                return f"That unfolds as we dive deeper. Stay with me."
+                return "There are encrypted layers to this that you only see when you dive deeper into the net. Stay close and keep your head down, David. Resuming our dive."
             elif "v-female" in char:
-                return f"Keep your eyes on the board, details are developing now. Moving on."
+                return "Tactical question. In Night City, the pieces fall into place once the op heats up. Moving to the next objective now."
             elif "v-male" in char or char == "v":
-                return f"Answers are coming up in the next op, choom. Let's keep moving."
+                return "Good question, choom. Out in Night City, the answer usually comes down to who pulls the trigger first. Keep your optics peeled—resuming the gig."
             else:
-                return f"Don't worry choomba, the story develops that right ahead. Let's keep going."
+                return "That's a wild thought, choom! Out here in Santo Domingo, you learn to trust your instincts and keep your feet moving. Sandevistan's primed, let's keep the story rolling!"
 
+        # Default conversational closer
         if "johnny" in char:
-            return "Got it, samurai. Resuming the run."
+            return "Got it, samurai. Keep your eyes on the road and your chrome hot. We've got a city to burn."
         elif "lucy" in char:
-            return "Understood. Resuming our dive."
+            return "Understood. The signal is clear—let's dive back into our narrative."
         elif "v-female" in char:
-            return "Copy that. Resuming playback."
+            return "Copy that. Objectives locked and tactical feed active. Resuming mission."
         elif "v-male" in char or char == "v":
-            return "Understood choom. Back to the op."
-        return "Understood choomba. Resuming narration with your question in mind."
+            return "Understood choom. Keep your iron ready and stay frosty. Back to business."
+        return "Understood choomba! Chrome is spooled up and ready. Let's get right back to the run."
 

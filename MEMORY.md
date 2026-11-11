@@ -362,4 +362,25 @@ In regex-based sentence boundary tokenizers, periods inside abbreviations (`Dr.`
    - Provenance hierarchy prioritizes document passages over external search when BM25 score $\ge 2.5$.
    - Enforced 2048-token context budget and ChatML control token stripping to guarantee safety on RTX 3050 4GB VRAM.
 
+### 5.10. Conversational Fluidity, Continuous Phase Resampling & Low-Gain STT Normalization (Sprint 5.3 / ADR-15)
+1. **Continuous Phase Fractional Audio Resampling & Low-Gain Recovery (`ui/index.html`, `voice_agent.stt`)**:
+   - Upgraded browser-side linear downsampling in `ui/index.html` to maintain continuous sub-sample fractional phase (`this._downsamplePhase`) across audio frames, preventing periodic phase slips and dropped samples at chunk boundaries.
+   - Enabled `autoGainControl: true` and added explicit `AudioContext.resume()` on user gesture to avoid silent browser states.
+   - In `STTEngine.transcribe`, added amplitude normalization scaling low-amplitude speech ($< 0.5$ peak scaled to $0.75$), allowing Faster-Whisper to transcribe soft/faint voices cleanly.
+   - Added two-pass Whisper acoustic decoding: attempts transcription with `vad_filter=True`, automatically falling back to `vad_filter=False` if soft speech was pruned by Silero VAD.
+   - In `SpeechTurnAccumulator`, expanded rolling pre-roll buffer to 25 frames (~1000ms) to capture initial words and plosives, and introduced `_session_buffer` fallback ensuring quiet utterances are never discarded on manual flush.
+2. **Multi-Tier Conversational Intent Routing & Anti-Robotic Dialogue (`voice_agent.llm.client`, `voice_agent.server.narration`)**:
+   - Overhauled `CHARACTER_PERSONA_PROMPTS` across Johnny Silverhand, Lucy Kushinada, David Martinez, and V (Male/Female) to instruct 1-3 spoken conversational sentences with street banter, dark humor, and smooth narrative bridges, strictly banning markdown asterisks, stage directions, and bullet points.
+   - Implemented fast-path conversational intent routing in `_synthesize_fallback_answer()`:
+     - **Intent 1: Greetings & Social Check-ins** ("hey", "what's up", "you there") -> immediate in-character street banter.
+     - **Intent 2: Self-Identity & Character Backstory** ("who are you", "what's your story") -> authentic first-person character backstory.
+     - **Intent 3: Repeat & Playback Commands** ("repeat that", "what did you say") -> dynamically quotes active reading sentence in character voice.
+     - **Intent 4: Pause & Wait Requests** ("hold on", "pause", "wait a minute") -> in-character confirmation.
+     - **Intent 5: Reactions & Exclamations** ("wow", "damn", "no way") -> acknowledges story drama.
+     - **Intent 6: Character Lore Opinions** -> authentic opinions on comrades and cyberware (e.g. David on Lucy or Johnny on Sandevistan).
+     - **Intent 7: Inquisitive Fallback & Dynamic Closers** -> eliminated formulaic canned wrappers ("Listen up samurai, tapped into the net...") in favor of natural conversational dialogue and fluid transitions back to the narrative.
+3. **Verification**:
+   - Added `tests/test_conversational_dialogue.py` (6 tests) and extended `tests/test_speech_accumulator.py` (2 tests).
+   - 100% test pass rate across all 213 tests in 67.84s.
+
 
