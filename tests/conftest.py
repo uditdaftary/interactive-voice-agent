@@ -14,9 +14,6 @@ from typing import Any
 
 import pytest
 
-# Set before any test module imports faster_whisper or huggingface_hub.
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-
 _LOOPBACK_NAMES = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
@@ -117,6 +114,19 @@ def block_outbound_network(request: pytest.FixtureRequest, monkeypatch: pytest.M
 
     if blocked:
         pytest.fail("network access blocked in tests:\n  " + "\n  ".join(blocked), pytrace=False)
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    """Keep the Hugging Face Hub offline unless a selected test may need to download a model.
+
+    Runs after collection and deselection but before any test body, so it precedes the lazy
+    `import faster_whisper` that reads HF_HUB_OFFLINE. The default selection excludes `slow` and
+    `network`, so it stays offline; `-m slow` or `-m ""` leaves the hub reachable so the real
+    Whisper benchmark can fetch tiny.en into a cold cache.
+    """
+    needs_hub = any(item.get_closest_marker("slow") or item.get_closest_marker("network") for item in session.items)
+    if not needs_hub:
+        os.environ["HF_HUB_OFFLINE"] = "1"
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:

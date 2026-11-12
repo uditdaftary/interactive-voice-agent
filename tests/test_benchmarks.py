@@ -12,7 +12,7 @@ cannot fail the suite. The measured values are printed; the bounds are regressio
    - 24kHz to 16kHz linear resampling and normalization < 2ms per 30ms frame.
 4. Generation Fencing Rejection Latency:
    - Stale TTS audio chunk rejection post-barge-in, median < 0.5ms across 1,000 iterations.
-5. Real Whisper transcription (marked `slow`, needs the cached tiny.en model):
+5. Real Whisper transcription (marked `slow` and `network`: a cold cache downloads tiny.en once):
    - Median of 3 runs on 2s of real speech < 2,000ms, with a non-empty transcript.
 """
 
@@ -188,11 +188,12 @@ def test_generation_fencing_rejection_overhead_benchmark() -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.network  # a cold Hugging Face cache needs a one-time tiny.en download, which the guard would block
 def test_benchmark_whisper_real() -> None:
     """Transcribe 2s of real speech with the real tiny.en model; median of 3 runs must be < 2,000ms."""
     engine = STTEngine(model_size="tiny.en", device="cpu", compute_type="int8", fallback_mock=False)
     if engine._whisper_model is None:
-        pytest.skip("Whisper tiny.en is not in the local Hugging Face cache (HF_HUB_OFFLINE=1 in tests)")
+        pytest.skip("Whisper tiny.en could not be loaded (not in the Hugging Face cache and the Hub is unreachable)")
 
     with wave.open(str(VOICE_SAMPLE), "rb") as wf:
         source_rate = wf.getframerate()

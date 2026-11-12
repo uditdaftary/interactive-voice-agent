@@ -1,6 +1,7 @@
 """The autouse network guard in conftest.py blocks non-loopback traffic and still allows loopback."""
 
 import asyncio
+import os
 import socket
 import threading
 
@@ -59,6 +60,13 @@ def test_ipv4_mapped_remote_address_is_still_blocked(block_outbound_network: lis
         sock.connect(("::ffff:192.0.2.1", 80))
     assert len(block_outbound_network) == 1
     block_outbound_network.clear()
+
+
+def test_hub_is_offline_unless_live_tests_are_selected(request: pytest.FixtureRequest) -> None:
+    live = any(item.get_closest_marker("slow") or item.get_closest_marker("network") for item in request.session.items)
+    if live:
+        pytest.skip("this run selects slow or network tests, so the Hugging Face Hub is left reachable")
+    assert os.environ["HF_HUB_OFFLINE"] == "1"
 
 
 def test_ddgs_search_is_blocked(block_outbound_network: list[str]) -> None:
