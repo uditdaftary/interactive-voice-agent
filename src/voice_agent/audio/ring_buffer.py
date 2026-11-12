@@ -78,6 +78,7 @@ class AudioRingBuffer:
             return 0
 
         # 1. Type normalization to numpy array
+        arr: np.ndarray
         if isinstance(data, (bytes, bytearray)):
             nbytes = len(data)
             if nbytes % 2 != 0:
@@ -111,7 +112,7 @@ class AudioRingBuffer:
                 arr = arr[0, :]
             elif arr.shape[1] == 2:
                 if np.issubdtype(arr.dtype, np.floating):
-                    arr = 0.5 * (arr[:, 0] + arr[:, 1])  # type: ignore[assignment]  # tracked ring-buffer fixes (spec 5.3), fixed in S4.3
+                    arr = 0.5 * (arr[:, 0] + arr[:, 1])
                 else:
                     arr = (arr[:, 0].astype(np.int64) + arr[:, 1].astype(np.int64)) // 2
             else:
@@ -263,12 +264,12 @@ class AudioRingBuffer:
             out = np.empty(count, dtype=np.int16)
             filled = 0
 
-            if tail_len > 0:
+            if self.fadeout_tail is not None and tail_len > 0:
                 take_tail = min(tail_len, count)
-                out[:take_tail] = self.fadeout_tail[:take_tail]  # type: ignore[index]  # tracked ring-buffer fixes (spec 5.3), fixed in S4.3
+                out[:take_tail] = self.fadeout_tail[:take_tail]
                 filled += take_tail
                 if take_tail < tail_len:
-                    self.fadeout_tail = self.fadeout_tail[take_tail:]  # type: ignore[index]  # tracked ring-buffer fixes (spec 5.3), fixed in S4.3
+                    self.fadeout_tail = self.fadeout_tail[take_tail:]
                 else:
                     self.fadeout_tail = None
 
