@@ -47,6 +47,13 @@ def test_load_settings_with_empty_env_equals_defaults() -> None:
     assert load_settings({}) == Settings()
 
 
+def test_repr_does_not_leak_the_api_key() -> None:
+    settings = load_settings({"VOICE_AGENT_LLM_API_KEY": "sk-x"})
+    assert settings.llm_api_key == "sk-x"
+    assert "sk-x" not in repr(settings)
+    assert "sk-x" not in str(settings)
+
+
 def test_settings_are_frozen() -> None:
     with pytest.raises(dataclasses.FrozenInstanceError):
         Settings().idle_poll_s = 1.0  # type: ignore[misc]  # frozen on purpose; the assignment is the test

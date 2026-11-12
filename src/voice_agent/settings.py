@@ -8,7 +8,7 @@ the narration loop without real sleeps.
 import dataclasses
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 _FALSE_SPELLINGS = frozenset({"0", "false", "no"})
 
@@ -18,7 +18,7 @@ class Settings:
     # LLM endpoint
     llm_base_url: str = "http://localhost:11434/v1"
     llm_model: str = "builtin-assistant"
-    llm_api_key: str = "local"
+    llm_api_key: str = field(default="local", repr=False)  # a secret: keep it out of logged settings
     web_search_enabled: bool = True
 
     # Narration loop
