@@ -32,6 +32,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["WebSocket"])
 
 
+async def _ensure_stt_engine(app: Any) -> Any:
+    # Imported here because app.py imports this module's router at load time.
+    from voice_agent.server.app import ensure_stt_engine
+
+    return await ensure_stt_engine(app)
+
+
 async def process_stt_utterance(
     utterance: bytes,
     manager: ConnectionManager,
@@ -184,10 +191,10 @@ async def handle_client_text_message(
     elif isinstance(msg, VoiceEndMessage):
         if manager.state in ("LISTENING", "BARGE_IN"):
             acc = getattr(manager, "accumulator", None)
-            active_stt = stt_engine or getattr(manager, "stt_engine", None)
             utterance = acc.flush() if acc is not None else None
             fb = getattr(msg, "fallback_query", None)
-            if utterance and active_stt is not None:
+            if utterance:
+                active_stt = stt_engine or await _ensure_stt_engine(websocket.app)
                 await process_stt_utterance(
                     utterance, manager, active_stt, engine, fallback_query=fb
                 )
@@ -253,9 +260,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     if manager.state in ("LISTENING", "BARGE_IN"):
                         utterance = acc.feed(pcm_data)
                         if utterance:
-                            active_stt = stt_engine or getattr(manager, "stt_engine", None)
-                            if active_stt is not None:
-                                await process_stt_utterance(utterance, manager, active_stt, engine)
+                            active_stt = stt_engine or await _ensure_stt_engine(websocket.app)
+                            await process_stt_utterance(utterance, manager, active_stt, engine)
                     else:
                         # Feed pre-roll buffer continuously during NARRATING so initial consonants are never lost
                         acc.feed(pcm_data)
