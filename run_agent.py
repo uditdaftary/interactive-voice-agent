@@ -110,7 +110,7 @@ class VoiceAgentInteractiveRunner:
         async for token in self.llm.stream_generate(prompt):
             print(f"{token}", end="", flush=True)
             sentences = parser.feed(token)
-            for s in sentences:
+            for _ in sentences:
                 sentence_count += 1
                 if sentence_count >= max_sentences:
                     break

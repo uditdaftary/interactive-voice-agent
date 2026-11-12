@@ -151,7 +151,6 @@ def test_playhead_proximity_gaussian_boost():
     boost = 1.0 + 0.35 * exp(-|i - current_idx|^2 / (2 * 10^2))
     breaks ties in favor of active reading location.
     """
-    current_idx = 5
     boost_at_playhead = compute_gaussian_proximity_boost(sentence_idx=5, current_sentence_idx=5)
     assert math.isclose(boost_at_playhead, 1.35, rel_tol=1e-3)
 

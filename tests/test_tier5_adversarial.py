@@ -53,7 +53,7 @@ def test_concurrency_rapid_multi_client_connect_burst() -> None:
     with TestClient(app) as client:
         with contextlib.ExitStack() as stack:
             websockets = []
-            for i in range(client_count):
+            for _ in range(client_count):
                 ws = stack.enter_context(client.websocket_connect("/ws"))
                 init_msg = ws.receive_json()
                 assert init_msg["type"] == "state_sync"

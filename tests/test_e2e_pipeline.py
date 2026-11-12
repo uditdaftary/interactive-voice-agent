@@ -203,7 +203,6 @@ def test_e2e_word_cursor_tracking_and_resumption(e2e_system) -> None:
 def test_e2e_hybrid_mic_switching_without_corruption(e2e_system) -> None:
     """Test switching between browser, virtual, and host mic modes preserves stream integrity."""
     app = e2e_system["app"]
-    manager = e2e_system["manager"]
     bridge: HybridMicrophoneBridge = e2e_system["bridge"]
     virtual_dev: VirtualAudioDevice = e2e_system["virtual_device"]
 
