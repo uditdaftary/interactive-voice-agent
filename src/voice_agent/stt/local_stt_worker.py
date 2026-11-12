@@ -300,7 +300,6 @@ def speech_groups(samples, merge_frames=MERGE_FRAMES):
     presses the key (a click in the microphone), thinks, and speaks. So every run of 3 frames above the gate is sound, sounds less
     than `merge_frames` apart belong together, and each group is decoded on its own, never with the long quiet between groups.
     """
-    import numpy as np
     levels = frame_levels(samples)
     count = levels.size
     if count < SPEECH_FRAMES:

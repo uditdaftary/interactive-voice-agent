@@ -7,10 +7,8 @@ Provides multi-tier TTS:
 """
 
 import asyncio
-import io
 import logging
 import os
-import re
 import tempfile
 from typing import Optional, Tuple
 import numpy as np

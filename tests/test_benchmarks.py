@@ -19,7 +19,6 @@ Benchmarks:
 import time
 from unittest.mock import MagicMock
 import numpy as np
-import pytest
 
 from voice_agent.audio.hybrid import HybridMicrophoneBridge
 from voice_agent.audio.loopback import VirtualAudioDevice
@@ -59,7 +58,7 @@ def test_atomic_ring_buffer_drain_latency_benchmark() -> None:
     p95_lat = float(np.percentile(latencies, 95))
     p99_lat = float(np.percentile(latencies, 99))
 
-    print(f"\n[BENCHMARK] 1,000 Atomic Buffer Drain Iterations:")
+    print("\n[BENCHMARK] 1,000 Atomic Buffer Drain Iterations:")
     print(f"  Min:    {min_lat:.5f} ms")
     print(f"  Max:    {max_lat:.5f} ms")
     print(f"  Mean:   {mean_lat:.5f} ms  (Target: < 0.05000 ms)")

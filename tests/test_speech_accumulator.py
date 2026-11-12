@@ -1,4 +1,3 @@
-import pytest
 import numpy as np
 from voice_agent.stt.accumulator import SpeechTurnAccumulator
 
@@ -147,7 +146,6 @@ def test_speech_turn_accumulator_monotonic_silence_timeout():
 
 
 def test_speech_turn_accumulator_handles_48khz_without_premature_cutoff():
-    import time
     # Default silence timeout is 1400ms
     acc = SpeechTurnAccumulator(sample_rate=16000, silence_timeout_ms=1400, min_speech_duration_ms=100)
 

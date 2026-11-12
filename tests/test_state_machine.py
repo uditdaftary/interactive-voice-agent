@@ -1,6 +1,4 @@
 import concurrent.futures
-import threading
-import pytest
 from voice_agent.orchestrator.state_machine import AgentState, AgentStateMachine
 
 

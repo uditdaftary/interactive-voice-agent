@@ -9,7 +9,7 @@ import html
 import io
 from pathlib import Path
 import re
-from typing import List, Optional, Union
+from typing import List
 import zipfile
 
 import pypdf

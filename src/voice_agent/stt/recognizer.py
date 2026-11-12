@@ -1,8 +1,7 @@
 import io
-import os
 import wave
 import logging
-from typing import Optional, Union
+from typing import Union
 import numpy as np
 
 logger = logging.getLogger(__name__)

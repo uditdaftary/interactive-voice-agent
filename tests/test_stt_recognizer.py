@@ -1,4 +1,3 @@
-import pytest
 import numpy as np
 from voice_agent.stt.recognizer import STTEngine, MockSTTEngine
 

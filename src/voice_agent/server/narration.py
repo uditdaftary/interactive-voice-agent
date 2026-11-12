@@ -6,9 +6,7 @@ and real-time LLM query interruption with live internet web search grounding.
 
 import asyncio
 import logging
-import time
 from typing import List, Optional, Tuple
-import numpy as np
 
 from voice_agent.document.bm25 import BM25Index
 from voice_agent.document.parser import DocumentContent
@@ -27,7 +25,6 @@ from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.schemas import (
     CursorUpdateMessage,
     PromptEnvelopeMessage,
-    StateSyncMessage,
 )
 from voice_agent.tts.synthesizer import synthesize_sentence
 

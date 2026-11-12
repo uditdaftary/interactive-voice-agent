@@ -4,7 +4,7 @@ Manages active client connections, session state synchronization,
 thread-safe broadcasting, and clean disconnection cleanup without memory leaks.
 """
 
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 import asyncio
 import json
 import logging
@@ -14,7 +14,6 @@ from pydantic import BaseModel
 
 from voice_agent.server.schemas import (
     BargeInEventMessage,
-    CursorUpdateMessage,
     StateSyncMessage,
 )
 

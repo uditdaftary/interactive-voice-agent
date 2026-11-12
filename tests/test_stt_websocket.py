@@ -1,9 +1,7 @@
 """Tests for Server-Side Neural STT WebSocket Streaming Protocol & Pipeline."""
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 import numpy as np
-import pytest
 from fastapi.testclient import TestClient
 
 from voice_agent.server.app import create_app

@@ -13,7 +13,6 @@ from typing import Any, Optional, Union
 import wave
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from voice_agent.document.parser import DocumentParser

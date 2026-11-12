@@ -328,7 +328,7 @@ def test_e2e_voice_barge_in_stt_transcription(e2e_system) -> None:
     manager.stt_engine = mock_stt
     app.state.stt_engine = mock_stt
 
-    engine: NarrationEngine = getattr(app.state, "narration_engine")
+    engine: NarrationEngine = app.state.narration_engine
     engine.llm.web_search_enabled = False
     engine.start_narration = MagicMock()
 

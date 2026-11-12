@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 from colorama import init, Fore, Style
 from voice_agent.cursor.tracker import CursorTracker
 from voice_agent.audio.ring_buffer import AudioRingBuffer
-from voice_agent.orchestrator.state_machine import AgentState, AgentStateMachine
+from voice_agent.orchestrator.state_machine import AgentStateMachine
 from voice_agent.orchestrator.context import assemble_qa_prompt
 from voice_agent.llm.client import MockLLMClient, PunctuationStreamParser
 

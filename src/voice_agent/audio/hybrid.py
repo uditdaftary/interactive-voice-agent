@@ -7,7 +7,7 @@ Integrates 16kHz 30ms VAD frame normalization, sub-50ms barge-in interruption,
 and playback playhead tracking.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import logging
 import threading
 import time

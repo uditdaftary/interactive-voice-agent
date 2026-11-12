@@ -767,7 +767,7 @@ class LLMClient:
             "Authoritative Document Passages" in user_msg
             or "Primary Source of Truth" in user_msg
             or any(w in query.lower() for w in ["story", "book", "chapter", "scene", "passage", "narrative", "sentence", "reading"])
-            or (best_book_sent and not ("Live Internet Web Search Results:" in user_msg))
+            or (best_book_sent and "Live Internet Web Search Results:" not in user_msg)
         )
 
         # Context provenance hierarchy: prioritize book context when query is about book contents

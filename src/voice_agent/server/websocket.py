@@ -9,7 +9,6 @@ import time
 from typing import Optional, Any
 import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from starlette.websockets import WebSocketState
 
 from voice_agent.server.connection_manager import (
     ConnectionManager,
