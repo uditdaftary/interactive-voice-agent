@@ -383,7 +383,7 @@ def parse_client_message(raw: Union[str, bytes, Dict[str, Any]]) -> Optional[Cli
                 web_search_enabled=payload.get("web_search_enabled"),
             )
 
-    except Exception:
+    except Exception:  # noqa: BLE001  # S3.3 RC4
         return None
 
     return None

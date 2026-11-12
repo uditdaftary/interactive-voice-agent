@@ -46,7 +46,7 @@ def extract_audio_and_duration(content: bytes) -> tuple[bytes, float]:
                     pcm_np = pcm_np.reshape(-1, channels).mean(axis=1).astype(np.int16)
                     return pcm_np.tobytes(), duration
                 return raw_frames, duration
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # S3.3 RC4
             logger.debug("Could not parse WAV container: %s", exc)
 
     # Fallback: assume raw PCM 16-bit mono 16kHz (32000 bytes/sec)
@@ -144,7 +144,7 @@ def create_app(
         else:
             try:
                 data = await request.json()
-            except Exception:
+            except Exception:  # noqa: BLE001  # S3.3 RC4
                 raise HTTPException(status_code=400, detail="No file or JSON text payload provided.") from None
 
             text = data.get("text", "").strip()
@@ -240,7 +240,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="Query cannot be empty.")
 
         eng: NarrationEngine = app.state.narration_engine
-        asyncio.create_task(eng.handle_user_interruption(query))
+        asyncio.create_task(eng.handle_user_interruption(query))  # noqa: RUF006  # S2.1
         return {"status": "ok", "query": query}
 
     @app.post("/api/narration/control")

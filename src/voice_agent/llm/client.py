@@ -397,7 +397,7 @@ def search_web_sync(query: str, max_results: int = 8) -> str:
                         lines.append(f"- {title}: {body}")
                 if lines:
                     return "\n".join(lines)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # S3.3 RC4
             logger.warning("Live web search failed for query %r: %s", search_q, exc)
             continue
 
@@ -596,7 +596,7 @@ class LLMClient:
             if tag in user_msg:
                 try:
                     current_sentence = user_msg.split(tag)[1].split('"')[0].split("'")[0].strip()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110  # S3.3 RC4
                     pass
                 break
 

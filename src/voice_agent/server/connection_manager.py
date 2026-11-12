@@ -80,7 +80,7 @@ class ConnectionManager:
         for ws in sockets:
             try:
                 await ws.close()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110  # S3.3 RC4
                 pass
 
     @property
@@ -115,7 +115,7 @@ class ConnectionManager:
         if cb is not None:
             try:
                 cb(voice_id)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # S3.3 RC4
                 logger.error(f"Error executing voice_change_callback: {e}")
 
     @property
@@ -131,7 +131,7 @@ class ConnectionManager:
         if cb is not None:
             try:
                 cb(source)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # S3.3 RC4
                 logger.error(f"Error executing mic_source_change_callback: {e}")
 
     @property
@@ -209,7 +209,7 @@ class ConnectionManager:
         if cb is not None:
             try:
                 cb(flushed_samples, latency_ms)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # S3.3 RC4
                 logger.error(f"Error executing barge_in_callback: {e}")
 
         return BargeInEventMessage(
@@ -263,7 +263,7 @@ class ConnectionManager:
         if sink is not None:
             try:
                 sink(frame_bytes)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # S3.3 RC4
                 logger.error(f"Error in audio sink callback: {e}")
 
     # ========================================================================
@@ -291,7 +291,7 @@ class ConnectionManager:
             try:
                 await ws.send_text(text)
                 return None
-            except Exception:
+            except Exception:  # noqa: BLE001  # S3.3 RC4
                 return ws
 
         results = await asyncio.gather(*[_safe_send(ws) for ws in sockets], return_exceptions=False)
@@ -327,7 +327,7 @@ class ConnectionManager:
             try:
                 await ws.send_bytes(data)
                 return None
-            except Exception:
+            except Exception:  # noqa: BLE001  # S3.3 RC4
                 return ws
 
         results = await asyncio.gather(*[_safe_send(ws) for ws in sockets], return_exceptions=False)
@@ -346,7 +346,7 @@ class ConnectionManager:
                 logger.warning(f"Background WebSocket broadcast error: {exc}")
         except (asyncio.CancelledError, concurrent.futures.CancelledError):
             pass
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # S3.3 RC4
             logger.debug(f"Error inspecting broadcast future: {e}")
 
     def broadcast_json_sync(

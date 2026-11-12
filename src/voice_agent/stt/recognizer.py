@@ -46,7 +46,7 @@ class STTEngine:
                 device=self.device,
                 compute_type=self.compute_type,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # S3.3 RC4
             logger.warning("Failed to initialize faster-whisper (%s). Falling back.", e)
             self._whisper_model = None
 
@@ -84,7 +84,7 @@ class STTEngine:
                 up = target_rate // gcd
                 down = int(sample_rate) // gcd
                 audio_np = signal.resample_poly(audio_np, up, down).astype(np.float32)
-            except Exception as resample_err:
+            except Exception as resample_err:  # noqa: BLE001  # S3.3 RC4
                 logger.debug("scipy resample_poly failed (%s), using linear interpolation fallback", resample_err)
                 orig_len = len(audio_np)
                 target_len = int(round(orig_len * (target_rate / sample_rate)))
@@ -126,7 +126,7 @@ class STTEngine:
                     text = " ".join([s.text.strip() for s in segments]).strip()
                     if text:
                         return text
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001  # S3.3 RC4
                     logger.warning("faster-whisper transcription error (vad_filter=True): %s", err)
 
             # 1b. Direct / Fallback attempt with vad_filter=False
@@ -141,7 +141,7 @@ class STTEngine:
                 text = " ".join([s.text.strip() for s in segments]).strip()
                 if text:
                     return text
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001  # S3.3 RC4
                 logger.warning("faster-whisper transcription error (vad_filter=False): %s", err)
 
         # 2. Secondary: SpeechRecognition fallback
@@ -160,7 +160,7 @@ class STTEngine:
             with sr.AudioFile(wav_io) as source:
                 audio = r.record(source)
                 return r.recognize_google(audio)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001  # S3.3 RC4
             logger.debug("SpeechRecognition fallback notice: %s", err)
 
         if self.fallback_mock:

@@ -115,7 +115,7 @@ async def synthesize_speech_edge(
                 audio_chunks.append(chunk["data"])
         if audio_chunks:
             return b"".join(audio_chunks)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # S3.3 RC4
         logger.warning(f"edge-tts synthesis failed, falling back: {exc}")
 
     return None
@@ -165,10 +165,10 @@ def synthesize_speech_pyttsx3(
             if os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
-                except Exception:
+                except Exception:  # noqa: BLE001, S110  # S3.3 RC4
                     pass
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # S3.3 RC4
         logger.warning(f"pyttsx3 synthesis failed: {exc}")
 
     return None

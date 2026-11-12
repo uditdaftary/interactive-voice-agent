@@ -167,7 +167,7 @@ class NarrationEngine:
 
         except asyncio.CancelledError:
             pass
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # S3.3 RC4
             logger.error(f"Error in narration loop: {exc}")
 
     def search_document_passages_with_scores(
@@ -216,7 +216,7 @@ class NarrationEngine:
                 self._narration_task.cancel()
                 try:
                     await self._narration_task
-                except (asyncio.CancelledError, Exception):
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110  # S3.3 RC4
                     pass
                 self._narration_task = None
 
@@ -399,7 +399,7 @@ class NarrationEngine:
                 self._narration_task.cancel()
                 try:
                     await self._narration_task
-                except (asyncio.CancelledError, Exception):
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110  # S3.3 RC4
                     pass
                 self._narration_task = None
 

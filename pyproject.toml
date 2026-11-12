@@ -56,19 +56,6 @@ ignore = ["E501"]
 "tests/test_vad.py" = ["E712"]
 # Tests may catch broadly and start fire-and-forget tasks (permanent).
 "tests/**" = ["BLE001", "RUF006"]
-# legacy blind excepts, removed in S3.3 (RC4 sweep)
-"src/voice_agent/audio/hybrid.py" = ["BLE001", "S110"]
-"src/voice_agent/document/parser.py" = ["BLE001", "S110"]
-"src/voice_agent/llm/client.py" = ["BLE001", "S110"]
-"src/voice_agent/server/app.py" = ["BLE001", "S110", "RUF006"]  # RUF006: untracked tasks, removed in S2.1 (TaskRegistry)
-"src/voice_agent/server/connection_manager.py" = ["BLE001", "S110"]
-"src/voice_agent/server/narration.py" = ["BLE001", "S110"]
-"src/voice_agent/server/schemas.py" = ["BLE001", "S110"]
-"src/voice_agent/server/websocket.py" = ["BLE001", "S110", "RUF006"]  # RUF006: untracked tasks, removed in S2.1 (TaskRegistry)
-"src/voice_agent/stt/recognizer.py" = ["BLE001", "S110"]
-"src/voice_agent/stt/local_stt_worker.py" = ["BLE001", "S110"]
-"src/voice_agent/tts/synthesizer.py" = ["BLE001", "S110"]
-"src/voice_agent/vad/energy_vad.py" = ["BLE001", "S110"]
 
 [tool.mypy]
 python_version = "3.11"

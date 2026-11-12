@@ -80,7 +80,7 @@ def use_utf8() -> None:
         try:
             if isinstance(stream, io.TextIOWrapper):
                 stream.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110  # S3.3 RC4
             pass
 
 
@@ -106,7 +106,7 @@ def lower_priority(level: str = "below") -> None:
                 log(f"priority {level} not set")
         else:
             os.nice(5)
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:  # noqa: BLE001  # S3.3 RC4
         log(f"priority not lowered: {error}")
 
 
@@ -163,7 +163,7 @@ def set_priority(level: str) -> bool:
         kernel32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         kernel32.SetPriorityClass.restype = ctypes.c_int
         return bool(kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), PRIORITY_CLASSES[level]))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001  # S3.3 RC4
         return False
 
 
@@ -555,7 +555,7 @@ def main() -> int:
         engine = Engine(args.model, threads, args.kind)
         # The first decode pays for the runtime's one-off set-up; do it before the first recording needs it.
         engine.decode((np.random.default_rng(1).standard_normal(SAMPLE_RATE) * 600).astype(np.int16))
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:  # noqa: BLE001  # S3.3 RC4
         send({"type": "error", "message": f"load failed: {type(error).__name__}: {error}"})
         return 3
     worker = Worker(engine)
@@ -596,7 +596,7 @@ def main() -> int:
                         log("priority high")
                 elif op == "quit":
                     return 0
-            except Exception as error:  # noqa: BLE001
+            except Exception as error:  # noqa: BLE001  # S3.3 RC4
                 send({"type": "error", "id": request_id, "message": f"{op} failed: {type(error).__name__}: {error}"})
         if None in batch:
             return 0

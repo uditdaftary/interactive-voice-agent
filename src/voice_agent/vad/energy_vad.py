@@ -141,7 +141,7 @@ class VoiceActivityDetector:
         if not isinstance(chunk, np.ndarray):
             try:
                 chunk = np.asarray(chunk)
-            except Exception:
+            except Exception:  # noqa: BLE001  # S3.3 RC4
                 return np.empty(0, dtype=np.float32)
 
         if chunk.size == 0:
@@ -184,7 +184,7 @@ class VoiceActivityDetector:
             try:
                 y, self._filter_zi = lfilter(self._b, self._a, centered, zi=self._filter_zi)
                 return y.astype(np.float32)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110  # S3.3 RC4
                 pass
             # Fallback pure-numpy/python loop
             y = np.empty_like(centered)
