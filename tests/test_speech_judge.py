@@ -2,24 +2,9 @@
 
 import numpy as np
 
+from speech_audio import SAMPLE_RATE, after_silence, voiced_tone
 from voice_agent.stt import local_stt_worker, speech_judge
 from voice_agent.stt.speech_judge import acoustic, evidence, judge, looping
-
-SAMPLE_RATE = 16000
-
-
-def voiced_tone(amplitude: float, seconds: float = 1.0, hz: float = 150.0) -> np.ndarray:
-    """A pitched tone with a little noise, the shape of a sustained voiced vowel."""
-    t = np.arange(int(seconds * SAMPLE_RATE)) / SAMPLE_RATE
-    rng = np.random.default_rng(7)
-    wave = amplitude * np.sin(2 * np.pi * hz * t) + 200.0 * rng.standard_normal(t.size)
-    return np.clip(wave, -32768, 32767).astype(np.int16)
-
-
-def after_silence(signal: np.ndarray) -> np.ndarray:
-    """Sound after a half second of quiet. The gate sits above the recording's own noise floor, so a recording that is
-    all sound has no floor to rise above, and the worker only ever sees speech set in quiet."""
-    return np.concatenate([np.zeros(SAMPLE_RATE // 2, dtype=np.int16), signal])
 
 
 def test_silence_is_quiet() -> None:

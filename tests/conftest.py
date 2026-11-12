@@ -14,6 +14,8 @@ from typing import Any
 
 import pytest
 
+from fakes import FakeWhisper
+
 _LOOPBACK_NAMES = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
@@ -136,6 +138,16 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if item.get_closest_marker("windows"):
             item.add_marker(skip_windows)
+
+
+@pytest.fixture
+def fake_whisper(monkeypatch: pytest.MonkeyPatch) -> FakeWhisper:
+    """Patch `faster_whisper.WhisperModel` with a fake: set `.text` for the transcript, `.fail_loads` for load failures."""
+    import faster_whisper
+
+    fake = FakeWhisper()
+    monkeypatch.setattr(faster_whisper, "WhisperModel", fake)
+    return fake
 
 
 @pytest.fixture
