@@ -124,3 +124,24 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if item.get_closest_marker("windows"):
             item.add_marker(skip_windows)
+
+
+@pytest.fixture
+def offline_stt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make a real `STTEngine` run with no Whisper model and no Google recognizer.
+
+    Loading the model needs the Hugging Face cache (absent on CI) and `recognize_google` is a network
+    call, so tests that exercise the engine's own logic opt in to this fixture.
+    """
+    from voice_agent.stt.recognizer import STTEngine
+
+    monkeypatch.setattr(STTEngine, "_init_engine", lambda self: None)
+    try:
+        import speech_recognition as sr
+    except ImportError:
+        return  # not installed (it is not a declared dependency), so the fallback is already skipped
+
+    def recognize_google(self: object, *args: Any, **kwargs: Any) -> str:
+        raise sr.RequestError("offline in tests")
+
+    monkeypatch.setattr(sr.Recognizer, "recognize_google", recognize_google)
