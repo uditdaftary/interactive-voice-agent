@@ -580,14 +580,14 @@ class LLMClient:
             query = user_msg.split("interrupted your narration with this question: '")[1].split("'")[0].strip()
         elif "User Question:" in user_msg:
             after = user_msg.split("User Question:")[-1]
-            lines = [l.strip() for l in after.split("\n") if l.strip()]
+            lines = [line.strip() for line in after.split("\n") if line.strip()]
             query = lines[0] if lines else ""
         elif "Query:" in user_msg:
             after = user_msg.split("Query:")[-1]
-            lines = [l.strip() for l in after.split("\n") if l.strip()]
+            lines = [line.strip() for line in after.split("\n") if line.strip()]
             query = lines[0] if lines else ""
         else:
-            lines = [l.strip() for l in user_msg.split("\n") if l.strip()]
+            lines = [line.strip() for line in user_msg.split("\n") if line.strip()]
             query = lines[0] if lines else ""
 
         clean = query.lower().strip()
