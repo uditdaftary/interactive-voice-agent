@@ -20,8 +20,9 @@ from voice_agent.server.connection_manager import (
     ConnectionManager,
     default_connection_manager,
 )
-from voice_agent.server.narration import NarrationEngine
+from voice_agent.server.narration import NarrationEngine, SearchFn, TtsFn
 from voice_agent.server.websocket import router as websocket_router
+from voice_agent.settings import Settings
 import asyncio
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,11 @@ def create_app(
     connection_manager: Optional[ConnectionManager] = None,
     narration_engine: Optional[NarrationEngine] = None,
     stt_engine: Optional[Any] = None,
+    *,
+    settings: Optional[Settings] = None,
+    llm_client: Optional[Any] = None,
+    tts: Optional[TtsFn] = None,
+    search: Optional[SearchFn] = None,
 ) -> FastAPI:
     """Create and configure the unified FastAPI application.
 
@@ -95,6 +101,11 @@ def create_app(
         connection_manager: Custom ConnectionManager instance. Defaults to default singleton.
         narration_engine: Custom NarrationEngine instance. Defaults to new instance.
         stt_engine: Custom STTEngine or MockSTTEngine instance. Defaults to connection manager's engine.
+        settings: Timing and endpoint settings for the default NarrationEngine. Defaults to `load_settings()`.
+        llm_client: LLM client for the default NarrationEngine. Defaults to one built from `settings`.
+        tts: Async speech synthesizer for the default NarrationEngine. Defaults to `synthesize_sentence`.
+        search: Async web search for the default NarrationEngine. Defaults to `search_web`.
+        The last four are ignored when `narration_engine` is supplied.
 
     Returns:
         Configured FastAPI application instance.
@@ -110,7 +121,11 @@ def create_app(
     manager = connection_manager if connection_manager is not None else default_connection_manager
     app.state.connection_manager = manager
 
-    engine = narration_engine if narration_engine is not None else NarrationEngine(connection_manager=manager)
+    engine = (
+        narration_engine
+        if narration_engine is not None
+        else NarrationEngine(connection_manager=manager, llm_client=llm_client, settings=settings, tts=tts, search=search)
+    )
     app.state.narration_engine = engine
 
     # Store STT engine in app state if provided
