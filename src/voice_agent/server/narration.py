@@ -13,7 +13,6 @@ from voice_agent.document.parser import DocumentContent
 from voice_agent.llm.client import (
     CHARACTER_PERSONA_PROMPTS,
     LLMClient,
-    PunctuationStreamParser,
     search_web,
 )
 from voice_agent.orchestrator.context import (
@@ -313,7 +312,6 @@ class NarrationEngine:
             })
 
             # 6. Stream LLM tokens to Prompt Envelope
-            parser = PunctuationStreamParser()  # noqa: F841  # wired in S3.3 (N4)
             accumulated_reply = ""
 
             await self.manager.broadcast_json(PromptEnvelopeMessage(
