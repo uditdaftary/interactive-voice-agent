@@ -97,9 +97,9 @@ def lower_priority(level: str = "below") -> None:
     try:
         if level == "normal":
             return
-        if level == "high" and os.name != "nt":
+        if level == "high" and sys.platform != "win32":
             return
-        if os.name == "nt":
+        if sys.platform == "win32":
             if not set_priority(level):
                 log(f"priority {level} not set")
         else:
