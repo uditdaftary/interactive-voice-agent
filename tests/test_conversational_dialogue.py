@@ -12,7 +12,7 @@ def test_character_persona_prompts_elevated():
 
 def test_conversational_greetings():
     """Verify natural conversational responses to greetings and social check-ins across character personas."""
-    client = LLMClient()
+    client = LLMClient(web_search_enabled=False)
     
     # David Martinez
     resp_david = client._synthesize_fallback_answer("User Question: hey david, what's up?", character_id="david-martinez")
@@ -42,7 +42,7 @@ def test_conversational_greetings():
 
 def test_conversational_identity_inquiry():
     """Verify characters introduce themselves authentically rather than generic canned text."""
-    client = LLMClient()
+    client = LLMClient(web_search_enabled=False)
 
     resp_david = client._synthesize_fallback_answer("User Question: who are you?", character_id="david-martinez")
     assert "david martinez" in resp_david.lower()
@@ -63,7 +63,7 @@ def test_conversational_identity_inquiry():
 
 def test_conversational_repeat_command_with_context():
     """Verify repeat requests quote the current reading sentence in character voice."""
-    client = LLMClient()
+    client = LLMClient(web_search_enabled=False)
     user_msg = (
         'Currently Reading Sentence: "Above the smog-choked megaliths, Arasaka orbital shuttles drifted."\n\n'
         'User Question: can you repeat that sentence?'
@@ -80,7 +80,7 @@ def test_conversational_repeat_command_with_context():
 
 def test_conversational_pause_command():
     """Verify pause/wait commands receive responsive in-character confirmation."""
-    client = LLMClient()
+    client = LLMClient(web_search_enabled=False)
 
     resp_david = client._synthesize_fallback_answer("User Question: hold on a second", character_id="david-martinez")
     assert "holding" in resp_david.lower() or "take your time" in resp_david.lower()
@@ -94,7 +94,7 @@ def test_conversational_pause_command():
 
 def test_conversational_lore_opinions():
     """Verify character questions yield authentic lore dialogue without generic robotic refusal."""
-    client = LLMClient()
+    client = LLMClient(web_search_enabled=False)
 
     # Asking David about Lucy
     resp_d_lucy = client._synthesize_fallback_answer("User Question: what do you think of Lucy?", character_id="david-martinez")
@@ -112,7 +112,7 @@ def test_conversational_lore_opinions():
 
 def test_conversational_gratitude_and_appreciation():
     """Verify gratitude and compliments receive natural, appreciative character dialogue."""
-    client = LLMClient()
+    client = LLMClient(web_search_enabled=False)
 
     resp_j = client._synthesize_fallback_answer("User Question: thanks for the help johnny", character_id="johnny-silverhand")
     assert "samurai" in resp_j.lower()
@@ -128,7 +128,7 @@ def test_conversational_gratitude_and_appreciation():
 
 def test_conversational_acknowledgment_and_confirmation():
     """Verify casual agreement (ok, got it, makes sense) yields turn-taking readiness."""
-    client = LLMClient()
+    client = LLMClient(web_search_enabled=False)
 
     resp_j = client._synthesize_fallback_answer("User Question: got it, makes sense", character_id="johnny-silverhand")
     assert "samurai" in resp_j.lower()
@@ -140,7 +140,7 @@ def test_conversational_acknowledgment_and_confirmation():
 
 def test_conversational_continuation_commands():
     """Verify resume/continue voice requests trigger immediate transition back to reading."""
-    client = LLMClient()
+    client = LLMClient(web_search_enabled=False)
 
     resp_j = client._synthesize_fallback_answer("User Question: continue reading", character_id="johnny-silverhand")
     assert "picking" in resp_j.lower() or "samurai" in resp_j.lower()
@@ -151,7 +151,7 @@ def test_conversational_continuation_commands():
 
 def test_conversational_extended_lore_smasher_and_relic():
     """Verify Adam Smasher and Relic inquiries yield rich lore dialogue."""
-    client = LLMClient()
+    client = LLMClient(web_search_enabled=False)
 
     resp_smasher = client._synthesize_fallback_answer("User Question: who is Adam Smasher?", character_id="johnny-silverhand")
     assert "smasher" in resp_smasher.lower() or "arasaka" in resp_smasher.lower()

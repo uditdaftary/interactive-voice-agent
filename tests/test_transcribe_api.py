@@ -87,8 +87,8 @@ def test_transcribe_missing_file_returns_422(mock_client: TestClient) -> None:
     assert resp.status_code == 422
 
 
-def test_transcribe_with_default_app() -> None:
-    """Test POST /api/transcribe with default app configuration."""
+def test_transcribe_with_default_app(offline_stt: None) -> None:
+    """Test POST /api/transcribe with default app configuration (STT built on first use, no model available)."""
     app = create_app()
     wav_bytes = make_synthetic_wav(duration_sec=0.5, sample_rate=16000)
     files = {"file": ("query.wav", wav_bytes, "audio/wav")}
@@ -98,5 +98,6 @@ def test_transcribe_with_default_app() -> None:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        assert isinstance(data["transcript"], str)
+        # With no Whisper model and no recognizer, the real engine reports an empty transcript.
+        assert data["transcript"] == ""
         assert pytest.approx(data["duration_sec"], rel=1e-2) == 0.5

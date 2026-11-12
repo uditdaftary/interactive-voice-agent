@@ -1,5 +1,9 @@
 import numpy as np
+import pytest
 from voice_agent.stt.recognizer import STTEngine, MockSTTEngine
+
+# Real STTEngine objects, but no Whisper model download and no Google call (see conftest.offline_stt).
+requires_offline_engine = pytest.mark.usefixtures("offline_stt")
 
 def test_mock_stt_engine():
     engine = MockSTTEngine("what is arasaka")
@@ -8,6 +12,7 @@ def test_mock_stt_engine():
     text = engine.transcribe(audio)
     assert text == "what is arasaka"
 
+@requires_offline_engine
 def test_stt_engine_initialization():
     engine = STTEngine(model_size="tiny.en", device="cpu", compute_type="int8", fallback_mock=True)
     assert engine.model_size == "tiny.en"
@@ -15,6 +20,7 @@ def test_stt_engine_initialization():
     assert engine.compute_type == "int8"
     assert engine.fallback_mock is True
 
+@requires_offline_engine
 def test_stt_engine_transcribe_silence():
     engine = STTEngine(model_size="tiny.en", device="cpu", compute_type="int8", fallback_mock=True)
     silence = np.zeros(16000, dtype=np.int16).tobytes()
@@ -22,11 +28,13 @@ def test_stt_engine_transcribe_silence():
     # Near-total silence (<0.01 peak) should return empty string even if fallback_mock is True
     assert text == ""
 
+@requires_offline_engine
 def test_stt_engine_transcribe_empty():
     engine = STTEngine(model_size="tiny.en", device="cpu", compute_type="int8", fallback_mock=True)
     assert engine.transcribe(b"") == ""
     assert engine.transcribe(np.array([], dtype=np.int16)) == ""
 
+@requires_offline_engine
 def test_stt_engine_transcribe_with_audio_bytes_or_array():
     # Non-silent audio signal (e.g. 440 Hz sine wave)
     sample_rate = 16000
@@ -36,15 +44,17 @@ def test_stt_engine_transcribe_with_audio_bytes_or_array():
 
     engine = STTEngine(model_size="tiny.en", device="cpu", compute_type="int8", fallback_mock=True)
     text_from_bytes = engine.transcribe(audio_bytes)
-    assert isinstance(text_from_bytes, str)
+    # No model and no recognizer here, so every input form must reach the mock fallback.
+    assert text_from_bytes == "what is arasaka"
 
     text_from_np_int16 = engine.transcribe(sine_wave)
-    assert isinstance(text_from_np_int16, str)
+    assert text_from_np_int16 == "what is arasaka"
 
     sine_float = sine_wave.astype(np.float32) / 32768.0
     text_from_np_float = engine.transcribe(sine_float)
-    assert isinstance(text_from_np_float, str)
+    assert text_from_np_float == "what is arasaka"
 
+@requires_offline_engine
 def test_stt_engine_fallback_mock():
     # Force whisper model to None and test fallback_mock
     engine = STTEngine(model_size="tiny.en", device="cpu", compute_type="int8", fallback_mock=True)
@@ -59,6 +69,7 @@ def test_stt_engine_fallback_mock():
     assert result == "what is arasaka"
 
 
+@requires_offline_engine
 def test_stt_engine_resamples_48khz_to_16khz():
     from unittest.mock import MagicMock
     engine = STTEngine(model_size="tiny.en", device="cpu", compute_type="int8", fallback_mock=True)
@@ -82,6 +93,7 @@ def test_stt_engine_resamples_48khz_to_16khz():
     assert len(resampled_audio) == 16000
 
 
+@requires_offline_engine
 def test_stt_engine_whisper_initial_prompt_conditioning():
     from unittest.mock import MagicMock
     engine = STTEngine(model_size="tiny.en", device="cpu", compute_type="int8", fallback_mock=True)

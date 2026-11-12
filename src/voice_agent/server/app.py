@@ -20,8 +20,9 @@ from voice_agent.server.connection_manager import (
     ConnectionManager,
     default_connection_manager,
 )
-from voice_agent.server.narration import NarrationEngine
+from voice_agent.server.narration import NarrationEngine, SearchFn, TtsFn
 from voice_agent.server.websocket import router as websocket_router
+from voice_agent.settings import Settings
 import asyncio
 
 logger = logging.getLogger(__name__)
@@ -54,18 +55,45 @@ def extract_audio_and_duration(content: bytes) -> tuple[bytes, float]:
     return content, duration
 
 
-def get_stt_engine(app: FastAPI) -> Any:
-    """Retrieve or lazily initialize the STTEngine from app state or connection manager."""
+def _stored_stt_engine(app: FastAPI) -> Any:
+    """The engine already on app.state or the connection manager (tests set it there), else None."""
     engine = getattr(app.state, "stt_engine", None)
     if engine is None:
         manager = getattr(app.state, "connection_manager", None)
-        if manager is not None and hasattr(manager, "stt_engine") and manager.stt_engine is not None:
-            engine = manager.stt_engine
-        else:
-            from voice_agent.stt.recognizer import STTEngine
-            engine = STTEngine(fallback_mock=False)
-        app.state.stt_engine = engine
+        engine = manager.stt_engine if manager is not None else None
+        if engine is not None:
+            app.state.stt_engine = engine
     return engine
+
+
+async def _build_stt_engine(app: FastAPI) -> Any:
+    from voice_agent.stt.recognizer import STTEngine
+
+    try:
+        engine = await asyncio.to_thread(STTEngine, fallback_mock=False)
+        app.state.stt_engine = engine
+        return engine
+    finally:
+        # Success is now served from app.state.stt_engine; after a failure the next caller retries.
+        app.state.stt_build = None
+
+
+async def ensure_stt_engine(app: FastAPI) -> Any:
+    """Return the app's STT engine, building the real one on first use (M2).
+
+    Loading Whisper takes seconds and may reach the Hugging Face Hub, so it never happens at
+    import. The build runs as one task in a worker thread. Callers await it through a shield, so
+    concurrent first utterances share the build and a cancelled caller (a closed websocket) does
+    not discard a half-loaded model that the next caller would otherwise load a second time.
+    """
+    engine = _stored_stt_engine(app)
+    if engine is not None:
+        return engine
+    build = getattr(app.state, "stt_build", None)
+    if build is None:
+        # No await between the check and the set, so concurrent first callers share one task.
+        build = app.state.stt_build = asyncio.create_task(_build_stt_engine(app))
+    return await asyncio.shield(build)
 
 
 @asynccontextmanager
@@ -87,6 +115,11 @@ def create_app(
     connection_manager: Optional[ConnectionManager] = None,
     narration_engine: Optional[NarrationEngine] = None,
     stt_engine: Optional[Any] = None,
+    *,
+    settings: Optional[Settings] = None,
+    llm_client: Optional[Any] = None,
+    tts: Optional[TtsFn] = None,
+    search: Optional[SearchFn] = None,
 ) -> FastAPI:
     """Create and configure the unified FastAPI application.
 
@@ -94,7 +127,13 @@ def create_app(
         ui_dir: Path to static dashboard UI directory. Defaults to project `ui/`.
         connection_manager: Custom ConnectionManager instance. Defaults to default singleton.
         narration_engine: Custom NarrationEngine instance. Defaults to new instance.
-        stt_engine: Custom STTEngine or MockSTTEngine instance. Defaults to connection manager's engine.
+        stt_engine: Custom STTEngine or MockSTTEngine instance. Defaults to the connection manager's engine,
+            else one is built on first use.
+        settings: Timing and endpoint settings for the default NarrationEngine. Defaults to `load_settings()`.
+        llm_client: LLM client for the default NarrationEngine. Defaults to one built from `settings`.
+        tts: Async speech synthesizer for the default NarrationEngine. Defaults to `synthesize_sentence`.
+        search: Async web search for the default NarrationEngine. Defaults to `search_web`.
+        The last four are ignored when `narration_engine` is supplied.
 
     Returns:
         Configured FastAPI application instance.
@@ -110,16 +149,15 @@ def create_app(
     manager = connection_manager if connection_manager is not None else default_connection_manager
     app.state.connection_manager = manager
 
-    engine = narration_engine if narration_engine is not None else NarrationEngine(connection_manager=manager)
+    engine = (
+        narration_engine
+        if narration_engine is not None
+        else NarrationEngine(connection_manager=manager, llm_client=llm_client, settings=settings, tts=tts, search=search)
+    )
     app.state.narration_engine = engine
 
-    # Store STT engine in app state if provided
-    if stt_engine is not None:
-        app.state.stt_engine = stt_engine
-    elif hasattr(manager, "stt_engine"):
-        app.state.stt_engine = manager.stt_engine
-    else:
-        app.state.stt_engine = None
+    # STT is built on first use by ensure_stt_engine; only an injected or pre-set engine is stored here.
+    app.state.stt_engine = stt_engine if stt_engine is not None else manager.stt_engine
 
     # Include WebSocket streaming router at /ws
     app.include_router(websocket_router)
@@ -281,7 +319,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="Uploaded audio file is empty.")
 
         pcm_data, duration_sec = extract_audio_and_duration(content)
-        stt = get_stt_engine(app)
+        stt = await ensure_stt_engine(app)
         transcript = stt.transcribe(pcm_data)
         if transcript is None:
             transcript = ""

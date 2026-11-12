@@ -29,3 +29,7 @@ jobs:
 
       - name: Mypy
         run: mypy
+
+      # Default markers (pyproject addopts) deselect network and slow tests; windows-marked tests skip on Linux.
+      - name: Pytest
+        run: python -m pytest -q

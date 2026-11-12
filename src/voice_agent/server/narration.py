@@ -6,6 +6,7 @@ and real-time LLM query interruption with live internet web search grounding.
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from typing import List, Optional, Tuple
 
 from voice_agent.document.bm25 import BM25Index
@@ -25,9 +26,21 @@ from voice_agent.server.schemas import (
     CursorUpdateMessage,
     PromptEnvelopeMessage,
 )
+from voice_agent.settings import Settings, load_settings
 from voice_agent.tts.synthesizer import synthesize_sentence
 
 logger = logging.getLogger(__name__)
+
+# Called as tts(text, voice_id, cadence); returns (audio bytes or None, format name).
+TtsFn = Callable[[str, str, float], Awaitable[tuple[bytes | None, str]]]
+# Called as search(query, max_results); returns the grounding text, "" when nothing was found.
+SearchFn = Callable[[str, int], Awaitable[str]]
+
+
+async def _default_tts(text: str, voice_id: str, cadence: float) -> tuple[bytes | None, str]:
+    # Resolves synthesize_sentence at call time so the module attribute stays patchable.
+    return await synthesize_sentence(text, voice_id=voice_id, cadence=cadence)
+
 
 # Default resident narrative text (Cyberpunk 2077 / Edgerunners excerpt)
 DEFAULT_STORY_SENTENCES = [
@@ -50,9 +63,24 @@ class NarrationEngine:
         connection_manager: ConnectionManager,
         llm_client: Optional[LLMClient] = None,
         initial_sentences: Optional[List[str]] = None,
+        *,
+        settings: Optional[Settings] = None,
+        tts: Optional[TtsFn] = None,
+        search: Optional[SearchFn] = None,
     ):
         self.manager = connection_manager
-        self.llm = llm_client or LLMClient()
+        self.settings = settings if settings is not None else load_settings()
+        self.tts: TtsFn = tts if tts is not None else _default_tts
+        self.search: SearchFn = search if search is not None else search_web
+        if llm_client is not None:
+            self.llm = llm_client
+        else:
+            self.llm = LLMClient(
+                base_url=self.settings.llm_base_url,
+                api_key=self.settings.llm_api_key,
+                model=self.settings.llm_model,
+                web_search_enabled=self.settings.web_search_enabled,
+            )
         self.sentences: List[str] = list(initial_sentences or DEFAULT_STORY_SENTENCES)
         self._bm25_index: BM25Index = BM25Index.from_sentences(self.sentences)
         self.document_title: str = "Night City: Santo Domingo Run"
@@ -99,7 +127,7 @@ class NarrationEngine:
         try:
             while self.manager.state == "NARRATING":
                 if not self.sentences:
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(self.settings.idle_poll_s)
                     continue
 
                 if self.current_sentence_idx >= len(self.sentences):
@@ -124,7 +152,7 @@ class NarrationEngine:
                 await self.manager.broadcast_json(cursor_msg)
 
                 # 2. Synthesize audio for current sentence
-                audio_bytes, fmt = await synthesize_sentence(sentence_text, voice_id=voice_id, cadence=cadence)
+                audio_bytes, fmt = await self.tts(sentence_text, voice_id, cadence)
 
                 if self.manager.state != "NARRATING":
                     break
@@ -136,8 +164,8 @@ class NarrationEngine:
                 # 4. Stream word cursor highlighting across sentence duration
                 words = sentence_text.split()
                 num_words = max(1, len(words))
-                # Estimated duration based on cadence (approx 2.5 words per sec at 1.0x)
-                duration_sec = max(1.2, num_words / (2.5 * cadence))
+                # Estimated duration based on cadence (words_per_s at 1.0x)
+                duration_sec = max(self.settings.min_sentence_s, num_words / (self.settings.words_per_s * cadence))
                 step_interval = duration_sec / num_words
 
                 for w_idx in range(num_words):
@@ -160,7 +188,7 @@ class NarrationEngine:
                     break
 
                 # Pause briefly between sentences
-                await asyncio.sleep(0.35 / cadence)
+                await asyncio.sleep(self.settings.inter_sentence_pause_s / cadence)
 
                 # Step to next sentence
                 self.current_sentence_idx = (self.current_sentence_idx + 1) % len(self.sentences)
@@ -251,7 +279,7 @@ class NarrationEngine:
                     query=query,
                     reply="",
                 ))
-                web_grounding = await search_web(query, max_results=3)
+                web_grounding = await self.search(query, 3)
 
             # 5. Context Budgeting & ChatML Sanitization (enforces 2048-token limit for RTX 3050 4GB VRAM)
             clean_query = sanitize_chatml(query)
@@ -352,13 +380,16 @@ class NarrationEngine:
                 self._conversation_history = self._conversation_history[-12:]
 
             # 7. Synthesize LLM answer to speech audio and stream to client
-            audio_bytes, fmt = await synthesize_sentence(final_reply, voice_id=voice_id, cadence=cadence)
+            audio_bytes, fmt = await self.tts(final_reply, voice_id, cadence)
             if audio_bytes:
                 await self.manager.broadcast_bytes(audio_bytes)
 
             # Estimate duration to let speech finish playing in client
             reply_words = len(final_reply.split())
-            playback_delay = max(2.0, reply_words / (2.2 * cadence))
+            playback_delay = max(
+                self.settings.min_reply_playback_s,
+                reply_words / (self.settings.reply_words_per_s * cadence),
+            )
             await asyncio.sleep(playback_delay)
 
             # 8. Conversational Turn-Taking Window: leave comms open for follow-up before auto-resuming
@@ -371,9 +402,9 @@ class NarrationEngine:
             ))
             await self.manager.broadcast_json(self.manager.get_state_sync_message())
 
-            # Pause up to 2.5s for conversational follow-up or next utterance
-            for _ in range(25):
-                await asyncio.sleep(0.1)
+            # Pause up to followup_window_s for conversational follow-up or next utterance
+            for _ in range(self.settings.followup_poll_count):
+                await asyncio.sleep(self.settings.followup_poll_s)
                 if self._interruption_count != current_turn or self.manager.state != "LISTENING":
                     return
 
@@ -385,7 +416,7 @@ class NarrationEngine:
                 reply=final_reply,
                 pre_roll_words=4,
             ))
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(self.settings.preroll_pause_s)
 
             # 10. Cleanly resume background narration
             self.manager.set_state("NARRATING")
@@ -425,11 +456,11 @@ class NarrationEngine:
             ))
             await self.manager.broadcast_json(self.manager.get_state_sync_message())
 
-            audio_bytes, fmt = await synthesize_sentence(recovery_text, voice_id=voice_id, cadence=cadence)
+            audio_bytes, fmt = await self.tts(recovery_text, voice_id, cadence)
             if audio_bytes:
                 await self.manager.broadcast_bytes(audio_bytes)
 
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(self.settings.unrecognized_pause_s)
 
             # Pre-Roll Resumption Cue & return to NARRATING
             await self.manager.broadcast_json(PromptEnvelopeMessage(
@@ -439,7 +470,7 @@ class NarrationEngine:
                 reply=recovery_text,
                 pre_roll_words=4,
             ))
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(self.settings.preroll_pause_s)
 
             self.manager.set_state("NARRATING")
             await self.manager.broadcast_json(self.manager.get_state_sync_message())

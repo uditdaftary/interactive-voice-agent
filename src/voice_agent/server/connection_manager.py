@@ -150,10 +150,8 @@ class ConnectionManager:
 
     @property
     def stt_engine(self) -> Any:
+        """The stored STT engine, or None. Never constructs one: see `ensure_stt_engine`."""
         with self._lock:
-            if self._stt_engine is None:
-                from voice_agent.stt.recognizer import STTEngine
-                self._stt_engine = STTEngine(fallback_mock=False)
             return self._stt_engine
 
     @stt_engine.setter
