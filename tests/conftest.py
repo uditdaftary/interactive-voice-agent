@@ -152,20 +152,13 @@ def fake_whisper(monkeypatch: pytest.MonkeyPatch) -> FakeWhisper:
 
 @pytest.fixture
 def offline_stt(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make a real `STTEngine` run with no Whisper model and no Google recognizer.
+    """Make the real STT engine find no Whisper model: the Hugging Face cache is absent on CI and the Hub is offline.
 
-    Loading the model needs the Hugging Face cache (absent on CI) and `recognize_google` is a network
-    call, so tests that exercise the engine's own logic opt in to this fixture.
+    A load failure is the backend's `stt-unavailable` path, so the transcript comes back empty.
     """
-    from voice_agent.stt.recognizer import STTEngine
+    import faster_whisper
 
-    monkeypatch.setattr(STTEngine, "_init_engine", lambda self: None)
-    try:
-        import speech_recognition as sr
-    except ImportError:
-        return  # not installed (it is not a declared dependency), so the fallback is already skipped
+    def model_missing(*args: Any, **kwargs: Any) -> None:
+        raise OSError("no Whisper model in tests")
 
-    def recognize_google(self: object, *args: Any, **kwargs: Any) -> str:
-        raise sr.RequestError("offline in tests")
-
-    monkeypatch.setattr(sr.Recognizer, "recognize_google", recognize_google)
+    monkeypatch.setattr(faster_whisper, "WhisperModel", model_missing)

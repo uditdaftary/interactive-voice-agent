@@ -25,7 +25,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from fakes import FakeLLM, FakeSearch, FakeTts
+from fakes import FakeLLM, FakeSearch, FakeStt, FakeTts
 from voice_agent.audio.hybrid import HybridMicrophoneBridge
 from voice_agent.audio.loopback import VirtualAudioDevice
 from voice_agent.audio.ring_buffer import AudioRingBuffer
@@ -35,7 +35,6 @@ from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.narration import NarrationEngine
 from voice_agent.server.schemas import CursorUpdateMessage, VADEventMessage
 from voice_agent.settings import Settings
-from voice_agent.stt.recognizer import MockSTTEngine
 from voice_agent.vad.energy_vad import VoiceActivityDetector
 
 
@@ -331,7 +330,7 @@ def test_e2e_voice_barge_in_stt_transcription(e2e_system) -> None:
     assert ring_buffer.size == 48000
 
     # Configure STT mock and NarrationEngine
-    mock_stt = MockSTTEngine("what is arasaka")
+    mock_stt = FakeStt("what is arasaka")
     manager.stt_engine = mock_stt
     app.state.stt_engine = mock_stt
 

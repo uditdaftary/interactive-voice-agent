@@ -6,7 +6,7 @@ Validates:
 3. Response schema: {"transcript": str, "duration_sec": float, "status": "ok"}.
 4. Error handling for empty files (returns 400).
 5. Error handling for missing file parameter (returns 422).
-6. Integration with STTEngine / MockSTTEngine.
+6. Integration with the STT engine (FakeStt here).
 """
 
 import io
@@ -16,7 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from voice_agent.server.app import create_app
-from voice_agent.stt.recognizer import MockSTTEngine
+from fakes import FakeStt
 
 
 def make_synthetic_wav(duration_sec: float = 1.0, sample_rate: int = 16000) -> bytes:
@@ -36,8 +36,8 @@ def make_synthetic_wav(duration_sec: float = 1.0, sample_rate: int = 16000) -> b
 
 @pytest.fixture
 def mock_client():
-    """Provides a TestClient configured with MockSTTEngine."""
-    mock_stt = MockSTTEngine(fixed_transcript="cyberpunk voice agent online")
+    """Provides a TestClient configured with FakeStt."""
+    mock_stt = FakeStt(fixed_transcript="cyberpunk voice agent online")
     app = create_app(stt_engine=mock_stt)
     with TestClient(app) as client:
         yield client

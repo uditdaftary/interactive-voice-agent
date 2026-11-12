@@ -70,7 +70,7 @@ async def _build_stt_engine(app: FastAPI) -> Any:
     from voice_agent.stt.recognizer import STTEngine
 
     try:
-        engine = await asyncio.to_thread(STTEngine, fallback_mock=False)
+        engine = await asyncio.to_thread(STTEngine)
         app.state.stt_engine = engine
         return engine
     finally:
@@ -127,7 +127,7 @@ def create_app(
         ui_dir: Path to static dashboard UI directory. Defaults to project `ui/`.
         connection_manager: Custom ConnectionManager instance. Defaults to default singleton.
         narration_engine: Custom NarrationEngine instance. Defaults to new instance.
-        stt_engine: Custom STTEngine or MockSTTEngine instance. Defaults to the connection manager's engine,
+        stt_engine: Custom STT engine (any object with a `transcribe` method). Defaults to the connection manager's engine,
             else one is built on first use.
         settings: Timing and endpoint settings for the default NarrationEngine. Defaults to `load_settings()`.
         llm_client: LLM client for the default NarrationEngine. Defaults to one built from `settings`.

@@ -114,3 +114,15 @@ class FakeWhisper:
         self.inputs.append(audio)
         self.transcribe_kwargs.append(kwargs)
         return ([SimpleNamespace(text=self.text)] if self.text else []), None
+
+
+class FakeStt:
+    """Stands in for the STT engine: returns a fixed transcript and records the byte length of each input."""
+
+    def __init__(self, fixed_transcript: str = "") -> None:
+        self.fixed_transcript = fixed_transcript
+        self.calls: list[int] = []
+
+    def transcribe(self, audio_data: bytes | bytearray | np.ndarray, sample_rate: int = 16000) -> str:
+        self.calls.append(audio_data.nbytes if isinstance(audio_data, np.ndarray) else len(audio_data))
+        return self.fixed_transcript

@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from voice_agent.server.app import create_app, ensure_stt_engine
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.stt import recognizer
-from voice_agent.stt.recognizer import MockSTTEngine
+from fakes import FakeStt
 
 SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 
@@ -82,7 +82,7 @@ def test_connection_manager_stt_engine_never_constructs(monkeypatch: pytest.Monk
     monkeypatch.setattr(recognizer, "STTEngine", ExplodingSTT)
     manager = ConnectionManager()
     assert manager.stt_engine is None
-    mock = MockSTTEngine("x")
+    mock = FakeStt("x")
     manager.stt_engine = mock
     assert manager.stt_engine is mock
 
@@ -95,7 +95,7 @@ async def test_ensure_stt_engine_builds_once_off_the_event_loop(counting_stt: ty
     assert first is second
     assert app.state.stt_engine is first
     assert len(counting_stt.built) == 1
-    assert counting_stt.built[0] == {"fallback_mock": False}
+    assert counting_stt.built[0] == {}
     assert counting_stt.build_threads[0] != threading.get_ident()
 
 
@@ -129,14 +129,14 @@ async def test_ensure_stt_engine_works_without_create_app(counting_stt: type[Cou
 
 
 async def test_ensure_stt_engine_prefers_existing_engines(counting_stt: type[CountingSTT]) -> None:
-    on_app = MockSTTEngine("on app")
+    on_app = FakeStt("on app")
     app = create_app(connection_manager=ConnectionManager(), stt_engine=on_app)
     assert await ensure_stt_engine(app) is on_app
 
     # An engine set on the manager after create_app is honoured and nothing is built.
     manager = ConnectionManager()
     app = create_app(connection_manager=manager)
-    on_manager = MockSTTEngine("on manager")
+    on_manager = FakeStt("on manager")
     manager.stt_engine = on_manager
     assert await ensure_stt_engine(app) is on_manager
     assert app.state.stt_engine is on_manager
