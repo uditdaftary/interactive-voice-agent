@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 import io
 import logging
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Annotated, Any, Optional, Union
 import wave
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
@@ -131,7 +131,7 @@ def create_app(
     @app.post("/api/upload-document")
     async def upload_document(
         request: Request,
-        file: Optional[UploadFile] = File(None),
+        file: Annotated[UploadFile | None, File()] = None,
     ):
         """Upload an ebook, PDF, EPUB, TXT, or MD document for narration."""
         eng: NarrationEngine = app.state.narration_engine
@@ -145,7 +145,7 @@ def create_app(
             try:
                 data = await request.json()
             except Exception:
-                raise HTTPException(status_code=400, detail="No file or JSON text payload provided.")
+                raise HTTPException(status_code=400, detail="No file or JSON text payload provided.") from None
 
             text = data.get("text", "").strip()
             title = data.get("title", "Custom Document").strip()
@@ -269,7 +269,7 @@ def create_app(
 
     @app.post("/api/transcribe")
     async def transcribe_audio(
-        file: UploadFile = File(...),
+        file: Annotated[UploadFile, File()],
     ):
         """Transcribe an uploaded audio file (WAV or raw PCM).
 
