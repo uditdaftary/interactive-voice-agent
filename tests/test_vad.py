@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 from voice_agent.vad.energy_vad import VoiceActivityDetector
 
 def test_silence_vs_speech():

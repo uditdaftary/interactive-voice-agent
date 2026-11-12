@@ -499,7 +499,7 @@ def test_atomic_buffer_drain_latency_stress_1000_iterations() -> None:
     p95_lat = float(np.percentile(latencies, 95))
     p99_lat = float(np.percentile(latencies, 99))
 
-    print(f"\n[STRESS VERIFICATION] 1,000 Atomic Buffer Drains:")
+    print("\n[STRESS VERIFICATION] 1,000 Atomic Buffer Drains:")
     print(f"  Min:    {min_lat:.5f} ms")
     print(f"  Max:    {max_lat:.5f} ms")
     print(f"  Mean:   {mean_lat:.5f} ms (Target: < 0.05000 ms)")
@@ -554,7 +554,7 @@ def test_end_to_end_barge_in_latency_stress_100_iterations() -> None:
     p95_lat = float(np.percentile(arr, 95))
     p99_lat = float(np.percentile(arr, 99))
 
-    print(f"\n[STRESS VERIFICATION] 100 End-to-End Barge-In Runs:")
+    print("\n[STRESS VERIFICATION] 100 End-to-End Barge-In Runs:")
     print(f"  Min:  {arr.min():.4f} ms")
     print(f"  Max:  {max_lat:.4f} ms (Target: < 50.0 ms)")
     print(f"  Mean: {mean_lat:.4f} ms")

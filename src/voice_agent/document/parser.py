@@ -9,7 +9,7 @@ import html
 import io
 from pathlib import Path
 import re
-from typing import List, Optional, Union
+from typing import List
 import zipfile
 
 import pypdf
@@ -110,7 +110,7 @@ def parse_pdf_bytes(data: bytes, filename: str = "document.pdf") -> DocumentCont
             pt = page.extract_text()
             if pt and pt.strip():
                 page_texts.append(pt.strip())
-        except Exception:
+        except Exception:  # noqa: BLE001  # S3.3 RC4
             continue
 
     raw_text = "\n\n".join(page_texts)
@@ -135,7 +135,7 @@ def parse_epub_bytes(data: bytes, filename: str = "document.epub") -> DocumentCo
                         if match:
                             title = html.unescape(match.group(1).strip())
                             break
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110  # S3.3 RC4
                         pass
 
             # Read all xhtml / html documents in reading order
@@ -156,9 +156,9 @@ def parse_epub_bytes(data: bytes, filename: str = "document.epub") -> DocumentCo
                     cleaned_block = re.sub(r"\s+", " ", content).strip()
                     if cleaned_block:
                         raw_texts.append(cleaned_block)
-                except Exception:
+                except Exception:  # noqa: BLE001  # S3.3 RC4
                     continue
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001  # S3.3 RC4
         raw_texts.append(f"Failed to read EPUB: {e}")
 
     raw_text = "\n\n".join(raw_texts)

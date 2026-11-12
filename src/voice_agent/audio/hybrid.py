@@ -7,7 +7,7 @@ Integrates 16kHz 30ms VAD frame normalization, sub-50ms barge-in interruption,
 and playback playhead tracking.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import logging
 import threading
 import time
@@ -288,7 +288,7 @@ class HybridMicrophoneBridge:
         for cb in self._frame_callbacks:
             try:
                 cb(frame)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # S3.3 RC4
                 logger.error(f"Error in frame callback: {e}")
 
         # Evaluate VAD step
@@ -310,10 +310,10 @@ class HybridMicrophoneBridge:
         )
 
         # Notify VAD observers
-        for cb in self._vad_callbacks:
+        for vad_cb in self._vad_callbacks:
             try:
-                cb(telemetry)
-            except Exception as e:
+                vad_cb(telemetry)
+            except Exception as e:  # noqa: BLE001  # S3.3 RC4
                 logger.error(f"Error in VAD callback: {e}")
 
         # Check for speech onset to trigger sub-50ms barge-in interruption
@@ -355,7 +355,7 @@ class HybridMicrophoneBridge:
         for cb in self._barge_in_callbacks:
             try:
                 cb(event)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # S3.3 RC4
                 logger.error(f"Error in barge-in callback: {e}")
 
         return event
@@ -471,7 +471,7 @@ class HybridMicrophoneBridge:
         else:
             try:
                 arr = np.asarray(data)
-            except Exception:
+            except Exception:  # noqa: BLE001  # S3.3 RC4
                 return np.empty(0, dtype=np.float32)
 
         if arr.size == 0:
@@ -525,7 +525,7 @@ class HybridMicrophoneBridge:
     def _start_host_stream(self) -> bool:
         """Attempt to open and start a native sounddevice.InputStream."""
         try:
-            import sounddevice as sd  # type: ignore
+            import sounddevice as sd
 
             # Check if input devices exist
             devices = sd.query_devices()
@@ -548,7 +548,7 @@ class HybridMicrophoneBridge:
             self._host_stream = stream
             return True
 
-        except (ImportError, Exception) as e:
+        except (ImportError, Exception) as e:  # noqa: BLE001  # S3.3 RC4
             logger.debug(f"Failed to initialize host sounddevice: {e}")
             self._host_stream = None
             return False
@@ -559,7 +559,7 @@ class HybridMicrophoneBridge:
             try:
                 self._host_stream.stop()
                 self._host_stream.close()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # S3.3 RC4
                 logger.debug(f"Error closing sounddevice stream: {e}")
             finally:
                 self._host_stream = None

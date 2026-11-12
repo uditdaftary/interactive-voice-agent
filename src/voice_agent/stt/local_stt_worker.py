@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import io
 import json
 import os
 import queue
@@ -77,8 +78,9 @@ def use_utf8() -> None:
     models, 2026-10-19). Reconfigure them here, before anything is read or written."""
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:  # noqa: BLE001
+            if isinstance(stream, io.TextIOWrapper):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001, S110  # S3.3 RC4
             pass
 
 
@@ -97,14 +99,14 @@ def lower_priority(level: str = "below") -> None:
     try:
         if level == "normal":
             return
-        if level == "high" and os.name != "nt":
+        if level == "high" and sys.platform != "win32":
             return
-        if os.name == "nt":
+        if sys.platform == "win32":
             if not set_priority(level):
                 log(f"priority {level} not set")
         else:
             os.nice(5)
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:  # noqa: BLE001  # S3.3 RC4
         log(f"priority not lowered: {error}")
 
 
@@ -152,7 +154,8 @@ def set_priority(level: str) -> bool:
     The handle is declared as a pointer-sized value: GetCurrentProcess() returns the pseudo-handle -1, and the default 32-bit int conversion
     of ctypes turns it into 0xFFFFFFFF, which Windows refuses (ERROR_INVALID_HANDLE) on a 64-bit process. Every call before 27 Oct 2026 failed this way."""
     try:
-        if os.name != "nt":
+        # sys.platform (not os.name) so mypy skips this Windows-only branch when checking on Linux.
+        if sys.platform != "win32":
             return False
         import ctypes
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -160,7 +163,7 @@ def set_priority(level: str) -> bool:
         kernel32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         kernel32.SetPriorityClass.restype = ctypes.c_int
         return bool(kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), PRIORITY_CLASSES[level]))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001  # S3.3 RC4
         return False
 
 
@@ -300,7 +303,6 @@ def speech_groups(samples, merge_frames=MERGE_FRAMES):
     presses the key (a click in the microphone), thinks, and speaks. So every run of 3 frames above the gate is sound, sounds less
     than `merge_frames` apart belong together, and each group is decoded on its own, never with the long quiet between groups.
     """
-    import numpy as np
     levels = frame_levels(samples)
     count = levels.size
     if count < SPEECH_FRAMES:
@@ -415,7 +417,7 @@ class Worker:
         self.np = np
         self.engine = engine
         self.id = None
-        self.chunks = []
+        self.chunks: list = []
         self.total = 0
         self.last_partial = None   # (samples covered, text) of the newest partial that decoded the whole recording
         self.last_words = ""       # newest non-empty partial text of this recording, the last resort when the final decode is empty
@@ -553,7 +555,7 @@ def main() -> int:
         engine = Engine(args.model, threads, args.kind)
         # The first decode pays for the runtime's one-off set-up; do it before the first recording needs it.
         engine.decode((np.random.default_rng(1).standard_normal(SAMPLE_RATE) * 600).astype(np.int16))
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:  # noqa: BLE001  # S3.3 RC4
         send({"type": "error", "message": f"load failed: {type(error).__name__}: {error}"})
         return 3
     worker = Worker(engine)
@@ -570,7 +572,7 @@ def main() -> int:
         if first is None:
             return 0
         gate.active()
-        batch = [first]
+        batch: list[dict | None] = [first]
         while True:
             try:
                 batch.append(messages.get_nowait())
@@ -594,7 +596,7 @@ def main() -> int:
                         log("priority high")
                 elif op == "quit":
                     return 0
-            except Exception as error:  # noqa: BLE001
+            except Exception as error:  # noqa: BLE001  # S3.3 RC4
                 send({"type": "error", "id": request_id, "message": f"{op} failed: {type(error).__name__}: {error}"})
         if None in batch:
             return 0

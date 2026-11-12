@@ -17,7 +17,7 @@ class CursorTracker:
         sentences: List[str] = []
         if isinstance(sentences_or_text, str):
             sentences = split_sentences(sentences_or_text)
-        elif hasattr(sentences_or_text, "__iter__"):
+        elif sentences_or_text is not None and hasattr(sentences_or_text, "__iter__"):
             for item in sentences_or_text:
                 if isinstance(item, str):
                     sentences.extend(split_sentences(item))

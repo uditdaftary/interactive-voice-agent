@@ -1,4 +1,3 @@
-import pytest
 from voice_agent.llm.client import LLMClient, CHARACTER_PERSONA_PROMPTS
 
 

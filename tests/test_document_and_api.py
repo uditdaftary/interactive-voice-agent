@@ -12,13 +12,11 @@ Validates:
 """
 
 import io
-from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 import pypdf
 
-from voice_agent.document.parser import DocumentParser, parse_uploaded_file
-from voice_agent.llm.client import LLMClient, search_web_sync
+from voice_agent.document.parser import DocumentParser
 from voice_agent.server.app import create_app
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.narration import NarrationEngine

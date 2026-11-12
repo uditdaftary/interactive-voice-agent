@@ -9,7 +9,6 @@ import time
 from typing import Optional, Any
 import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from starlette.websockets import WebSocketState
 
 from voice_agent.server.connection_manager import (
     ConnectionManager,
@@ -52,14 +51,14 @@ async def process_stt_utterance(
             )
             await manager.broadcast_json(msg)
             if engine is not None and hasattr(engine, "handle_user_interruption"):
-                asyncio.create_task(engine.handle_user_interruption(clean_text))
+                asyncio.create_task(engine.handle_user_interruption(clean_text))  # noqa: RUF006  # S2.1
             return clean_text
         return None
 
     start_t = time.perf_counter()
     try:
         transcript = await asyncio.to_thread(stt_engine.transcribe, utterance)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # S3.3 RC4
         logger.warning(f"STT transcription failed: {exc}")
         transcript = ""
 
@@ -77,7 +76,7 @@ async def process_stt_utterance(
             latency_ms=latency_ms,
         )
         if engine is not None and hasattr(engine, "handle_user_interruption"):
-            asyncio.create_task(engine.handle_user_interruption(clean_text))
+            asyncio.create_task(engine.handle_user_interruption(clean_text))  # noqa: RUF006  # S2.1
         await manager.broadcast_json(msg)
         return clean_text
     else:
@@ -93,7 +92,7 @@ async def process_stt_utterance(
         )
         await manager.broadcast_json(msg)
         if engine is not None and hasattr(engine, "handle_unrecognized_interruption"):
-            asyncio.create_task(engine.handle_unrecognized_interruption())
+            asyncio.create_task(engine.handle_unrecognized_interruption())  # noqa: RUF006  # S2.1
         elif manager.state in ("LISTENING", "BARGE_IN"):
             manager.set_state("NARRATING")
             await manager.broadcast_json(manager.get_state_sync_message())
@@ -163,7 +162,7 @@ async def handle_client_text_message(
 
     elif isinstance(msg, QueryInterruptionMessage):
         if engine is not None:
-            asyncio.create_task(engine.handle_user_interruption(msg.query))
+            asyncio.create_task(engine.handle_user_interruption(msg.query))  # noqa: RUF006  # S2.1
         else:
             barge_in_event = manager.trigger_barge_in()
             await manager.broadcast_json(barge_in_event)
@@ -188,9 +187,8 @@ async def handle_client_text_message(
             active_stt = stt_engine or getattr(manager, "stt_engine", None)
             utterance = acc.flush() if acc is not None else None
             fb = getattr(msg, "fallback_query", None)
-            clean_text = None
             if utterance and active_stt is not None:
-                clean_text = await process_stt_utterance(
+                await process_stt_utterance(
                     utterance, manager, active_stt, engine, fallback_query=fb
                 )
             elif fb and fb.strip():
@@ -203,7 +201,7 @@ async def handle_client_text_message(
                 )
                 await manager.broadcast_json(out_msg)
                 if engine is not None and hasattr(engine, "handle_user_interruption"):
-                    asyncio.create_task(engine.handle_user_interruption(clean_fb))
+                    asyncio.create_task(engine.handle_user_interruption(clean_fb))  # noqa: RUF006  # S2.1
 
 
 @router.websocket("/ws")
@@ -264,7 +262,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     except WebSocketDisconnect:
         logger.info("Client disconnected via WebSocketDisconnect.")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # S3.3 RC4
         logger.warning(f"WebSocket session terminated with exception: {exc}")
     finally:
         manager.disconnect(websocket)

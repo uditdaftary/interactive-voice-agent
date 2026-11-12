@@ -143,22 +143,22 @@ def split_sentences(text: str) -> List[str]:
         lines = para.split("\n")
         body_lines: List[str] = []
         
-        def flush_body():
-            if body_lines:
-                block_text = " ".join(line.strip() for line in body_lines if line.strip())
+        def flush_body(pending: List[str]) -> None:
+            if pending:
+                block_text = " ".join(line.strip() for line in pending if line.strip())
                 if block_text:
                     results.extend(_split_paragraph_sentences(block_text))
-                body_lines.clear()
+                pending.clear()
 
         for line in lines:
             stripped = line.strip()
             if not stripped:
                 continue
             if re.match(r"^#{1,6}\s+", stripped):
-                flush_body()
+                flush_body(body_lines)
                 results.append(stripped)
             else:
                 body_lines.append(stripped)
-        flush_body()
+        flush_body(body_lines)
 
     return results

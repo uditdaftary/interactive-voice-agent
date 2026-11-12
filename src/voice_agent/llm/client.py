@@ -363,11 +363,8 @@ def search_web_sync(query: str, max_results: int = 8) -> str:
         return ""
 
     try:
-        try:
-            from ddgs import DDGS
-        except ImportError:
-            from duckduckgo_search import DDGS
-    except Exception as imp_err:
+        from ddgs import DDGS
+    except ImportError as imp_err:
         logger.warning("Failed to import DDGS: %s", imp_err)
         return ""
 
@@ -400,7 +397,7 @@ def search_web_sync(query: str, max_results: int = 8) -> str:
                         lines.append(f"- {title}: {body}")
                 if lines:
                     return "\n".join(lines)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # S3.3 RC4
             logger.warning("Live web search failed for query %r: %s", search_q, exc)
             continue
 
@@ -580,14 +577,14 @@ class LLMClient:
             query = user_msg.split("interrupted your narration with this question: '")[1].split("'")[0].strip()
         elif "User Question:" in user_msg:
             after = user_msg.split("User Question:")[-1]
-            lines = [l.strip() for l in after.split("\n") if l.strip()]
+            lines = [line.strip() for line in after.split("\n") if line.strip()]
             query = lines[0] if lines else ""
         elif "Query:" in user_msg:
             after = user_msg.split("Query:")[-1]
-            lines = [l.strip() for l in after.split("\n") if l.strip()]
+            lines = [line.strip() for line in after.split("\n") if line.strip()]
             query = lines[0] if lines else ""
         else:
-            lines = [l.strip() for l in user_msg.split("\n") if l.strip()]
+            lines = [line.strip() for line in user_msg.split("\n") if line.strip()]
             query = lines[0] if lines else ""
 
         clean = query.lower().strip()
@@ -599,7 +596,7 @@ class LLMClient:
             if tag in user_msg:
                 try:
                     current_sentence = user_msg.split(tag)[1].split('"')[0].split("'")[0].strip()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110  # S3.3 RC4
                     pass
                 break
 
@@ -767,7 +764,7 @@ class LLMClient:
             "Authoritative Document Passages" in user_msg
             or "Primary Source of Truth" in user_msg
             or any(w in query.lower() for w in ["story", "book", "chapter", "scene", "passage", "narrative", "sentence", "reading"])
-            or (best_book_sent and not ("Live Internet Web Search Results:" in user_msg))
+            or (best_book_sent and "Live Internet Web Search Results:" not in user_msg)
         )
 
         # Context provenance hierarchy: prioritize book context when query is about book contents

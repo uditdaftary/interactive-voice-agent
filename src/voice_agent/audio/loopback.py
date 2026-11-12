@@ -6,7 +6,6 @@ PortAudio drivers.
 """
 
 import threading
-import time
 from typing import Any, Callable, Generator, List, Optional, Union
 import numpy as np
 

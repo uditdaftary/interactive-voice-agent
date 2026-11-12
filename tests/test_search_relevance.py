@@ -4,9 +4,6 @@ from unittest.mock import patch, MagicMock
 
 from voice_agent.llm.client import (
     DEFAULT_STOPWORDS,
-    INTERROGATIVE_PREFIXES,
-    PREDICATE_FACT_MARKERS,
-    DEFINITION_MARKERS,
     extract_query_tokens,
     anchor_search_query,
     score_candidate_sentence,

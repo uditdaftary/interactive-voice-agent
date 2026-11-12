@@ -21,7 +21,6 @@ from fastapi.testclient import TestClient
 from voice_agent.server.app import create_app
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.schemas import (
-    BargeInEventMessage,
     CursorUpdateMessage,
     PromptEnvelopeMessage,
     TelemetryMessage,

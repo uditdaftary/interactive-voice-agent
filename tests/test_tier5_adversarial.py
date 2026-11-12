@@ -25,32 +25,18 @@ Comprehensive empirical test suite covering:
 
 import asyncio
 import contextlib
-import json
 import threading
 import time
-from typing import List
 import numpy as np
-import pytest
 from fastapi.testclient import TestClient
 
 from voice_agent.audio.hybrid import HybridMicrophoneBridge
-from voice_agent.audio.loopback import VirtualAudioDevice
 from voice_agent.audio.ring_buffer import AudioRingBuffer
 from voice_agent.server.app import create_app
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.schemas import (
-    BargeInEventMessage,
-    CursorUpdateMessage,
-    PromptEnvelopeMessage,
-    SelectVoiceMessage,
-    SetCadenceMessage,
-    SetMicSourceMessage,
-    StateSyncMessage,
-    TelemetryMessage,
-    VADEventMessage,
     parse_client_message,
 )
-from voice_agent.vad.energy_vad import VoiceActivityDetector
 
 
 # ============================================================================
@@ -67,7 +53,7 @@ def test_concurrency_rapid_multi_client_connect_burst() -> None:
     with TestClient(app) as client:
         with contextlib.ExitStack() as stack:
             websockets = []
-            for i in range(client_count):
+            for _ in range(client_count):
                 ws = stack.enter_context(client.websocket_connect("/ws"))
                 init_msg = ws.receive_json()
                 assert init_msg["type"] == "state_sync"
@@ -475,7 +461,7 @@ def test_rapid_barge_in_cycling_100_iterations_sub_0_05ms_law() -> None:
     max_drain = float(arr.max())
     p95_drain = float(np.percentile(arr, 95))
 
-    print(f"\n[TIER 5 ADVERSARIAL] 100 Rapid Barge-In Drain Latencies:")
+    print("\n[TIER 5 ADVERSARIAL] 100 Rapid Barge-In Drain Latencies:")
     print(f"  Mean: {mean_drain:.5f} ms  (Target: < 0.05000 ms)")
     print(f"  Max:  {max_drain:.5f} ms")
     print(f"  P95:  {p95_drain:.5f} ms")

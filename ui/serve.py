@@ -2,21 +2,21 @@
 import sys
 from pathlib import Path
 
+import uvicorn
+
 # Add project src to sys.path
 root_dir = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root_dir / "src"))
 
-import uvicorn
-
 
 def run_server(port: int = 8000):
     url = f"http://localhost:{port}/"
-    print(f"\n=======================================================")
-    print(f" Voice Agent Unified Server & HUD running at:")
+    print("\n=======================================================")
+    print(" Voice Agent Unified Server & HUD running at:")
     print(f" {url}")
     print(f" WebSocket streaming at: ws://localhost:{port}/ws")
-    print(f" Press Ctrl+C to stop.")
-    print(f"=======================================================\n")
+    print(" Press Ctrl+C to stop.")
+    print("=======================================================\n")
     uvicorn.run("voice_agent.server.app:app", host="0.0.0.0", port=port, reload=False)
 
 

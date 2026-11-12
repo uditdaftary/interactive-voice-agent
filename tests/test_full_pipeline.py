@@ -1,5 +1,4 @@
 import pytest
-import asyncio
 import numpy as np
 from voice_agent.orchestrator.state_machine import AgentState
 from voice_agent.pipeline import VoiceAgentCoordinator

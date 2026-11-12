@@ -9,11 +9,10 @@ from contextlib import asynccontextmanager
 import io
 import logging
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Annotated, Any, Optional, Union
 import wave
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from voice_agent.document.parser import DocumentParser
@@ -47,7 +46,7 @@ def extract_audio_and_duration(content: bytes) -> tuple[bytes, float]:
                     pcm_np = pcm_np.reshape(-1, channels).mean(axis=1).astype(np.int16)
                     return pcm_np.tobytes(), duration
                 return raw_frames, duration
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # S3.3 RC4
             logger.debug("Could not parse WAV container: %s", exc)
 
     # Fallback: assume raw PCM 16-bit mono 16kHz (32000 bytes/sec)
@@ -132,7 +131,7 @@ def create_app(
     @app.post("/api/upload-document")
     async def upload_document(
         request: Request,
-        file: Optional[UploadFile] = File(None),
+        file: Annotated[UploadFile | None, File()] = None,
     ):
         """Upload an ebook, PDF, EPUB, TXT, or MD document for narration."""
         eng: NarrationEngine = app.state.narration_engine
@@ -145,8 +144,8 @@ def create_app(
         else:
             try:
                 data = await request.json()
-            except Exception:
-                raise HTTPException(status_code=400, detail="No file or JSON text payload provided.")
+            except Exception:  # noqa: BLE001  # S3.3 RC4
+                raise HTTPException(status_code=400, detail="No file or JSON text payload provided.") from None
 
             text = data.get("text", "").strip()
             title = data.get("title", "Custom Document").strip()
@@ -241,7 +240,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="Query cannot be empty.")
 
         eng: NarrationEngine = app.state.narration_engine
-        asyncio.create_task(eng.handle_user_interruption(query))
+        asyncio.create_task(eng.handle_user_interruption(query))  # noqa: RUF006  # S2.1
         return {"status": "ok", "query": query}
 
     @app.post("/api/narration/control")
@@ -270,7 +269,7 @@ def create_app(
 
     @app.post("/api/transcribe")
     async def transcribe_audio(
-        file: UploadFile = File(...),
+        file: Annotated[UploadFile, File()],
     ):
         """Transcribe an uploaded audio file (WAV or raw PCM).
 

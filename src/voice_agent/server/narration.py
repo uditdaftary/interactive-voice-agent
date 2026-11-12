@@ -6,16 +6,13 @@ and real-time LLM query interruption with live internet web search grounding.
 
 import asyncio
 import logging
-import time
 from typing import List, Optional, Tuple
-import numpy as np
 
 from voice_agent.document.bm25 import BM25Index
 from voice_agent.document.parser import DocumentContent
 from voice_agent.llm.client import (
     CHARACTER_PERSONA_PROMPTS,
     LLMClient,
-    PunctuationStreamParser,
     search_web,
 )
 from voice_agent.orchestrator.context import (
@@ -27,7 +24,6 @@ from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.schemas import (
     CursorUpdateMessage,
     PromptEnvelopeMessage,
-    StateSyncMessage,
 )
 from voice_agent.tts.synthesizer import synthesize_sentence
 
@@ -171,7 +167,7 @@ class NarrationEngine:
 
         except asyncio.CancelledError:
             pass
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # S3.3 RC4
             logger.error(f"Error in narration loop: {exc}")
 
     def search_document_passages_with_scores(
@@ -220,7 +216,7 @@ class NarrationEngine:
                 self._narration_task.cancel()
                 try:
                     await self._narration_task
-                except (asyncio.CancelledError, Exception):
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110  # S3.3 RC4
                     pass
                 self._narration_task = None
 
@@ -316,7 +312,6 @@ class NarrationEngine:
             })
 
             # 6. Stream LLM tokens to Prompt Envelope
-            parser = PunctuationStreamParser()
             accumulated_reply = ""
 
             await self.manager.broadcast_json(PromptEnvelopeMessage(
@@ -404,7 +399,7 @@ class NarrationEngine:
                 self._narration_task.cancel()
                 try:
                     await self._narration_task
-                except (asyncio.CancelledError, Exception):
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110  # S3.3 RC4
                     pass
                 self._narration_task = None
 

@@ -1,10 +1,8 @@
-import pytest
 from voice_agent.orchestrator.context import (
     assemble_qa_prompt,
     sanitize_chatml,
     estimate_tokens,
-    truncate_to_tokens,
-    SYSTEM_PROMPT
+    truncate_to_tokens
 )
 
 def test_prompt_assembly():

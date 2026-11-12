@@ -1,6 +1,5 @@
-import pytest
-from voice_agent.cursor.tracker import CursorTracker, CursorPosition
-from voice_agent.cursor.splitter import split_sentences, normalize_text
+from voice_agent.cursor.tracker import CursorTracker
+from voice_agent.cursor.splitter import split_sentences
 
 
 def test_split_sentences_basic():
