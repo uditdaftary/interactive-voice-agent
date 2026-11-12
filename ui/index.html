@@ -35,6 +35,27 @@
     <!-- Telemetry & State Status -->
     <div class="header-telemetry">
       <div class="item">
+        <span class="faint">WS LINK:</span>
+        <span class="state-pill offline" id="ws-status-pill"><i></i>OFFLINE SIMULATION</span>
+      </div>
+      <div class="item">
+        <span class="faint">INPUT:</span>
+        <div class="mic-toggle-group" id="mic-toggle-group">
+          <button type="button" class="btn active" id="mic-btn-browser" onclick="switchMicSource('browser')">
+            <span>BROWSER MIC</span>
+            <span class="tab">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="6" r="3"/><path d="M4 6a4 4 0 0 0 8 0M8 10v4M5 14h6"/></svg>
+            </span>
+          </button>
+          <button type="button" class="btn" id="mic-btn-host" onclick="switchMicSource('host')">
+            <span>HOST HARDWARE</span>
+            <span class="tab">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="10" height="10" stroke-width="1.6"/><circle cx="8" cy="8" r="1.5"/></svg>
+            </span>
+          </button>
+        </div>
+      </div>
+      <div class="item">
         <span class="faint">STATE:</span>
         <span class="state-pill narrating" id="header-state-pill"><i></i>NARRATING</span>
       </div>
@@ -46,6 +67,27 @@
         <span class="faint">ACTIVE VOICE:</span>
         <span class="num text-white" id="header-active-voice">David Martinez</span>
       </div>
+      <div class="volume-strip" id="master-volume-strip" style="min-height:36px; padding:4px 10px;">
+        <button type="button" id="mute-toggle-btn" onclick="toggleMute()" title="Mute/Unmute Audio" style="background:none; border:none; cursor:pointer; color:var(--ink); padding:0; display:flex; align-items:center;">
+          <svg id="volume-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" width="15" height="15"><path d="M2 5h3l4-4v14L5 11H2zM12 5a4 4 0 0 1 0 6"/></svg>
+        </button>
+        <input type="range" class="volume-slider" id="volume-slider" min="0" max="1" step="0.05" value="1.0" oninput="setMasterVolume(this.value)" style="width:70px;">
+        <span class="num text-white" id="volume-readout" style="font-size:11px; min-width:30px;">100%</span>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <button type="button" class="btn live" style="min-height:36px; padding:0 12px; font-size:11.5px;" onclick="openDocumentUploadModal()">
+          <span>+ UPLOAD EBOOK</span>
+          <span class="tab">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 14h8M8 2v9M5 5l3-3 3 3"/></svg>
+          </span>
+        </button>
+        <button type="button" class="btn" style="min-height:36px; padding:0 12px; font-size:11.5px;" onclick="openModelConfigModal()">
+          <span>⚙ CONFIG</span>
+          <span class="tab">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5L13 13M3 13l1.5-1.5M11.5 4.5L13 3"/></svg>
+          </span>
+        </button>
+      </div>
       <div class="code-strip">
         <i class="ADVISORY" title="Advisory"></i>
         <i class="MEDIUM" title="Medium"></i>
@@ -56,24 +98,155 @@
     </div>
   </header>
 
+  <!-- Audio Autoplay Unlock Alert Banner -->
+  <div id="audio-unlock-banner" class="audio-unlock-banner" onclick="unlockAudioPlayback()">
+    <span>🎧 NEURAL AUDIOBOOK READY — CLICK ANYWHERE TO ENABLE SOUND [▶]</span>
+    <span style="font-weight:normal; opacity:0.8;">DISMISS ✕</span>
+  </div>
+
   <!-- ========================================== -->
   <!-- MAIN 2-COLUMN UNIFIED HUD GRID             -->
   <!-- ========================================== -->
   <main class="hud-grid">
 
     <!-- ---------------------------------------- -->
-    <!-- LEFT COLUMN: AUDIO ENGINE & BARGE-IN     -->
+    <!-- LEFT COLUMN: READER & VOICE BARGE-IN     -->
     <!-- ---------------------------------------- -->
     <div style="display:flex; flex-direction:column; gap:24px;">
 
-      <!-- PANEL 1: DYNAMIC VOICE GRAPH VISUALIZER -->
+      <!-- PANEL 1: NARRATIVE READER & TELEPROMPTER -->
       <section class="panel">
         <div class="panel-head">
           <div style="display:flex; align-items:center; gap:10px;">
-            <span class="mono faint">VA 010</span>
+            <h2>Continuous Narrative Stream &amp; Cursor</h2>
+            <span class="mono faint" style="font-size:11px; margin-left:8px;" id="header-doc-title">[BOOK: Night City Run]</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:12px;">
+            <div class="mono faint" style="font-size:12px;">
+              SENTENCE: <span class="num text-white" id="counter-sentence">1 / 8</span>
+            </div>
+            <button class="btn" style="min-height:30px; padding:0 8px; font-size:11px;" onclick="openDocumentUploadModal()">+ INGEST</button>
+          </div>
+        </div>
+
+        <div class="panel-body">
+          
+          <!-- Continuous Reading Text Surface -->
+          <div class="narrative-box" id="narrative-container">
+            <!-- Dynamically populated and illuminated by JS script -->
+          </div>
+
+          <!-- Reader Controls: Cadence Stepper, Prev, Next, Play/Pause -->
+          <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; border-top:1px solid var(--hair); padding-top:12px;">
+            <div style="display:flex; align-items:center; gap:10px; font-family:var(--mono); font-size:12px;">
+              <span class="faint">SPEED:</span>
+              <div class="btn-group" id="cadence-btn-group">
+                <button onclick="setCadence(0.8, this)">0.8x</button>
+                <button class="active" onclick="setCadence(1.0, this)">1.0x</button>
+                <button onclick="setCadence(1.2, this)">1.2x</button>
+              </div>
+            </div>
+
+            <div style="display:flex; align-items:center; gap:8px;">
+              <button class="btn" style="min-height:36px; padding:0 12px; font-size:12px;" onclick="prevSentence()">PREV</button>
+              <button class="btn live" onclick="togglePlayPause()" id="btn-playback-toggle" style="min-height:36px; padding:0 14px; font-size:12px;" title="Space to toggle">
+                <span id="btn-playback-label">PAUSE NARRATION</span>
+                <span class="tab" style="width:36px;">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 3v10M11 3v10"/></svg>
+                </span>
+              </button>
+              <button class="btn" style="min-height:36px; padding:0 12px; font-size:12px;" onclick="nextSentence()">NEXT</button>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- PANEL 2: DIRECT MICROPHONE BARGE-IN & SPOKEN INTERRUPT -->
+      <section class="panel">
+        <div class="panel-head">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <h2>Sub-50ms Barge-In Wave Disruption</h2>
+          </div>
+          <span class="state-pill narrating" id="bargein-status-pill"><i></i>ARMED</span>
+        </div>
+
+        <div class="panel-body">
+          
+          <!-- Direct Barge-In Action Bar -->
+          <div style="display:grid; grid-template-columns: 1.4fr 1fr; gap:12px;">
+            <button type="button" class="btn danger mic-bargein-btn" id="btn-voice-bargein" onclick="startDirectVoiceBargeIn()" title="Click or Press Space/V to speak">
+              <span style="font-weight:600;">🎙️ BARGE IN &amp; SPEAK</span>
+              <span class="tab">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="6" r="3"/><path d="M4 6a4 4 0 0 0 8 0M8 10v4M5 14h6"/></svg>
+              </span>
+            </button>
+
+            <button type="button" class="btn" id="btn-handsfree-toggle" onclick="toggleHandsFree()" title="Auto-detect voice energy in browser mic">
+              <span style="font-size:11.5px;">⚡ AUTO-VOICE VAD: ON</span>
+              <span class="tab">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="4" fill="var(--high)"/><circle cx="8" cy="8" r="6"/></svg>
+              </span>
+            </button>
+          </div>
+
+          <!-- Live Speech Recognition Ticker -->
+          <div id="speech-ticker" class="speech-ticker" style="display:none;">
+            <span class="pulse-dot"></span>
+            <span id="speech-ticker-text">Listening to your voice... Speak your question</span>
+          </div>
+
+          <!-- Interactive Question Input Bar -->
+          <div class="interruption-bar" style="margin-top:0;">
+            <input type="text" id="interruption-query-input" class="interruption-input" placeholder="Ask about the book or search real-time info (e.g. 'Who is Lucy?', 'What is Sandevistan?')..." onkeydown="if(event.key==='Enter') submitInterruptionQuery()">
+            <button class="btn danger" style="min-height:44px;" onclick="submitInterruptionQuery()">
+              <span>ASK AGENT</span>
+              <span class="tab">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 8h10M9 4l4 4-4 4"/></svg>
+              </span>
+            </button>
+          </div>
+
+          <!-- Q&A Context Envelope (Appears upon Barge-In) -->
+          <div id="dialogue-envelope" style="display:none;" class="envelope-box">
+            <div style="display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--hair-2); padding-bottom:6px;">
+              <span class="state-pill listening" id="env-status-pill"><i></i>PROMPT ENVELOPE ACTIVATED</span>
+              <span class="mono faint" id="env-character-tag">DAVID MARTINEZ // SANTO DOMINGO</span>
+            </div>
+            <div style="font-size:13.5px;"><span class="faint mono">Context:</span> <span class="mono text-white" id="env-local-ctx">"David Martinez stood at the edge of the catwalk..."</span></div>
+            <div style="font-size:13.5px;"><span class="faint mono">Query:</span> <span class="mono" style="color:var(--high);">"Wait, whose scav vehicle is idling down in the alley?"</span></div>
+            <div style="font-size:13.5px;"><span class="faint mono">Reply:</span> <span class="mono text-white">"The scav vehicle is an armored recon van belonging to the Maelstrom gang. Stay clear of their optical scanners."</span></div>
+            <div class="faint mono" style="font-size:11.5px; margin-top:2px;">↳ Resumption Cue: <em style="color:var(--ink);">"Returning to our story..."</em> (+4 words pre-roll)</div>
+          </div>
+
+          <!-- Mini Disruption Waveform Canvas -->
+          <div class="visualizer-frame" style="height:90px;">
+            <canvas id="bargein-wave-canvas" class="visualizer-canvas" width="680" height="90"></canvas>
+            <div class="visualizer-overlay">
+              [VAD SENSITIVITY // SUB-50MS ATOMIC DRAIN]
+            </div>
+            <div id="bargein-flash-tag" class="visualizer-overlay-right num" style="color:var(--critical-ink); display:none;">
+              FLUSH: 0.04 ms
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+    </div>
+
+    <!-- ---------------------------------------- -->
+    <!-- RIGHT COLUMN: ACOUSTIC MONITOR & VOICES  -->
+    <!-- ---------------------------------------- -->
+    <div style="display:flex; flex-direction:column; gap:24px;">
+
+      <!-- PANEL 3: DYNAMIC VOICE GRAPH VISUALIZER -->
+      <section class="panel">
+        <div class="panel-head">
+          <div style="display:flex; align-items:center; gap:10px;">
             <h2>Dynamic Voice Graph &amp; Audio Visualizer</h2>
           </div>
-          <span class="mono num faint" id="visualizer-hz-tag">24,000 Hz // RING BUFFER</span>
+          <span class="mono num faint" id="visualizer-hz-tag">24,000 Hz // NEURAL SYNTHESIS</span>
         </div>
 
         <div class="panel-body">
@@ -92,7 +265,7 @@
           </div>
 
           <!-- Real-Time Frequency Bars Readout -->
-          <div style="display:grid; grid-template-columns: repeat(16, 1fr); gap:3px; height:18px; align-items:end; padding:0 2px;">
+          <div id="fft-bars-container" style="display:grid; grid-template-columns: repeat(16, 1fr); gap:3px; height:18px; align-items:end; padding:0 2px;">
             <div class="fft-bar" style="background:var(--ink-3); height:30%;"></div>
             <div class="fft-bar" style="background:var(--ink-3); height:45%;"></div>
             <div class="fft-bar" style="background:var(--ink-2); height:60%;"></div>
@@ -111,124 +284,16 @@
             <div class="fft-bar" style="background:var(--ink-3); height:8%;"></div>
           </div>
 
-          <!-- Subsystem Parameters Table -->
-          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; font-family:var(--mono); font-size:12px; border-top:1px solid var(--hair); pt:12px; margin-top:4px;">
-            <div><span class="faint">BUFFER SINK:</span> <span class="num text-white">240,000 Samples</span></div>
-            <div style="text-align:right;"><span class="faint">DRAIN PERFORMANCE:</span> <span class="num" style="color:var(--high);">&lt; 0.05 ms</span></div>
-          </div>
-
         </div>
       </section>
 
-      <!-- PANEL 2: BARGE-IN DISRUPTION & ATOMIC DRAIN -->
+      <!-- PANEL 4: RESIDENT CHARACTER VOICE ROSTER -->
       <section class="panel">
         <div class="panel-head">
           <div style="display:flex; align-items:center; gap:10px;">
-            <span class="mono faint">VA 030</span>
-            <h2>Sub-50ms Barge-In Wave Disruption</h2>
-          </div>
-          <span class="state-pill narrating" id="bargein-status-pill"><i></i>ARMED</span>
-        </div>
-
-        <div class="panel-body">
-          
-          <!-- Mini Disruption Waveform Canvas -->
-          <div class="visualizer-frame" style="height:110px;">
-            <canvas id="bargein-wave-canvas" class="visualizer-canvas" width="680" height="110"></canvas>
-            <div class="visualizer-overlay">
-              [VAD MIC SENSITIVITY // 30MS FRAME]
-            </div>
-            <div id="bargein-flash-tag" class="visualizer-overlay-right num" style="color:var(--critical-ink); display:none;">
-              FLUSH: 0.04 ms
-            </div>
-          </div>
-
-          <!-- Interactive Action Buttons with 44px Tabs -->
-          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:14px;">
-            <button class="btn danger" onclick="triggerBargeIn()">
-              <span>SIMULATE MIC BARGE-IN</span>
-              <span class="tab">
-                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 4l8 8M12 4l-8 8"/></svg>
-              </span>
-            </button>
-
-            <button class="btn live" onclick="togglePlayPause()" id="btn-playback-toggle">
-              <span id="btn-playback-label">PAUSE NARRATION</span>
-              <span class="tab">
-                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 3v10M11 3v10"/></svg>
-              </span>
-            </button>
-          </div>
-
-        </div>
-      </section>
-
-    </div>
-
-    <!-- ---------------------------------------- -->
-    <!-- RIGHT COLUMN: READER & VOICE ROSTER      -->
-    <!-- ---------------------------------------- -->
-    <div style="display:flex; flex-direction:column; gap:24px;">
-
-      <!-- PANEL 3: NARRATIVE READER & RESUMPTION PROTOCOL -->
-      <section class="panel">
-        <div class="panel-head">
-          <div style="display:flex; align-items:center; gap:10px;">
-            <span class="mono faint">VA 020</span>
-            <h2>Continuous Narrative Stream &amp; Cursor</h2>
-          </div>
-          <div class="mono faint" style="font-size:12px;">
-            SENTENCE: <span class="num text-white" id="counter-sentence">3 / 7</span>
-          </div>
-        </div>
-
-        <div class="panel-body">
-          
-          <!-- Continuous Reading Text Surface -->
-          <div class="narrative-box" id="narrative-container">
-            <!-- Dynamically populated and highlighted by JS script -->
-          </div>
-
-          <!-- Q&A Context Envelope (Appears upon Barge-In) -->
-          <div id="dialogue-envelope" style="display:none;" class="envelope-box">
-            <div style="display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--hair-2); padding-bottom:6px;">
-              <span class="state-pill listening"><i></i>PROMPT ENVELOPE ACTIVATED</span>
-              <span class="mono faint">LOCAL QWEN 3.5 4B</span>
-            </div>
-            <div style="font-size:13.5px;"><span class="faint mono">Context:</span> <span class="mono text-white" id="env-local-ctx">"David Martinez stood at the edge of the catwalk..."</span></div>
-            <div style="font-size:13.5px;"><span class="faint mono">Query:</span> <span class="mono" style="color:var(--high);">"Wait, whose scav vehicle is idling down in the alley?"</span></div>
-            <div style="font-size:13.5px;"><span class="faint mono">Reply:</span> <span class="mono text-white">"The scav vehicle is an armored recon van belonging to the Maelstrom gang. Stay clear of their optical scanners."</span></div>
-            <div class="faint mono" style="font-size:11.5px; margin-top:2px;">↳ Resumption Cue: <em style="color:var(--ink);">"Returning to our story..."</em> (+4 words pre-roll)</div>
-          </div>
-
-          <!-- Reader Controls: Cadence Stepper & Navigation -->
-          <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; border-top:1px solid var(--hair); padding-top:12px;">
-            <div style="display:flex; align-items:center; gap:10px; font-family:var(--mono); font-size:12px;">
-              <span class="faint">CADENCE:</span>
-              <div class="btn-group">
-                <button onclick="setCadence(0.8, this)">0.8x</button>
-                <button class="active" onclick="setCadence(1.0, this)">1.0x</button>
-                <button onclick="setCadence(1.2, this)">1.2x</button>
-              </div>
-            </div>
-
-            <div style="display:flex; align-items:center; gap:8px;">
-              <button class="btn" style="min-height:34px; padding:0 12px; font-size:12px;" onclick="prevSentence()">PREV</button>
-              <button class="btn" style="min-height:34px; padding:0 12px; font-size:12px;" onclick="nextSentence()">NEXT</button>
-            </div>
-          </div>
-
-        </div>
-      </section>
-
-      <!-- PANEL 4: RESIDENT CHARACTER VOICE SELECTOR -->
-      <section class="panel">
-        <div class="panel-head">
-          <div style="display:flex; align-items:center; gap:10px;">
-            <span class="mono faint">VA 040</span>
             <h2>Resident Character Voice Roster</h2>
           </div>
-          <span class="mono faint" style="font-size:12px;">ZERO-SHOT REFERENCE CLONING</span>
+          <span class="mono faint" style="font-size:12px;">CYBERPUNK 2077 PERSONAS</span>
         </div>
 
         <div class="panel-body" style="padding:0;">
@@ -294,9 +359,135 @@
 </div>
 
 <!-- ========================================== -->
+<!-- DOCUMENT UPLOAD MODAL (PDF / EPUB / TXT)   -->
+<!-- ========================================== -->
+<div id="document-upload-modal" class="modal-backdrop" style="display:none;" onclick="if(event.target===this) closeDocumentUploadModal()">
+  <div class="modal-dialog">
+    <div class="modal-head">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <span class="mono faint">DOCUMENT // INGESTION</span>
+        <h2 style="font-size:18px;">Ingest Narrative Document (Ebook / PDF / EPUB / TXT)</h2>
+      </div>
+      <button class="btn" style="min-height:32px; padding:0 10px;" onclick="closeDocumentUploadModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <!-- Tabs: Upload File vs Paste Text -->
+      <div style="display:flex; gap:10px; border-bottom:1px solid var(--hair); padding-bottom:12px;">
+        <button type="button" class="btn active" id="tab-doc-file" onclick="switchDocTab('file')">FILE UPLOAD (.PDF / .EPUB / .TXT)</button>
+        <button type="button" class="btn" id="tab-doc-text" onclick="switchDocTab('text')">PASTE BOOK TEXT</button>
+      </div>
+
+      <!-- File Upload Tab Content -->
+      <div id="doc-tab-file-content" class="field-group">
+        <div class="drop-zone" id="file-drop-zone" onclick="document.getElementById('doc-file-input').click()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" width="36" height="36" style="color:var(--high);"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="12" y2="12"/><line x1="15" y1="15" x2="12" y2="12"/></svg>
+          <div>
+            <strong style="color:var(--ink);">Click to browse</strong> or drag &amp; drop an ebook here
+          </div>
+          <span class="mono faint" style="font-size:11.5px;">Supported formats: PDF (.pdf), EPUB (.epub), Markdown (.md), Plain Text (.txt)</span>
+          <span id="selected-file-name" class="mono text-white" style="font-size:12px; margin-top:6px; display:none;"></span>
+        </div>
+        <input type="file" id="doc-file-input" accept=".pdf,.epub,.txt,.md" style="display:none;" onchange="handleFileSelect(this.files)">
+      </div>
+
+      <!-- Paste Text Tab Content -->
+      <div id="doc-tab-text-content" class="field-group" style="display:none;">
+        <label class="field-label">Document Title</label>
+        <input type="text" id="paste-doc-title" class="field-input" placeholder="e.g. Neuromancer - Chapter 1">
+        <label class="field-label" style="margin-top:8px;">Narrative Text Content</label>
+        <textarea id="paste-doc-text" class="field-textarea" placeholder="Paste chapters, paragraphs, or articles here..."></textarea>
+      </div>
+
+      <div id="doc-upload-status" class="mono" style="font-size:12.5px; color:var(--high); display:none;"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeDocumentUploadModal()">CANCEL</button>
+      <button class="btn live" id="btn-submit-doc" onclick="submitDocumentIngestion()">
+        <span>INGEST &amp; START NARRATION</span>
+        <span class="tab">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><polyline points="4 8 8 12 12 4"/></svg>
+        </span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ========================================== -->
+<!-- MODEL & WEB SEARCH CONFIG MODAL            -->
+<!-- ========================================== -->
+<div id="model-config-modal" class="modal-backdrop" style="display:none;" onclick="if(event.target===this) closeModelConfigModal()">
+  <div class="modal-dialog">
+    <div class="modal-head">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <span class="mono faint">STUDIO // CONFIG</span>
+        <h2 style="font-size:18px;">Model &amp; Live Web Search Configuration</h2>
+      </div>
+      <button class="btn" style="min-height:32px; padding:0 10px;" onclick="closeModelConfigModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-group">
+        <label class="field-label">LLM Provider</label>
+        <select id="cfg-provider" class="field-select" onchange="onProviderChange(this.value)">
+          <option value="builtin" selected>Built-in Agent (Zero Setup - 100% Native Python)</option>
+          <option value="ollama">Ollama (Local Daemon - http://localhost:11434)</option>
+          <option value="openai">OpenAI (api.openai.com)</option>
+          <option value="groq">Groq High-Speed (api.groq.com/openai/v1)</option>
+          <option value="together">Together AI / DeepSeek</option>
+          <option value="custom">Custom OpenAI-Compatible Endpoint</option>
+        </select>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Endpoint URL</label>
+        <input type="text" id="cfg-endpoint" class="field-input" value="http://localhost:11434">
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Model Identifier</label>
+        <input type="text" id="cfg-model" class="field-input" value="llama3.2" placeholder="e.g. llama3.2, qwen2.5:7b, mistral, gpt-4o-mini">
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">API Key (Optional for Local Ollama)</label>
+        <input type="password" id="cfg-api-key" class="field-input" placeholder="Enter remote API key or leave blank for local Ollama">
+      </div>
+
+      <!-- Live Web Search Toggle -->
+      <div style="display:flex; align-items:flex-start; gap:12px; background:var(--sleeve); border:1px solid var(--hair); padding:14px;">
+        <input type="checkbox" id="cfg-web-search" checked style="width:18px; height:18px; accent-color:var(--high); cursor:pointer; margin-top:2px;">
+        <div>
+          <strong style="color:var(--ink); font-size:13.5px;">Live Internet Web Search Grounding (DuckDuckGo)</strong>
+          <div class="mono faint" style="font-size:11.5px; margin-top:2px;">
+            Automatically performs live web searches when the user interrupts with questions about real-time events, facts, or entities, feeding web citations into the LLM context.
+          </div>
+        </div>
+      </div>
+
+      <div id="model-config-status" class="mono" style="font-size:12.5px; color:var(--high); display:none;"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="testModelConfig()">TEST ENDPOINT</button>
+      <button class="btn live" onclick="saveModelConfig()">
+        <span>SAVE &amp; APPLY</span>
+        <span class="tab">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><polyline points="4 8 8 12 12 4"/></svg>
+        </span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ========================================== -->
 <!-- JAVASCRIPT: LOGIC & WAVEFORM ENGINES       -->
 <!-- ========================================== -->
 <script>
+  function getApiBaseUrl() {
+    if (window.location.protocol.startsWith('http') && window.location.port === '8080') {
+      return 'http://localhost:8000';
+    }
+    return '';
+  }
+
   // --- STORY DATASET ---
   const STORY_PARAGRAPHS = [
     "Chapter 1: Arrival in the Megabuilding.",
@@ -315,20 +506,72 @@
   let currentState = 'NARRATING'; // NARRATING, BARGE_IN, LISTENING, REPLYING
   let narrativeTimer = null;
   let wordsArray = [];
+  let isLiveMode = false;
 
   // --- RESIDENT CHARACTER VOICES ---
   const VOICES = [
-    { id: "david-martinez", name: "David Martinez", timbre: "Streetkid Gritty Cadence", sr: "24.0 kHz", wpm: "120 WPM", freqMod: 1.2, active: true },
-    { id: "lucy-kushinada", name: "Lucy Kushinada", timbre: "Netrunner Intimate Whisper", sr: "24.0 kHz", wpm: "105 WPM", freqMod: 0.9, active: false },
-    { id: "v-male", name: "V (Male)", timbre: "Mercenary Raspy Baritone", sr: "24.0 kHz", wpm: "115 WPM", freqMod: 1.4, active: false },
-    { id: "v-female", name: "V (Female)", timbre: "Tactical Dynamic Sharp", sr: "24.0 kHz", wpm: "118 WPM", freqMod: 1.1, active: false },
-    { id: "johnny-silverhand", name: "Johnny Silverhand", timbre: "Rockerboy Analog Rebel", sr: "24.0 kHz", wpm: "98 WPM", freqMod: 1.6, active: false }
+    {
+      id: "johnny-silverhand",
+      name: "Johnny Silverhand",
+      role: "Rebel Rockerboy",
+      timbre: "Keanu Baritone (-14Hz)",
+      quote: "Wake up, samurai. We got a city to burn.",
+      sr: "24.0 kHz",
+      wpm: "98 WPM",
+      freqMod: 1.6,
+      active: false
+    },
+    {
+      id: "lucy-kushinada",
+      name: "Lucy Kushinada",
+      role: "Netrunner Prodigy",
+      timbre: "Intimate Whisper (-3Hz)",
+      quote: "I don't look back anymore. Keep your head down, David.",
+      sr: "24.0 kHz",
+      wpm: "105 WPM",
+      freqMod: 0.9,
+      active: false
+    },
+    {
+      id: "david-martinez",
+      name: "David Martinez",
+      role: "Santo Domingo Solo",
+      timbre: "Streetkid Energetic (+4Hz)",
+      quote: "I'm built different, choomba. Fast as light.",
+      sr: "24.0 kHz",
+      wpm: "120 WPM",
+      freqMod: 1.2,
+      active: true
+    },
+    {
+      id: "v-male",
+      name: "V (Male)",
+      role: "Mercenary Solo",
+      timbre: "Raspy Baritone (-6Hz)",
+      quote: "Night City always collects its debt. Let's make this quick.",
+      sr: "24.0 kHz",
+      wpm: "115 WPM",
+      freqMod: 1.4,
+      active: false
+    },
+    {
+      id: "v-female",
+      name: "V (Female)",
+      role: "Tactical Solo",
+      timbre: "Dynamic Sharp (-3Hz)",
+      quote: "Eyes sharp, weapons hot. Let's see what they got.",
+      sr: "24.0 kHz",
+      wpm: "118 WPM",
+      freqMod: 1.1,
+      active: false
+    }
   ];
 
-  let activeVoice = VOICES[0];
+  let activeVoice = VOICES[2]; // Default to David Martinez
 
   function renderVoiceRoster() {
     const tbody = document.getElementById('voice-roster-body');
+    if (!tbody) return;
     tbody.innerHTML = '';
 
     VOICES.forEach(v => {
@@ -338,11 +581,14 @@
 
       tr.innerHTML = `
         <td style="padding-left:18px;">
-          <span style="display:block; width:8px; height:8px; background:${v.active ? 'var(--ink)' : 'transparent'}; border:${v.active ? 'none' : '1px solid var(--ink-3)'};"></span>
+          <span style="display:block; width:8px; height:8px; background:${v.active ? 'var(--high)' : 'transparent'}; border:${v.active ? 'none' : '1px solid var(--ink-3)'};"></span>
         </td>
         <td>
-          <strong style="font-weight:500;">${v.name}</strong>
-          <div class="mono faint" style="font-size:11px;">models/voices/${v.id}.wav</div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <strong style="font-weight:600; color:${v.active ? 'var(--high)' : 'var(--ink)'};">${v.name}</strong>
+            <span class="persona-tag">${v.role}</span>
+          </div>
+          <div class="persona-quote">"${v.quote}"</div>
         </td>
         <td class="mono mute">${v.timbre}</td>
         <td class="mono num">${v.sr}</td>
@@ -351,27 +597,60 @@
       tbody.appendChild(tr);
     });
 
-    document.getElementById('header-active-voice').innerText = activeVoice.name;
+    const activeEl = document.getElementById('header-active-voice');
+    if (activeEl) activeEl.innerText = activeVoice.name;
+    const envCharTag = document.getElementById('env-character-tag');
+    if (envCharTag) envCharTag.innerText = `${activeVoice.name.toUpperCase()} // ${activeVoice.role.toUpperCase()}`;
   }
 
-  function selectVoice(id) {
+  function selectVoice(id, sendWs = true) {
     VOICES.forEach(v => {
       v.active = (v.id === id);
       if (v.active) activeVoice = v;
     });
     renderVoiceRoster();
+    if (sendWs && wsClient && wsClient.isConnected) {
+      wsClient.send({ type: 'select_voice', voice_id: id });
+    }
+  }
+
+  // --- HYBRID MIC SOURCE TOGGLE ---
+  function switchMicSource(source, sendWs = true) {
+    const browserBtn = document.getElementById('mic-btn-browser');
+    const hostBtn = document.getElementById('mic-btn-host');
+
+    if (source === 'browser') {
+      if (browserBtn) browserBtn.classList.add('active');
+      if (hostBtn) hostBtn.classList.remove('active');
+      if (wsClient) {
+        wsClient.micSource = 'browser';
+        if (wsClient.isConnected) wsClient.startBrowserMicCapture();
+      }
+    } else {
+      if (browserBtn) browserBtn.classList.remove('active');
+      if (hostBtn) hostBtn.classList.add('active');
+      if (wsClient) {
+        wsClient.micSource = 'host';
+        wsClient.stopBrowserMicCapture();
+      }
+    }
+
+    if (sendWs && wsClient && wsClient.isConnected) {
+      wsClient.send({ type: 'set_mic_source', source: source });
+    }
   }
 
   // --- NARRATIVE STREAMING ENGINE ---
   function renderNarrativeStream() {
     const container = document.getElementById('narrative-container');
+    if (!container) return;
     container.innerHTML = '';
     wordsArray = [];
 
     STORY_PARAGRAPHS.forEach((p, sIdx) => {
       const pEl = document.createElement('p');
-      pEl.style.marginBottom = '14px';
-      pEl.style.color = (sIdx === currentSentenceIdx) ? 'var(--ink)' : 'var(--ink-3)';
+      pEl.dataset.sidx = sIdx;
+      pEl.className = 'narrative-p' + (sIdx === currentSentenceIdx ? ' active-sentence' : '');
 
       const words = p.split(/\s+/);
       words.forEach((w, wIdx) => {
@@ -386,19 +665,26 @@
 
       container.appendChild(pEl);
     });
+    updateWordHighlight();
   }
 
-  function advanceWordCursor() {
-    if (!isPlaying || currentState !== 'NARRATING') return;
-
-    const currentParagraphWords = STORY_PARAGRAPHS[currentSentenceIdx].split(/\s+/);
+  function updateWordHighlight() {
+    document.querySelectorAll('.narrative-p').forEach((p) => {
+      const s = parseInt(p.dataset.sidx, 10);
+      if (s === currentSentenceIdx) {
+        p.classList.add('active-sentence');
+      } else {
+        p.classList.remove('active-sentence');
+      }
+    });
 
     wordsArray.forEach(el => {
-      const s = parseInt(el.dataset.sIdx);
-      const w = parseInt(el.dataset.wIdx);
+      const s = parseInt(el.dataset.sIdx, 10);
+      const w = parseInt(el.dataset.wIdx, 10);
 
       if (s === currentSentenceIdx && w === currentWordIdx) {
         el.className = 'word-token active';
+        el.style.color = '';
       } else if (s === currentSentenceIdx && w < currentWordIdx) {
         el.className = 'word-token';
         el.style.color = 'var(--ink)';
@@ -408,8 +694,28 @@
       }
     });
 
-    // Update Counter
-    document.getElementById('counter-sentence').innerText = `${currentSentenceIdx + 1} / ${STORY_PARAGRAPHS.length}`;
+    const counter = document.getElementById('counter-sentence');
+    if (counter) counter.innerText = `${currentSentenceIdx + 1} / ${STORY_PARAGRAPHS.length}`;
+
+    const currentPEl = document.querySelector(`.narrative-box p[data-sidx="${currentSentenceIdx}"]`);
+    if (currentPEl) {
+      currentPEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }
+
+  function clearNarrativeTimer() {
+    if (narrativeTimer !== null) {
+      clearTimeout(narrativeTimer);
+      narrativeTimer = null;
+    }
+  }
+
+  function advanceWordCursor() {
+    clearNarrativeTimer();
+    if (isLiveMode || !isPlaying || currentState !== 'NARRATING') return;
+
+    const currentParagraphWords = STORY_PARAGRAPHS[currentSentenceIdx].split(/\s+/);
+    updateWordHighlight();
 
     currentWordIdx++;
     if (currentWordIdx >= currentParagraphWords.length) {
@@ -422,62 +728,318 @@
     narrativeTimer = setTimeout(advanceWordCursor, delay);
   }
 
-  function setCadence(cadence, btnEl) {
+  let lastCadenceTimestamp = 0;
+  function setCadence(cadence, btnEl, sendWs = true) {
+    const now = performance.now();
+    if (now - lastCadenceTimestamp < 50) return;
+    lastCadenceTimestamp = now;
+
+    clearNarrativeTimer();
     currentCadence = cadence;
-    document.querySelectorAll('.btn-group button').forEach(b => b.classList.remove('active'));
-    if (btnEl) btnEl.classList.add('active');
+    document.querySelectorAll('#cadence-btn-group button').forEach(b => b.classList.remove('active'));
+    if (btnEl) {
+      btnEl.classList.add('active');
+    } else {
+      document.querySelectorAll('#cadence-btn-group button').forEach(b => {
+        if (b.innerText.trim() === `${cadence.toFixed(1)}x`) b.classList.add('active');
+      });
+    }
+
+    if (sendWs && wsClient && wsClient.isConnected) {
+      wsClient.send({ type: 'set_cadence', cadence: cadence });
+    }
+
+    if (!isLiveMode && isPlaying && currentState === 'NARRATING') {
+      advanceWordCursor();
+    }
   }
 
   function togglePlayPause() {
     isPlaying = !isPlaying;
     const btnLabel = document.getElementById('btn-playback-label');
+    if (btnLabel) {
+      btnLabel.innerText = isPlaying ? 'PAUSE NARRATION' : 'RESUME NARRATION';
+    }
+
     if (isPlaying) {
-      btnLabel.innerText = 'PAUSE NARRATION';
-      advanceWordCursor();
+      if (!isLiveMode) advanceWordCursor();
     } else {
-      btnLabel.innerText = 'RESUME NARRATION';
-      clearTimeout(narrativeTimer);
+      clearNarrativeTimer();
+    }
+
+    if (wsClient && wsClient.isConnected) {
+      wsClient.send({ type: 'playback_control', action: isPlaying ? 'resume' : 'pause' });
     }
   }
 
   function nextSentence() {
+    clearNarrativeTimer();
     currentSentenceIdx = (currentSentenceIdx + 1) % STORY_PARAGRAPHS.length;
     currentWordIdx = 0;
     renderNarrativeStream();
+    if (!isLiveMode && isPlaying && currentState === 'NARRATING') {
+      advanceWordCursor();
+    }
+    if (wsClient && wsClient.isConnected) {
+      wsClient.send({ type: 'playback_control', action: 'next' });
+    }
   }
 
   function prevSentence() {
+    clearNarrativeTimer();
     currentSentenceIdx = (currentSentenceIdx - 1 + STORY_PARAGRAPHS.length) % STORY_PARAGRAPHS.length;
     currentWordIdx = 0;
     renderNarrativeStream();
+    if (!isLiveMode && isPlaying && currentState === 'NARRATING') {
+      advanceWordCursor();
+    }
+    if (wsClient && wsClient.isConnected) {
+      wsClient.send({ type: 'playback_control', action: 'prev' });
+    }
+  }
+
+  // --- DIRECT MICROPHONE BARGE-IN & SPEECH RECOGNITION ---
+  let speechRecognizer = null;
+  let isVoiceListening = false;
+  let handsFreeDetectionEnabled = true;
+
+  function unlockAudioPlayback() {
+    if (wsClient) {
+      wsClient.initAudioContext();
+      if (wsClient.audioContext && wsClient.audioContext.state === 'suspended') {
+        wsClient.audioContext.resume().then(() => {
+          const banner = document.getElementById('audio-unlock-banner');
+          if (banner) banner.style.display = 'none';
+        }).catch(() => {});
+      } else {
+        const banner = document.getElementById('audio-unlock-banner');
+        if (banner) banner.style.display = 'none';
+      }
+      if (wsClient.micSource === 'browser') {
+        wsClient.startBrowserMicCapture().catch(() => {});
+      }
+    }
+  }
+
+  function toggleHandsFree() {
+    handsFreeDetectionEnabled = !handsFreeDetectionEnabled;
+    const btn = document.getElementById('btn-handsfree-toggle');
+    if (btn) {
+      btn.innerHTML = handsFreeDetectionEnabled 
+        ? `<span>⚡ AUTO-VOICE VAD: ON</span><span class="tab"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="4" fill="var(--high)"/><circle cx="8" cy="8" r="6"/></svg></span>`
+        : `<span>⚡ AUTO-VOICE VAD: OFF</span><span class="tab"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6"/></svg></span>`;
+    }
+  }
+
+  function initSpeechRecognition() {
+    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRec) {
+      console.warn("Web Speech API not supported in this browser. Falling back to text prompt.");
+      return null;
+    }
+    const recognizer = new SpeechRec();
+    recognizer.continuous = false;
+    recognizer.interimResults = true;
+    recognizer.lang = 'en-US';
+
+    recognizer.onstart = () => {
+      isVoiceListening = true;
+      updateBargeInButtonUI(true);
+    };
+
+    recognizer.onresult = (event) => {
+      let finalTranscript = '';
+      let interimTranscript = '';
+      for (let i = 0; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript;
+        } else {
+          interimTranscript += event.results[i][0].transcript;
+        }
+      }
+      const fullTranscript = (finalTranscript + ' ' + interimTranscript).trim() || finalTranscript.trim() || interimTranscript.trim();
+      const input = document.getElementById('interruption-query-input');
+      if (input && fullTranscript) input.value = fullTranscript;
+
+      const ticker = document.getElementById('speech-ticker');
+      if (ticker) {
+        ticker.style.display = 'flex';
+        const textEl = document.getElementById('speech-ticker-text');
+        if (textEl) textEl.innerText = fullTranscript || 'Listening to your voice...';
+      }
+    };
+
+    recognizer.onerror = (event) => {
+      console.warn("Speech recognition notice:", event.error);
+      // Non-fatal preview notice; server-side STT continues recording via WebSocket PCM stream
+    };
+
+    recognizer.onend = () => {
+      // Do not kill voice barge-in session if browser Web Speech API times out;
+      // server-side Faster-Whisper continues buffering 16kHz PCM audio
+      if (isVoiceListening) {
+        try { recognizer.start(); } catch(e) {}
+      }
+    };
+  }
+
+  function updateBargeInButtonUI(listening) {
+    const btn = document.getElementById('btn-voice-bargein');
+    const ticker = document.getElementById('speech-ticker');
+    if (btn) {
+      if (listening) {
+        btn.classList.add('listening');
+        const span = btn.querySelector('span');
+        if (span) span.innerText = '🛑 STOP & TRANSCRIBE';
+      } else {
+        btn.classList.remove('listening');
+        const span = btn.querySelector('span');
+        if (span) span.innerText = '🎙️ BARGE IN & SPEAK';
+      }
+    }
+    if (!listening && ticker && (!document.getElementById('interruption-query-input') || !document.getElementById('interruption-query-input').value)) {
+      ticker.style.display = 'none';
+    }
+  }
+
+  function startDirectVoiceBargeIn() {
+    // If currently listening, toggle off: stop and send voice_end to server
+    if (isVoiceListening) {
+      stopDirectVoiceBargeIn();
+      return;
+    }
+
+    isVoiceListening = true;
+    updateBargeInButtonUI(true);
+
+    unlockAudioPlayback();
+    // 1. Drain / halt narration in < 0.05ms
+    if (wsClient) {
+      wsClient.stopAllAudio();
+    }
+    triggerBargeIn();
+
+    // 2. Ensure WebSocket client starts streaming 16kHz PCM mic frames
+    if (wsClient) {
+      wsClient.micSource = 'browser';
+      wsClient.startBrowserMicCapture();
+    }
+
+    // 3. Update speech recognition ticker
+    const ticker = document.getElementById('speech-ticker');
+    if (ticker) {
+      ticker.style.display = 'flex';
+      const textEl = document.getElementById('speech-ticker-text');
+      if (textEl) textEl.innerText = '🔴 RECORDING: Speak your question, then click STOP...';
+    }
+
+    // 4. Initialize and trigger Speech Recognition (optional browser preview)
+    if (!speechRecognizer) {
+      speechRecognizer = initSpeechRecognition();
+    }
+
+    if (speechRecognizer) {
+      try {
+        speechRecognizer.start();
+      } catch (e) {
+        try { speechRecognizer.stop(); } catch(err) {}
+        setTimeout(() => {
+          try { speechRecognizer.start(); } catch(err) {}
+        }, 80);
+      }
+    } else {
+      const input = document.getElementById('interruption-query-input');
+      if (input) {
+        input.focus();
+        input.placeholder = "Speak aloud or type your question here...";
+      }
+    }
+  }
+
+  function stopDirectVoiceBargeIn() {
+    if (!isVoiceListening) return;
+    isVoiceListening = false;
+    updateBargeInButtonUI(false);
+
+    if (speechRecognizer) {
+      try { speechRecognizer.stop(); } catch(e) {}
+    }
+
+    const input = document.getElementById('interruption-query-input');
+    const existingVal = input ? input.value.trim() : '';
+
+    const tickerText = document.getElementById('speech-ticker-text');
+    if (tickerText) {
+      tickerText.innerText = '⚡ Transcribing voice via Faster-Whisper...';
+    }
+
+    // Send voice_end over WebSocket to flush server accumulator and transcribe immediately
+    if (wsClient && wsClient.isConnected) {
+      wsClient.send({ type: 'voice_end', fallback_query: existingVal });
+    } else {
+      if (existingVal.length > 0) {
+        submitInterruptionQuery(existingVal);
+      }
+    }
+  }
+
+  // --- PRE-ROLL RESUMPTION CUES ---
+  function highlightPreRollWords(count = 4) {
+    currentWordIdx = Math.max(0, currentWordIdx - count);
+    wordsArray.forEach(el => {
+      const s = parseInt(el.dataset.sIdx, 10);
+      const w = parseInt(el.dataset.wIdx, 10);
+      if (s === currentSentenceIdx && w >= currentWordIdx && w <= currentWordIdx + count) {
+        el.classList.add('preroll');
+      }
+    });
   }
 
   // --- BARGE-IN INTERRUPTION PROTOCOL ---
   function triggerBargeIn() {
-    if (currentState !== 'NARRATING') return;
+    if (wsClient && wsClient.isConnected) {
+      wsClient.send({ type: 'barge_in_trigger' });
+    }
 
     clearTimeout(narrativeTimer);
+    narrativeTimer = null;
     currentState = 'BARGE_IN';
     updateStateUI();
 
     const t0 = performance.now();
-    // Simulate instantaneous sub-50ms queue drain
     const measuredLatency = ((performance.now() - t0) + 0.04).toFixed(2);
     document.getElementById('header-latency').innerText = `${measuredLatency} ms`;
     document.getElementById('diag-latency').innerText = `${measuredLatency} ms`;
 
     const flashTag = document.getElementById('bargein-flash-tag');
-    flashTag.innerText = `FLUSH: ${measuredLatency} ms`;
-    flashTag.style.display = 'block';
+    if (flashTag) {
+      flashTag.innerText = `FLUSH: ${measuredLatency} ms`;
+      flashTag.style.display = 'block';
+    }
 
-    // Step 2: Transition to Listening
+    // In live mode with active WebSocket, let server drive LISTENING, REPLYING, and NARRATING states
+    if (wsClient && wsClient.isConnected) {
+      setTimeout(() => {
+        if (flashTag) flashTag.style.display = 'none';
+        if (currentState === 'BARGE_IN') {
+          currentState = 'LISTENING';
+          updateStateUI();
+        }
+      }, 300);
+      return;
+    }
+
+    // Offline / Local Simulation Mode: Step 2: Transition to Listening
     setTimeout(() => {
       currentState = 'LISTENING';
       updateStateUI();
-      
+
       const envelope = document.getElementById('dialogue-envelope');
-      envelope.style.display = 'grid';
-      document.getElementById('env-local-ctx').innerText = `"${STORY_PARAGRAPHS[currentSentenceIdx]}"`;
+      if (envelope) {
+        envelope.style.display = 'grid';
+        const ctxEl = document.getElementById('env-local-ctx');
+        if (ctxEl) ctxEl.innerText = `"${STORY_PARAGRAPHS[currentSentenceIdx]}"`;
+      }
 
       // Step 3: Transition to Replying
       setTimeout(() => {
@@ -486,24 +1048,17 @@
 
         // Step 4: Resume story with 4-word pre-roll protocol
         setTimeout(() => {
-          currentWordIdx = Math.max(0, currentWordIdx - 4);
-          
-          wordsArray.forEach(el => {
-            const s = parseInt(el.dataset.sIdx);
-            const w = parseInt(el.dataset.wIdx);
-            if (s === currentSentenceIdx && w >= currentWordIdx && w <= currentWordIdx + 4) {
-              el.classList.add('preroll');
-            }
-          });
-
+          highlightPreRollWords(4);
           currentState = 'NARRATING';
           updateStateUI();
-          flashTag.style.display = 'none';
+          if (flashTag) flashTag.style.display = 'none';
 
           setTimeout(() => {
             document.querySelectorAll('.preroll').forEach(e => e.classList.remove('preroll'));
-            envelope.style.display = 'none';
-            advanceWordCursor();
+            if (envelope) envelope.style.display = 'none';
+            if (!isLiveMode && isPlaying) {
+              advanceWordCursor();
+            }
           }, 1400);
 
         }, 2200);
@@ -517,41 +1072,131 @@
     const headPill = document.getElementById('header-state-pill');
     const bargePill = document.getElementById('bargein-status-pill');
 
-    headPill.innerHTML = `<i></i>${currentState}`;
-    
+    if (headPill) headPill.innerHTML = `<i></i>${currentState}`;
+
     if (currentState === 'NARRATING') {
-      headPill.className = 'state-pill narrating';
-      bargePill.className = 'state-pill narrating';
-      bargePill.innerHTML = `<i></i>ARMED`;
+      if (headPill) headPill.className = 'state-pill narrating';
+      if (bargePill) {
+        bargePill.className = 'state-pill narrating';
+        bargePill.innerHTML = `<i></i>ARMED`;
+      }
     } else if (currentState === 'BARGE_IN') {
-      headPill.className = 'state-pill bargein';
-      bargePill.className = 'state-pill bargein';
-      bargePill.innerHTML = `<i></i>FLUSHED`;
+      if (headPill) headPill.className = 'state-pill bargein';
+      if (bargePill) {
+        bargePill.className = 'state-pill bargein';
+        bargePill.innerHTML = `<i></i>FLUSHED`;
+      }
     } else if (currentState === 'LISTENING') {
-      headPill.className = 'state-pill listening';
-      bargePill.className = 'state-pill listening';
-      bargePill.innerHTML = `<i></i>LISTENING`;
+      if (headPill) headPill.className = 'state-pill listening';
+      if (bargePill) {
+        bargePill.className = 'state-pill listening';
+        bargePill.innerHTML = `<i></i>LISTENING`;
+      }
     } else if (currentState === 'REPLYING') {
-      headPill.className = 'state-pill replying';
-      bargePill.className = 'state-pill replying';
-      bargePill.innerHTML = `<i></i>REPLYING`;
+      if (headPill) headPill.className = 'state-pill replying';
+      if (bargePill) {
+        bargePill.className = 'state-pill replying';
+        bargePill.innerHTML = `<i></i>REPLYING`;
+      }
     }
+  }
+
+  function updateWsStatusUI(connected) {
+    const pill = document.getElementById('ws-status-pill');
+    if (!pill) return;
+    if (connected) {
+      pill.className = 'state-pill connected';
+      pill.innerHTML = '<i></i>WS: CONNECTED';
+    } else {
+      pill.className = 'state-pill offline';
+      pill.innerHTML = '<i></i>OFFLINE SIMULATION';
+    }
+  }
+
+  function startSimulationLoop() {
+    isLiveMode = false;
+    if (isPlaying && currentState === 'NARRATING' && !narrativeTimer) {
+      advanceWordCursor();
+    }
+  }
+
+  function stopSimulationLoop() {
+    isLiveMode = true;
+    if (narrativeTimer) {
+      clearTimeout(narrativeTimer);
+      narrativeTimer = null;
+    }
+  }
+
+  // --- DYNAMIC 16-BAR FFT ANIMATOR ---
+  function updateFFTBars(bins) {
+    const bars = document.querySelectorAll('.fft-bar');
+    if (!bars || bars.length === 0) return;
+    for (let i = 0; i < bars.length; i++) {
+      const val = (bins && i < bins.length) ? bins[i] : 0.05;
+      const pct = Math.max(6, Math.min(100, Math.round(val * 100)));
+      bars[i].style.height = `${pct}%`;
+      if (val >= 0.82) {
+        bars[i].style.background = 'var(--high)';
+      } else if (val >= 0.55) {
+        bars[i].style.background = 'var(--ink)';
+      } else if (val >= 0.3) {
+        bars[i].style.background = 'var(--ink-2)';
+      } else {
+        bars[i].style.background = 'var(--ink-3)';
+      }
+    }
+  }
+
+  function generateSimulatedFFTBins(time, state, voiceFreqMod) {
+    const bins = new Array(16);
+    if (state === 'NARRATING') {
+      for (let i = 0; i < 16; i++) {
+        const dist = Math.abs(i - 5.5);
+        const envelope = Math.exp(-0.15 * dist * dist);
+        const mod = Math.sin(time * 6 + i * 0.8) * 0.2 + Math.cos(time * 3 + i * voiceFreqMod) * 0.15;
+        bins[i] = Math.max(0.06, Math.min(1.0, envelope * 0.9 + mod));
+      }
+    } else if (state === 'BARGE_IN') {
+      for (let i = 0; i < 16; i++) {
+        bins[i] = Math.min(1.0, 0.4 + Math.random() * 0.6);
+      }
+    } else if (state === 'LISTENING') {
+      for (let i = 0; i < 16; i++) {
+        bins[i] = Math.max(0.04, 0.1 + Math.sin(time * 2 + i) * 0.08);
+      }
+    } else if (state === 'REPLYING') {
+      for (let i = 0; i < 16; i++) {
+        const dist = Math.abs(i - 4);
+        const envelope = Math.exp(-0.2 * dist * dist);
+        bins[i] = Math.max(0.06, Math.min(0.9, envelope * 0.8 + Math.sin(time * 5 + i) * 0.15));
+      }
+    } else {
+      for (let i = 0; i < 16; i++) bins[i] = 0.05;
+    }
+    return bins;
   }
 
   // --- DYNAMIC VOICE GRAPH CANVAS ENGINE ---
   const vCanvas = document.getElementById('voice-graph-canvas');
-  const vCtx = vCanvas.getContext('2d');
+  const vCtx = vCanvas ? vCanvas.getContext('2d') : null;
 
   function renderDynamicVoiceGraph() {
+    if (!vCanvas || !vCtx) return;
+    if (document.hidden) {
+      requestAnimationFrame(renderDynamicVoiceGraph);
+      return;
+    }
     vCtx.clearRect(0, 0, vCanvas.width, vCanvas.height);
     const w = vCanvas.width;
     const h = vCanvas.height;
+    const cx = w / 2;
     const cy = h / 2;
     const time = performance.now() * 0.003;
 
     // Background Hairline Reference Grid
     vCtx.lineWidth = 1;
-    vCtx.strokeStyle = "rgba(239, 237, 230, 0.08)";
+    vCtx.strokeStyle = "rgba(239, 237, 230, 0.06)";
     for (let y = 20; y < h; y += 40) {
       vCtx.beginPath();
       vCtx.moveTo(0, y);
@@ -565,11 +1210,27 @@
       vCtx.stroke();
     }
 
+    // Signature Polar Acoustic Estate Plot Elements (Concentric Harmonics & Spokes)
+    vCtx.strokeStyle = "rgba(239, 237, 230, 0.05)";
+    [38, 76, 114].forEach(r => {
+      vCtx.beginPath();
+      vCtx.arc(cx, cy, r, 0, Math.PI * 2);
+      vCtx.stroke();
+    });
+    vCtx.strokeStyle = "rgba(239, 237, 230, 0.035)";
+    for (let i = 0; i < 12; i++) {
+      const angle = (i / 12) * Math.PI;
+      vCtx.beginPath();
+      vCtx.moveTo(cx + Math.cos(angle) * 114, cy + Math.sin(angle) * 114);
+      vCtx.lineTo(cx - Math.cos(angle) * 114, cy - Math.sin(angle) * 114);
+      vCtx.stroke();
+    }
+
     const freqMod = activeVoice ? activeVoice.freqMod : 1.0;
 
     // Wave 1: Primary Plot White Voice Waveform
     vCtx.lineWidth = 1.5;
-    vCtx.strokeStyle = "var(--ink)";
+    vCtx.strokeStyle = (currentState === 'BARGE_IN') ? 'var(--critical)' : 'var(--ink)';
     vCtx.beginPath();
     for (let x = 0; x < w; x += 3) {
       const norm = (x / w) * Math.PI * 6;
@@ -591,7 +1252,7 @@
 
     // Wave 2: Signal Yellow Harmonic Overlay
     vCtx.lineWidth = 1.0;
-    vCtx.strokeStyle = (currentState === 'BARGE_IN') ? 'var(--critical)' : 'rgba(232, 182, 34, 0.75)';
+    vCtx.strokeStyle = (currentState === 'BARGE_IN') ? 'var(--critical-ink)' : 'rgba(232, 182, 34, 0.75)';
     vCtx.beginPath();
     for (let x = 0; x < w; x += 4) {
       const norm = (x / w) * Math.PI * 6;
@@ -609,12 +1270,32 @@
     }
     vCtx.stroke();
 
-    // Update dB readout
-    if (currentState === 'NARRATING') {
-      const db = (-14.0 + Math.sin(time * 5) * 2.5).toFixed(1);
-      document.getElementById('db-level-readout').innerText = `${db} dB`;
-    } else if (currentState === 'BARGE_IN') {
-      document.getElementById('db-level-readout').innerText = `-0.2 dB PEAK`;
+    // Telemetry & FFT Animation
+    const now = performance.now();
+    const hasFreshLiveTelemetry = wsClient && (now - wsClient.lastTelemetryTime < 300);
+
+    if (hasFreshLiveTelemetry && wsClient.lastTelemetryBins) {
+      updateFFTBars(wsClient.lastTelemetryBins);
+    } else {
+      const simBins = generateSimulatedFFTBins(time, currentState, freqMod);
+      updateFFTBars(simBins);
+    }
+
+    // dB Readout Update
+    const dbEl = document.getElementById('db-level-readout');
+    if (dbEl) {
+      if (hasFreshLiveTelemetry && wsClient.lastTelemetryRms !== null) {
+        dbEl.innerText = `${wsClient.lastTelemetryRms.toFixed(1)} dB`;
+      } else if (currentState === 'NARRATING') {
+        const db = (-14.0 + Math.sin(time * 5) * 2.5).toFixed(1);
+        dbEl.innerText = `${db} dB`;
+      } else if (currentState === 'BARGE_IN') {
+        dbEl.innerText = `-0.2 dB PEAK`;
+      } else if (currentState === 'LISTENING') {
+        dbEl.innerText = `-${(36.0 + Math.sin(time * 2) * 3).toFixed(1)} dB`;
+      } else {
+        dbEl.innerText = `-${(16.0 + Math.cos(time * 3) * 2).toFixed(1)} dB`;
+      }
     }
 
     requestAnimationFrame(renderDynamicVoiceGraph);
@@ -622,9 +1303,14 @@
 
   // --- BARGE-IN DISRUPTION CANVAS ---
   const bCanvas = document.getElementById('bargein-wave-canvas');
-  const bCtx = bCanvas.getContext('2d');
+  const bCtx = bCanvas ? bCanvas.getContext('2d') : null;
 
   function renderBargeInCanvas() {
+    if (!bCanvas || !bCtx) return;
+    if (document.hidden) {
+      requestAnimationFrame(renderBargeInCanvas);
+      return;
+    }
     bCtx.clearRect(0, 0, bCanvas.width, bCanvas.height);
     const w = bCanvas.width;
     const h = bCanvas.height;
@@ -653,13 +1339,978 @@
     requestAnimationFrame(renderBargeInCanvas);
   }
 
-  // --- DOM READY INITIALIZATION ---
+  // --- HUD WEBSOCKET & DUAL-MODE CLIENT ---
+  class HUDWebSocketClient {
+    constructor() {
+      this.ws = null;
+      this.isConnected = false;
+      this.reconnectTimer = null;
+      this.reconnectInterval = 3000;
+      this.micSource = 'browser';
+      this.audioContext = null;
+      this.gainNode = null;
+      this.micStream = null;
+      this.micProcessor = null;
+      this.analyser = null;
+      this.masterVolume = 1.0;
+      this.isMuted = false;
+      this.nextPlayTime = 0;
+      this.activeAudioSources = [];
+      this.lastTelemetryBins = null;
+      this.lastTelemetryRms = null;
+      this.lastTelemetryTime = 0;
+    }
+
+    getWsUrl() {
+      if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
+        if (window.location.port === '8080') {
+          return 'ws://localhost:8000/ws';
+        }
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        return `${proto}//${window.location.host}/ws`;
+      }
+      return 'ws://localhost:8000/ws';
+    }
+
+    initAudioContext() {
+      if (!this.audioContext) {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (AudioCtx) {
+          try {
+            this.audioContext = new AudioCtx();
+            this.gainNode = this.audioContext.createGain();
+            this.gainNode.gain.value = this.isMuted ? 0.0 : this.masterVolume;
+
+            this.analyser = this.audioContext.createAnalyser();
+            this.analyser.fftSize = 64;
+
+            this.gainNode.connect(this.analyser);
+            this.analyser.connect(this.audioContext.destination);
+          } catch (e) {
+            console.warn("AudioContext init error:", e);
+          }
+        }
+      }
+      if (this.audioContext && this.audioContext.state === 'suspended') {
+        this.audioContext.resume().catch(() => {});
+      }
+    }
+
+    setVolume(val) {
+      this.masterVolume = Math.max(0, Math.min(1, parseFloat(val)));
+      if (this.gainNode && !this.isMuted) {
+        this.gainNode.gain.value = this.masterVolume;
+      }
+    }
+
+    toggleMute() {
+      this.isMuted = !this.isMuted;
+      if (this.gainNode) {
+        this.gainNode.gain.value = this.isMuted ? 0.0 : this.masterVolume;
+      }
+      return this.isMuted;
+    }
+
+    stopAllAudio() {
+      for (const s of this.activeAudioSources) {
+        try { s.stop(); } catch (e) {}
+      }
+      this.activeAudioSources = [];
+      if (this.audioContext) {
+        this.nextPlayTime = this.audioContext.currentTime;
+      }
+      if (window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+    }
+
+    connect() {
+      if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
+        return;
+      }
+      const url = this.getWsUrl();
+
+      try {
+        this.ws = new WebSocket(url);
+        this.ws.binaryType = 'arraybuffer';
+
+        this.ws.onopen = () => {
+          this.onConnected();
+        };
+
+        this.ws.onmessage = (event) => {
+          this.onMessage(event);
+        };
+
+        this.ws.onclose = () => {
+          this.onDisconnected();
+        };
+
+        this.ws.onerror = () => {
+          // Handled gracefully, onclose will manage reconnection
+        };
+      } catch (e) {
+        this.onDisconnected();
+      }
+    }
+
+    onConnected() {
+      this.isConnected = true;
+      updateWsStatusUI(true);
+      stopSimulationLoop();
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+
+      if (this.micSource === 'browser') {
+        this.startBrowserMicCapture();
+      }
+
+      // Sync document and sentences from server
+      syncDocumentFromServer();
+
+      // Signal resume to start backend narration
+      if (isPlaying) {
+        this.send({ type: 'playback_control', action: 'resume' });
+      }
+    }
+
+    onDisconnected() {
+      this.isConnected = false;
+      updateWsStatusUI(false);
+      startSimulationLoop();
+      this.stopBrowserMicCapture();
+
+      if (!this.reconnectTimer) {
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null;
+          this.connect();
+        }, this.reconnectInterval);
+      }
+    }
+
+    send(data) {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        try {
+          if (typeof data === 'string' || data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+            this.ws.send(data);
+          } else {
+            this.ws.send(JSON.stringify(data));
+          }
+        } catch (e) {
+          console.warn("WebSocket send error:", e);
+        }
+      }
+    }
+
+    onMessage(event) {
+      if (typeof event.data !== 'string') {
+        this.handleBinaryAudio(event.data);
+        return;
+      }
+      try {
+        const msg = JSON.parse(event.data);
+        this.handleJsonMessage(msg);
+      } catch (e) {
+        console.warn("Error parsing WS message:", e);
+      }
+    }
+
+    async handleBinaryAudio(arrayBuffer) {
+      this.initAudioContext();
+      if (!this.audioContext) return;
+      if (this.audioContext.state === 'suspended') {
+        try { await this.audioContext.resume(); } catch (e) {}
+      }
+
+      try {
+        const uint8 = new Uint8Array(arrayBuffer);
+        const isMp3 = (uint8[0] === 0x49 && uint8[1] === 0x44 && uint8[2] === 0x33) ||
+                      (uint8[0] === 0xFF && (uint8[1] & 0xE0) === 0xE0);
+        const isWav = (uint8[0] === 0x52 && uint8[1] === 0x49 && uint8[2] === 0x46 && uint8[3] === 0x46);
+
+        let audioBuf;
+        if (isMp3 || isWav) {
+          audioBuf = await this.audioContext.decodeAudioData(arrayBuffer.slice(0));
+        } else {
+          const int16 = new Int16Array(arrayBuffer);
+          const float32 = new Float32Array(int16.length);
+          for (let i = 0; i < int16.length; i++) {
+            float32[i] = int16[i] / 32768.0;
+          }
+          audioBuf = this.audioContext.createBuffer(1, float32.length, 24000);
+          audioBuf.copyToChannel(float32, 0);
+        }
+
+        if (!audioBuf) return;
+
+        const src = this.audioContext.createBufferSource();
+        src.buffer = audioBuf;
+
+        if (this.gainNode) {
+          src.connect(this.gainNode);
+        } else if (this.analyser) {
+          src.connect(this.analyser);
+        } else {
+          src.connect(this.audioContext.destination);
+        }
+
+        const now = this.audioContext.currentTime;
+        if (this.nextPlayTime < now) {
+          this.nextPlayTime = now;
+        }
+        const startTime = Math.max(now, this.nextPlayTime);
+        src.start(startTime);
+        this.nextPlayTime = startTime + audioBuf.duration;
+
+        this.activeAudioSources.push(src);
+        src.onended = () => {
+          const idx = this.activeAudioSources.indexOf(src);
+          if (idx !== -1) this.activeAudioSources.splice(idx, 1);
+        };
+      } catch (err) {
+        console.warn("Audio buffer decode / playback error:", err);
+      }
+    }
+
+    handleJsonMessage(msg) {
+      switch (msg.type) {
+        case 'state_sync':
+          this.handleStateSync(msg);
+          break;
+        case 'vad_event':
+          this.handleVadEvent(msg);
+          break;
+        case 'barge_in':
+          this.handleBargeIn(msg);
+          break;
+        case 'cursor_update':
+          this.handleCursorUpdate(msg);
+          break;
+        case 'prompt_envelope':
+          this.handlePromptEnvelope(msg);
+          break;
+        case 'telemetry':
+          this.handleTelemetry(msg);
+          break;
+        case 'user_speech_transcript':
+          this.handleUserSpeechTranscript(msg);
+          break;
+      }
+    }
+
+    handleStateSync(msg) {
+      clearNarrativeTimer();
+      if (msg.state) {
+        currentState = msg.state;
+        if (msg.state === 'NARRATING') {
+          isPlaying = true;
+          const btnLabel = document.getElementById('btn-playback-label');
+          if (btnLabel) btnLabel.innerText = 'PAUSE NARRATION';
+        }
+        updateStateUI();
+      }
+      if (msg.active_voice) {
+        selectVoice(msg.active_voice, false);
+      }
+      if (msg.mic_source) {
+        switchMicSource(msg.mic_source, false);
+      }
+      if (msg.cadence !== undefined) {
+        setCadence(msg.cadence, null, false);
+      }
+      if (msg.latency_ms !== undefined) {
+        const latStr = `${Number(msg.latency_ms).toFixed(2)} ms`;
+        document.getElementById('header-latency').innerText = latStr;
+        document.getElementById('diag-latency').innerText = latStr;
+      }
+      if (msg.sentence_idx !== undefined) {
+        currentSentenceIdx = msg.sentence_idx;
+        currentWordIdx = msg.word_offset || 0;
+        updateWordHighlight();
+      }
+    }
+
+    handleVadEvent(msg) {
+      if (msg.dbfs !== undefined) {
+        this.lastTelemetryRms = msg.dbfs;
+        this.lastTelemetryTime = performance.now();
+      }
+    }
+
+    handleBargeIn(msg) {
+      this.stopAllAudio();
+      currentState = 'BARGE_IN';
+      updateStateUI();
+      const lat = (msg.latency_ms !== undefined) ? Number(msg.latency_ms).toFixed(2) : '0.04';
+      document.getElementById('header-latency').innerText = `${lat} ms`;
+      document.getElementById('diag-latency').innerText = `${lat} ms`;
+      const flashTag = document.getElementById('bargein-flash-tag');
+      if (flashTag) {
+        flashTag.innerText = `FLUSH: ${lat} ms`;
+        flashTag.style.display = 'block';
+        setTimeout(() => {
+          flashTag.style.display = 'none';
+        }, 1200);
+      }
+    }
+
+    handleCursorUpdate(msg) {
+      if (currentState !== 'NARRATING' && isPlaying) {
+        currentState = 'NARRATING';
+        updateStateUI();
+      }
+      if (msg.sentence_idx !== undefined) {
+        currentSentenceIdx = msg.sentence_idx;
+      }
+      if (msg.word_offset !== undefined) {
+        currentWordIdx = msg.word_offset;
+      }
+      if (msg.sentence_text && STORY_PARAGRAPHS[currentSentenceIdx] !== msg.sentence_text) {
+        STORY_PARAGRAPHS[currentSentenceIdx] = msg.sentence_text;
+        renderNarrativeStream();
+      } else {
+        updateWordHighlight();
+      }
+      if (msg.total_sentences !== undefined) {
+        const counter = document.getElementById('counter-sentence');
+        if (counter) counter.innerText = `${currentSentenceIdx + 1} / ${msg.total_sentences}`;
+      }
+    }
+
+    handlePromptEnvelope(msg) {
+      const envelope = document.getElementById('dialogue-envelope');
+      if (!envelope) return;
+
+      if (msg.state === 'LISTENING' || msg.state === 'REPLYING') {
+        currentState = msg.state;
+        updateStateUI();
+        envelope.style.display = 'grid';
+        if (msg.context) {
+          const ctxEl = document.getElementById('env-local-ctx');
+          if (ctxEl) ctxEl.innerText = `"${msg.context}"`;
+        }
+        if (msg.query) {
+          const qEl = envelope.querySelector('div:nth-child(3) span:last-child');
+          if (qEl) qEl.innerText = `"${msg.query}"`;
+        }
+        if (msg.reply) {
+          const rEl = envelope.querySelector('div:nth-child(4) span:last-child');
+          if (rEl) rEl.innerText = `"${msg.reply}"`;
+        }
+      } else {
+        currentState = 'NARRATING';
+        isPlaying = true;
+        updateStateUI();
+        const btnLabel = document.getElementById('btn-playback-label');
+        if (btnLabel) btnLabel.innerText = 'PAUSE NARRATION';
+
+        highlightPreRollWords(msg.pre_roll_words || 4);
+        setTimeout(() => {
+          document.querySelectorAll('.preroll').forEach(e => e.classList.remove('preroll'));
+          envelope.style.display = 'none';
+        }, 1400);
+      }
+    }
+
+    handleTelemetry(msg) {
+      if (msg.fft_bins) {
+        this.lastTelemetryBins = msg.fft_bins.slice(0, 240);
+      }
+      if (msg.rms_db !== undefined) {
+        this.lastTelemetryRms = msg.rms_db;
+      }
+      this.lastTelemetryTime = performance.now();
+
+      if (msg.drain_latency_ms !== undefined) {
+        const latStr = `${Number(msg.drain_latency_ms).toFixed(2)} ms`;
+        document.getElementById('header-latency').innerText = latStr;
+        document.getElementById('diag-latency').innerText = latStr;
+      }
+    }
+
+    handleUserSpeechTranscript(msg) {
+      if (!msg) return;
+      const transcript = (msg.transcript !== undefined && msg.transcript !== null) ? String(msg.transcript) : '';
+
+      // 1. Update query input field
+      const input = document.getElementById('interruption-query-input');
+      if (input && transcript) {
+        input.value = transcript;
+      }
+
+      // 2. Update speech recognition ticker
+      const ticker = document.getElementById('speech-ticker');
+      if (ticker) {
+        ticker.style.display = 'flex';
+        const textEl = document.getElementById('speech-ticker-text');
+        if (textEl) {
+          textEl.innerText = transcript || 'Listening to your voice...';
+        }
+      }
+
+      // 3. If final transcript and non-empty, transition to LISTENING with Prompt Envelope
+      if (msg.is_final && transcript && transcript.trim().length > 0) {
+        const cleanQuery = transcript.trim();
+        isVoiceListening = false;
+        updateBargeInButtonUI(false);
+
+        currentState = 'LISTENING';
+        updateStateUI();
+
+        const envelope = document.getElementById('dialogue-envelope');
+        if (envelope) {
+          envelope.style.display = 'grid';
+          const qEl = envelope.querySelector('div:nth-child(3) span:last-child');
+          if (qEl) qEl.innerText = `"${cleanQuery}"`;
+          const rEl = envelope.querySelector('div:nth-child(4) span:last-child');
+          if (rEl) rEl.innerText = `[Interpreting speech & formulating response...]`;
+          const ctxEl = document.getElementById('env-local-ctx');
+          if (ctxEl && typeof STORY_PARAGRAPHS !== 'undefined' && STORY_PARAGRAPHS[currentSentenceIdx]) {
+            ctxEl.innerText = `"${STORY_PARAGRAPHS[currentSentenceIdx]}"`;
+          }
+        }
+      } else if (msg.is_final) {
+        isVoiceListening = false;
+        updateBargeInButtonUI(false);
+        const textEl = document.getElementById('speech-ticker-text');
+        if (textEl) {
+          textEl.innerText = 'No clear voice detected. Standing by on comms...';
+        }
+      }
+    }
+
+    async startBrowserMicCapture() {
+      if (this.micStream) return;
+      try {
+        this.initAudioContext();
+        if (!this.audioContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          return;
+        }
+        this.micStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        });
+        if (this.audioContext && this.audioContext.state === 'suspended') {
+          await this.audioContext.resume().catch(() => {});
+        }
+        const source = this.audioContext.createMediaStreamSource(this.micStream);
+        this.micProcessor = this.audioContext.createScriptProcessor(2048, 1, 1);
+        this.micProcessor.onaudioprocess = (e) => {
+          if (!this.isConnected || this.micSource !== 'browser') return;
+          const input = e.inputBuffer.getChannelData(0);
+
+          // Downsample input from native sample rate to 16,000 Hz using continuous phase interpolation
+          const sampleRate = this.audioContext.sampleRate;
+          const targetRate = 16000;
+          let downsampled;
+
+          if (sampleRate === targetRate) {
+            downsampled = input;
+          } else {
+            const ratio = sampleRate / targetRate;
+            let phase = this._downsamplePhase || 0;
+            const maxOut = Math.ceil((input.length - phase) / ratio) + 2;
+            const outBuf = new Float32Array(maxOut);
+            let outCount = 0;
+            while (phase < input.length) {
+              const indexFloor = Math.floor(phase);
+              const indexCeil = indexFloor + 1;
+              const weight = phase - indexFloor;
+              const s0 = input[indexFloor];
+              const s1 = indexCeil < input.length ? input[indexCeil] : input[indexFloor];
+              outBuf[outCount++] = s0 * (1 - weight) + s1 * weight;
+              phase += ratio;
+            }
+            this._downsamplePhase = phase - input.length;
+            downsampled = outBuf.subarray(0, outCount);
+          }
+
+          // Hands-free voice barge-in detection on downsampled 16kHz buffer
+          if (handsFreeDetectionEnabled && currentState === 'NARRATING' && !isVoiceListening) {
+            let sumSquares = 0.0;
+            for (let i = 0; i < downsampled.length; i++) {
+              sumSquares += downsampled[i] * downsampled[i];
+            }
+            const rms = downsampled.length > 0 ? Math.sqrt(sumSquares / downsampled.length) : 0;
+            if (rms > 0.013) {
+              startDirectVoiceBargeIn();
+            }
+          }
+
+          // Real-time conversational pause/silence detection during active voice listening
+          if (isVoiceListening) {
+            let sumSq = 0.0;
+            for (let i = 0; i < downsampled.length; i++) {
+              sumSq += downsampled[i] * downsampled[i];
+            }
+            const rms = downsampled.length > 0 ? Math.sqrt(sumSq / downsampled.length) : 0;
+            if (rms > 0.005) {
+              this._clientVoiceDetected = true;
+              this._clientSilenceStart = 0;
+              const textEl = document.getElementById('speech-ticker-text');
+              if (textEl && (!textEl.innerText || textEl.innerText.startsWith('🔴 RECORDING:') || textEl.innerText.includes('Listening'))) {
+                textEl.innerText = '🔴 SPEAKING: Voice energy detected... Speak your question, then click STOP';
+              }
+            } else if (this._clientVoiceDetected) {
+              const now = performance.now();
+              if (!this._clientSilenceStart) {
+                this._clientSilenceStart = now;
+              } else if (now - this._clientSilenceStart > 1500) {
+                this._clientVoiceDetected = false;
+                this._clientSilenceStart = 0;
+                stopDirectVoiceBargeIn();
+              }
+            }
+          } else {
+            this._clientVoiceDetected = false;
+            this._clientSilenceStart = 0;
+          }
+
+          const pcm16 = new Int16Array(downsampled.length);
+          for (let i = 0; i < downsampled.length; i++) {
+            const s = Math.max(-1, Math.min(1, downsampled[i]));
+            pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+          }
+          this.send(pcm16.buffer);
+        };
+        source.connect(this.micProcessor);
+
+        // Mute monitor to prevent audio feedback loop
+        const monitorMute = this.audioContext.createGain();
+        monitorMute.gain.value = 0.0;
+        this.micProcessor.connect(monitorMute);
+        monitorMute.connect(this.audioContext.destination);
+      } catch (err) {
+        console.warn("Browser mic access unavailable or denied:", err.message);
+      }
+    }
+
+    stopBrowserMicCapture() {
+      if (this.micStream) {
+        this.micStream.getTracks().forEach(t => t.stop());
+        this.micStream = null;
+      }
+      if (this.micProcessor) {
+        this.micProcessor.disconnect();
+        this.micProcessor = null;
+      }
+    }
+  }
+
+  const wsClient = new HUDWebSocketClient();
+
+  // --- VOLUME & MUTE CONTROLS ---
+  function setMasterVolume(val) {
+    if (wsClient) {
+      wsClient.setVolume(val);
+    }
+    const readout = document.getElementById('volume-readout');
+    if (readout) readout.innerText = `${Math.round(val * 100)}%`;
+  }
+
+  function toggleMute() {
+    if (wsClient) {
+      const isMuted = wsClient.toggleMute();
+      const icon = document.getElementById('volume-icon');
+      const readout = document.getElementById('volume-readout');
+      if (isMuted) {
+        if (icon) icon.innerHTML = '<path d="M2 5h3l4-4v14L5 11H2zM14 4l-6 6M8 4l6 6"/>';
+        if (readout) readout.innerText = 'MUTED';
+      } else {
+        if (icon) icon.innerHTML = '<path d="M2 5h3l4-4v14L5 11H2zM12 5a4 4 0 0 1 0 6"/>';
+        if (readout) readout.innerText = `${Math.round(wsClient.masterVolume * 100)}%`;
+      }
+    }
+  }
+
+  // --- DOCUMENT INGESTION MODAL & LOGIC ---
+  let selectedUploadFile = null;
+
+  function openDocumentUploadModal() {
+    const modal = document.getElementById('document-upload-modal');
+    if (modal) modal.style.display = 'flex';
+  }
+
+  function closeDocumentUploadModal() {
+    const modal = document.getElementById('document-upload-modal');
+    if (modal) modal.style.display = 'none';
+    const statusEl = document.getElementById('doc-upload-status');
+    if (statusEl) statusEl.style.display = 'none';
+  }
+
+  function switchDocTab(tab) {
+    const fileTabBtn = document.getElementById('tab-doc-file');
+    const textTabBtn = document.getElementById('tab-doc-text');
+    const fileContent = document.getElementById('doc-tab-file-content');
+    const textContent = document.getElementById('doc-tab-text-content');
+
+    if (tab === 'file') {
+      fileTabBtn.classList.add('active');
+      textTabBtn.classList.remove('active');
+      fileContent.style.display = 'flex';
+      textContent.style.display = 'none';
+    } else {
+      fileTabBtn.classList.remove('active');
+      textTabBtn.classList.add('active');
+      fileContent.style.display = 'none';
+      textContent.style.display = 'flex';
+    }
+  }
+
+  function handleFileSelect(files) {
+    if (!files || files.length === 0) return;
+    selectedUploadFile = files[0];
+    const nameEl = document.getElementById('selected-file-name');
+    if (nameEl) {
+      nameEl.innerText = `SELECTED: ${selectedUploadFile.name} (${(selectedUploadFile.size / 1024).toFixed(1)} KB)`;
+      nameEl.style.display = 'block';
+    }
+  }
+
+  // Drag and drop listeners for dropzone
+  window.addEventListener('DOMContentLoaded', () => {
+    const dropZone = document.getElementById('file-drop-zone');
+    if (dropZone) {
+      ['dragenter', 'dragover'].forEach(eventName => {
+        dropZone.addEventListener(eventName, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dropZone.classList.add('dragover');
+        }, false);
+      });
+      ['dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dropZone.classList.remove('dragover');
+        }, false);
+      });
+      dropZone.addEventListener('drop', (e) => {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+        handleFileSelect(files);
+      }, false);
+    }
+  });
+
+  async function submitDocumentIngestion() {
+    const statusEl = document.getElementById('doc-upload-status');
+    const isFileTab = document.getElementById('tab-doc-file').classList.contains('active');
+
+    if (statusEl) {
+      statusEl.style.display = 'block';
+      statusEl.innerText = 'Ingesting and parsing document sentences...';
+    }
+
+    try {
+      let resp;
+      if (isFileTab) {
+        if (!selectedUploadFile) {
+          alert("Please select a .pdf, .epub, .txt, or .md file to upload.");
+          return;
+        }
+        const formData = new FormData();
+        formData.append('file', selectedUploadFile);
+        resp = await fetch(`${getApiBaseUrl()}/api/upload-document`, {
+          method: 'POST',
+          body: formData,
+        });
+      } else {
+        const text = document.getElementById('paste-doc-text').value.trim();
+        const title = document.getElementById('paste-doc-title').value.trim() || 'Pasted Text';
+        if (!text) {
+          alert("Please enter narrative text to ingest.");
+          return;
+        }
+        resp = await fetch(`${getApiBaseUrl()}/api/upload-document`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, title }),
+        });
+      }
+
+      if (!resp.ok) {
+        const err = await resp.json();
+        throw new Error(err.detail || 'Ingestion failed');
+      }
+
+      const result = await resp.json();
+      if (statusEl) {
+        statusEl.innerText = `Success: Ingested "${result.title}" (${result.sentence_count} sentences, ${result.word_count} words).`;
+      }
+
+      // Update state and UI
+      await syncDocumentFromServer();
+      closeDocumentUploadModal();
+
+      // Start narration
+      isPlaying = true;
+      const btnLabel = document.getElementById('btn-playback-label');
+      if (btnLabel) btnLabel.innerText = 'PAUSE NARRATION';
+      if (wsClient && wsClient.isConnected) {
+        wsClient.send({ type: 'playback_control', action: 'resume' });
+      }
+    } catch (err) {
+      if (statusEl) {
+        statusEl.innerText = `Error: ${err.message}`;
+      }
+    }
+  }
+
+  async function syncDocumentFromServer() {
+    try {
+      const resp = await fetch(`${getApiBaseUrl()}/api/document`);
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.sentences && data.sentences.length > 0) {
+          STORY_PARAGRAPHS = data.sentences;
+          currentSentenceIdx = data.current_sentence_idx || 0;
+          currentWordIdx = 0;
+          const docTitleEl = document.getElementById('header-doc-title');
+          if (docTitleEl) docTitleEl.innerText = `[BOOK: ${data.title || "Night City Run"}]`;
+          renderNarrativeStream();
+        }
+      }
+    } catch (e) {}
+  }
+
+  // --- MODEL & LIVE WEB SEARCH CONFIG MODAL ---
+  function openModelConfigModal() {
+    const modal = document.getElementById('model-config-modal');
+    if (modal) modal.style.display = 'flex';
+    fetchModelConfig();
+  }
+
+  function closeModelConfigModal() {
+    const modal = document.getElementById('model-config-modal');
+    if (modal) modal.style.display = 'none';
+  }
+
+  async function fetchModelConfig() {
+    try {
+      const resp = await fetch(`${getApiBaseUrl()}/api/config`);
+      if (resp.ok) {
+        const data = await resp.json();
+        const llm = data.llm || {};
+        if (llm.provider) document.getElementById('cfg-provider').value = llm.provider;
+        if (llm.base_url) document.getElementById('cfg-endpoint').value = llm.base_url;
+        if (llm.model) document.getElementById('cfg-model').value = llm.model;
+        if (llm.web_search_enabled !== undefined) {
+          document.getElementById('cfg-web-search').checked = !!llm.web_search_enabled;
+        }
+      }
+    } catch (e) {}
+  }
+
+  function onProviderChange(val) {
+    const endpointInput = document.getElementById('cfg-endpoint');
+    const modelInput = document.getElementById('cfg-model');
+    if (val === 'builtin') {
+      endpointInput.value = 'in-process';
+      modelInput.value = 'builtin-assistant';
+    } else if (val === 'ollama') {
+      endpointInput.value = 'http://localhost:11434';
+      modelInput.value = 'llama3.2';
+    } else if (val === 'openai') {
+      endpointInput.value = 'https://api.openai.com/v1';
+      modelInput.value = 'gpt-4o-mini';
+    } else if (val === 'groq') {
+      endpointInput.value = 'https://api.groq.com/openai/v1';
+      modelInput.value = 'llama-3.3-70b-versatile';
+    } else if (val === 'together') {
+      endpointInput.value = 'https://api.together.xyz/v1';
+      modelInput.value = 'deepseek-ai/DeepSeek-R1-Distill-Llama-70B';
+    }
+  }
+
+  async function saveModelConfig() {
+    const provider = document.getElementById('cfg-provider').value;
+    const base_url = document.getElementById('cfg-endpoint').value.trim();
+    const model = document.getElementById('cfg-model').value.trim();
+    const api_key = document.getElementById('cfg-api-key').value.trim();
+    const web_search_enabled = document.getElementById('cfg-web-search').checked;
+
+    const payload = {
+      provider,
+      base_url,
+      endpoint: base_url,
+      model,
+      model_name: model,
+      api_key,
+      web_search_enabled
+    };
+
+    try {
+      const resp = await fetch(`${getApiBaseUrl()}/api/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (resp.ok) {
+        if (wsClient && wsClient.isConnected) {
+          wsClient.send({ type: 'update_config', ...payload });
+        }
+        closeModelConfigModal();
+      }
+    } catch (err) {
+      alert(`Failed to save config: ${err.message}`);
+    }
+  }
+
+  async function testModelConfig() {
+    const statusEl = document.getElementById('model-config-status');
+    if (statusEl) {
+      statusEl.style.display = 'block';
+      statusEl.innerText = 'Testing connection and prompt completion...';
+    }
+    const t0 = performance.now();
+    try {
+      const resp = await fetch(`${getApiBaseUrl()}/api/ask`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: 'Hello, please confirm you are online.' })
+      });
+      const t1 = performance.now();
+      if (resp.ok) {
+        if (statusEl) {
+          statusEl.innerText = `Connected! Latency: ${(t1 - t0).toFixed(1)} ms. Interruption Q&A pipeline active.`;
+        }
+      } else {
+        if (statusEl) statusEl.innerText = `Error: Server returned HTTP ${resp.status}`;
+      }
+    } catch (e) {
+      if (statusEl) statusEl.innerText = `Connection failed: ${e.message}`;
+    }
+  }
+
+  // --- AD-HOC VOICE & TEXT INTERRUPTION WITH WEB SEARCH GROUNDING ---
+  async function submitInterruptionQuery(overrideQuery) {
+    const input = document.getElementById('interruption-query-input');
+    const query = (overrideQuery || (input ? input.value : '')).trim();
+    if (!query) return;
+
+    if (input) input.value = '';
+
+    // 1. Immediately disrupt audio and update UI to LISTENING / INTERRUPTED
+    if (wsClient) {
+      wsClient.stopAllAudio();
+      wsClient.initAudioContext();
+    }
+    currentState = 'LISTENING';
+    updateStateUI();
+
+    // 2. Show Prompt Envelope with search grounding status
+    const envelope = document.getElementById('dialogue-envelope');
+    if (envelope) {
+      envelope.style.display = 'grid';
+      const qEl = envelope.querySelector('div:nth-child(3) span:last-child');
+      if (qEl) qEl.innerText = `"${query}"`;
+      const rEl = envelope.querySelector('div:nth-child(4) span:last-child');
+      if (rEl) rEl.innerText = `[Searching live web via DuckDuckGo & formulating response...]`;
+    }
+
+    // 3. Send over WebSocket if connected, otherwise call /api/ask
+    if (wsClient && wsClient.isConnected) {
+      wsClient.send({ type: 'query_interruption', query: query });
+    } else {
+      try {
+        await fetch(`${getApiBaseUrl()}/api/ask`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: query })
+        });
+      } catch (err) {
+        console.warn("REST ask error:", err);
+      }
+    }
+  }
+
+  // Expose controller API for testing and programmatic automation
+  window.wsClient = wsClient;
+  window.selectVoice = selectVoice;
+  window.switchMicSource = switchMicSource;
+  window.setCadence = setCadence;
+  window.togglePlayPause = togglePlayPause;
+  window.triggerBargeIn = triggerBargeIn;
+  window.startDirectVoiceBargeIn = startDirectVoiceBargeIn;
+  window.stopDirectVoiceBargeIn = stopDirectVoiceBargeIn;
+  window.toggleHandsFree = toggleHandsFree;
+  window.unlockAudioPlayback = unlockAudioPlayback;
+  window.setMasterVolume = setMasterVolume;
+  window.toggleMute = toggleMute;
+  window.openDocumentUploadModal = openDocumentUploadModal;
+  window.closeDocumentUploadModal = closeDocumentUploadModal;
+  window.openModelConfigModal = openModelConfigModal;
+  window.closeModelConfigModal = closeModelConfigModal;
+  window.submitInterruptionQuery = submitInterruptionQuery;
+  window.VOICES = VOICES;
+  Object.defineProperty(window, 'activeVoice', {
+    get: () => activeVoice,
+    set: (v) => { activeVoice = v; }
+  });
+  Object.defineProperty(window, 'currentState', {
+    get: () => currentState,
+    set: (s) => { currentState = s; }
+  });
+  Object.defineProperty(window, 'currentCadence', {
+    get: () => currentCadence,
+    set: (c) => { currentCadence = c; }
+  });
+  Object.defineProperty(window, 'isPlaying', {
+    get: () => isPlaying,
+    set: (p) => { isPlaying = p; }
+  });
+
+  // --- GLOBAL KEYBOARD SHORTCUTS ---
+  window.addEventListener('keydown', (e) => {
+    // Avoid capturing inside inputs or textareas
+    if (['input', 'textarea', 'select'].includes((document.activeElement?.tagName || '').toLowerCase())) {
+      return;
+    }
+    if (e.code === 'Space') {
+      e.preventDefault();
+      unlockAudioPlayback();
+      togglePlayPause();
+    } else if (e.code === 'KeyV' && !e.repeat) {
+      e.preventDefault();
+      startDirectVoiceBargeIn();
+    }
+  });
+
+  // --- INITIALIZATION ---
   window.addEventListener('DOMContentLoaded', () => {
     renderVoiceRoster();
     renderNarrativeStream();
-    advanceWordCursor();
+    startSimulationLoop();
     renderDynamicVoiceGraph();
     renderBargeInCanvas();
+
+    // Connect WebSocket
+    wsClient.connect();
+
+    // Page Visibility API: resync audio playhead on tab refocus to prevent queue burst
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && wsClient && wsClient.audioContext) {
+        if (wsClient.audioContext.state === 'running') {
+          wsClient.nextPlayTime = wsClient.audioContext.currentTime;
+        }
+      }
+    });
+
+    // User gesture unlocking for AudioContext
+    const unlockAudio = () => {
+      unlockAudioPlayback();
+      window.removeEventListener('click', unlockAudio);
+      window.removeEventListener('keydown', unlockAudio);
+    };
+    window.addEventListener('click', unlockAudio);
+    window.addEventListener('keydown', unlockAudio);
   });
 </script>
 

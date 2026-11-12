@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "voice-agent"
-version = "0.1.0"
-description = "Local Interactive AI Voice Agent"
+version = "0.3.0"
+description = "Local Interactive AI Voice Agent with Continuous Narration, Hardware DSP, and Web Search Grounding"
 authors = [{ name = "Udit Daftary" }]
 dependencies = [
     "numpy>=1.24.0,<2.1.0",
@@ -14,7 +14,16 @@ dependencies = [
     "onnxruntime>=1.17.0",
     "pydantic>=2.6.0",
     "pyyaml>=6.0.1",
-    "colorama>=0.4.6"
+    "colorama>=0.4.6",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.28.0",
+    "websockets>=12.0",
+    "httpx>=0.27.0",
+    "pypdf>=5.0.0",
+    "edge-tts>=7.0.0",
+    "pyttsx3>=2.90",
+    "duckduckgo_search>=7.0.0",
+    "python-multipart>=0.0.18"
 ]
 
 [tool.pytest.ini_options]
