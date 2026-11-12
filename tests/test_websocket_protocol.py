@@ -18,6 +18,7 @@ Validates:
 import pytest
 from fastapi.testclient import TestClient
 
+from fakes import FakeSearch, FakeTts
 from voice_agent.server.app import create_app
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.schemas import (
@@ -32,7 +33,8 @@ from voice_agent.server.schemas import (
 def isolated_app():
     """Provides a fresh FastAPI app instance with an isolated ConnectionManager for each test."""
     manager = ConnectionManager()
-    app = create_app(connection_manager=manager)
+    # Resuming narration synthesizes sentences, so keep TTS and search off the network.
+    app = create_app(connection_manager=manager, tts=FakeTts(), search=FakeSearch())
     return app, manager
 
 
