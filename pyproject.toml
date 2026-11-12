@@ -68,3 +68,9 @@ ignore = ["E501"]
 "src/voice_agent/stt/local_stt_worker.py" = ["BLE001", "S110"]
 "src/voice_agent/tts/synthesizer.py" = ["BLE001", "S110"]
 "src/voice_agent/vad/energy_vad.py" = ["BLE001", "S110"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+files = ["src/voice_agent"]
+exclude = ['pocket_voice_worker\.py$', 'pocket_voice_runtime\.py$', 'resident_voice_worker\.py$']
