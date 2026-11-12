@@ -41,6 +41,29 @@ class CountingSTT:
         return "lazily built transcript"
 
 
+class GatedSTT:
+    """Stands in for STTEngine: the build blocks in its worker thread until the test releases it."""
+
+    built = 0
+    started = threading.Event()
+    release = threading.Event()
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        GatedSTT.built += 1
+        GatedSTT.started.set()
+        if not GatedSTT.release.wait(timeout=10):
+            raise AssertionError("test never released the build")
+
+
+@pytest.fixture
+def gated_stt(monkeypatch: pytest.MonkeyPatch) -> type[GatedSTT]:
+    GatedSTT.built = 0
+    GatedSTT.started = threading.Event()
+    GatedSTT.release = threading.Event()
+    monkeypatch.setattr(recognizer, "STTEngine", GatedSTT)
+    return GatedSTT
+
+
 @pytest.fixture
 def counting_stt(monkeypatch: pytest.MonkeyPatch) -> type[CountingSTT]:
     CountingSTT.built = []
@@ -76,8 +99,27 @@ async def test_ensure_stt_engine_builds_once_off_the_event_loop(counting_stt: ty
     assert counting_stt.build_threads[0] != threading.get_ident()
 
 
+async def test_cancelled_caller_does_not_discard_the_build(gated_stt: type[GatedSTT]) -> None:
+    app = create_app(connection_manager=ConnectionManager())
+
+    first = asyncio.create_task(ensure_stt_engine(app))
+    await asyncio.to_thread(gated_stt.started.wait, 5)  # the build is now running in its worker thread
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    # A later caller joins the build already in flight instead of starting a second Whisper load.
+    second = asyncio.create_task(ensure_stt_engine(app))
+    gated_stt.release.set()
+    engine = await second
+
+    assert gated_stt.built == 1
+    assert app.state.stt_engine is engine
+    assert await ensure_stt_engine(app) is engine
+
+
 async def test_ensure_stt_engine_works_without_create_app(counting_stt: type[CountingSTT]) -> None:
-    # An app that only mounts the websocket router has no pre-made lock on app.state.
+    # An app that only mounts the websocket router has none of create_app's state set up.
     app = FastAPI()
 
     first, second = await asyncio.gather(ensure_stt_engine(app), ensure_stt_engine(app))

@@ -66,27 +66,34 @@ def _stored_stt_engine(app: FastAPI) -> Any:
     return engine
 
 
+async def _build_stt_engine(app: FastAPI) -> Any:
+    from voice_agent.stt.recognizer import STTEngine
+
+    try:
+        engine = await asyncio.to_thread(STTEngine, fallback_mock=False)
+        app.state.stt_engine = engine
+        return engine
+    finally:
+        # Success is now served from app.state.stt_engine; after a failure the next caller retries.
+        app.state.stt_build = None
+
+
 async def ensure_stt_engine(app: FastAPI) -> Any:
     """Return the app's STT engine, building the real one on first use (M2).
 
     Loading Whisper takes seconds and may reach the Hugging Face Hub, so it never happens at
-    import. The build runs in a worker thread, and the lock makes concurrent first utterances
-    share one build.
+    import. The build runs as one task in a worker thread. Callers await it through a shield, so
+    concurrent first utterances share the build and a cancelled caller (a closed websocket) does
+    not discard a half-loaded model that the next caller would otherwise load a second time.
     """
     engine = _stored_stt_engine(app)
     if engine is not None:
         return engine
-    lock = getattr(app.state, "stt_lock", None)
-    if lock is None:
-        # No await between the check and the set, so two first callers cannot create two locks.
-        lock = app.state.stt_lock = asyncio.Lock()
-    async with lock:
-        engine = _stored_stt_engine(app)
-        if engine is None:
-            from voice_agent.stt.recognizer import STTEngine
-            engine = await asyncio.to_thread(STTEngine, fallback_mock=False)
-            app.state.stt_engine = engine
-    return engine
+    build = getattr(app.state, "stt_build", None)
+    if build is None:
+        # No await between the check and the set, so concurrent first callers share one task.
+        build = app.state.stt_build = asyncio.create_task(_build_stt_engine(app))
+    return await asyncio.shield(build)
 
 
 @asynccontextmanager
