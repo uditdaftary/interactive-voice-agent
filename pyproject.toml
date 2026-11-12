@@ -7,6 +7,7 @@ name = "voice-agent"
 version = "0.3.0"
 description = "Local Interactive AI Voice Agent with Continuous Narration, Hardware DSP, and Web Search Grounding"
 authors = [{ name = "Udit Daftary" }]
+requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.24.0,<2.1.0",
     "scipy>=1.11.0",
