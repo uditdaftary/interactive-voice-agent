@@ -36,6 +36,31 @@ async def test_asyncio_connect_to_remote_address_is_blocked(block_outbound_netwo
     block_outbound_network.clear()
 
 
+def _ipv6_socket() -> socket.socket:
+    try:
+        return socket.socket(socket.AF_INET6)
+    except OSError:
+        pytest.skip("IPv6 sockets are unavailable on this machine")
+
+
+def test_ipv4_mapped_loopback_is_allowed(block_outbound_network: list[str]) -> None:
+    # Dual-stack local servers appear as ::ffff:127.0.0.1; Python 3.11 does not call that loopback.
+    with _ipv6_socket() as sock:
+        sock.settimeout(1)
+        try:
+            sock.connect(("::ffff:127.0.0.1", 9))
+        except OSError:
+            pass  # refused or unsupported by this OS: the guard let it through, which is the point
+    assert block_outbound_network == []
+
+
+def test_ipv4_mapped_remote_address_is_still_blocked(block_outbound_network: list[str]) -> None:
+    with _ipv6_socket() as sock, pytest.raises(RuntimeError, match="network access blocked"):
+        sock.connect(("::ffff:192.0.2.1", 80))
+    assert len(block_outbound_network) == 1
+    block_outbound_network.clear()
+
+
 def test_ddgs_search_is_blocked(block_outbound_network: list[str]) -> None:
     ddgs = pytest.importorskip("ddgs")
     with pytest.raises(RuntimeError, match="network access blocked"):

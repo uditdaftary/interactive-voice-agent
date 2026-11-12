@@ -29,9 +29,11 @@ def _is_loopback(host: object) -> bool:
     if name in _LOOPBACK_NAMES:
         return True
     try:
-        return ipaddress.ip_address(name.split("%", 1)[0]).is_loopback
+        address = ipaddress.ip_address(name.split("%", 1)[0])
     except ValueError:
         return False
+    # Dual-stack servers show up as ::ffff:127.0.0.1, which IPv6Address.is_loopback rejects on 3.11.
+    return (getattr(address, "ipv4_mapped", None) or address).is_loopback
 
 
 def _peer_host(address: Any) -> object:
