@@ -152,7 +152,8 @@ def set_priority(level: str) -> bool:
     The handle is declared as a pointer-sized value: GetCurrentProcess() returns the pseudo-handle -1, and the default 32-bit int conversion
     of ctypes turns it into 0xFFFFFFFF, which Windows refuses (ERROR_INVALID_HANDLE) on a 64-bit process. Every call before 27 Oct 2026 failed this way."""
     try:
-        if os.name != "nt":
+        # sys.platform (not os.name) so mypy skips this Windows-only branch when checking on Linux.
+        if sys.platform != "win32":
             return False
         import ctypes
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
