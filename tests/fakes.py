@@ -6,13 +6,24 @@ the engine actually asked for.
 """
 
 import asyncio
-from collections.abc import AsyncGenerator, Sequence
+import time
+from collections.abc import AsyncGenerator, Callable, Sequence
 from typing import Any
 
 import numpy as np
 
 TTS_SAMPLE_RATE = 24000
 SAMPLES_PER_WORD = 4800  # 0.2 s of audio per word
+
+
+def wait_until(condition: Callable[[], bool], timeout_s: float = 5.0, interval_s: float = 0.01) -> bool:
+    """Poll from a synchronous test while the app runs on TestClient's event-loop thread."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(interval_s)
+    return condition()
 
 
 class FakeTts:

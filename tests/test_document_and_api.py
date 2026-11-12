@@ -20,13 +20,20 @@ from voice_agent.document.parser import DocumentParser
 from voice_agent.server.app import create_app
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.narration import NarrationEngine
+from voice_agent.settings import Settings
+from fakes import FakeSearch, FakeTts, wait_until
 
 
 @pytest.fixture
 def test_client():
     """Provides a fresh FastAPI test client with isolated manager and narration engine."""
     manager = ConnectionManager()
-    engine = NarrationEngine(connection_manager=manager)
+    engine = NarrationEngine(
+        connection_manager=manager,
+        settings=Settings.fast(),
+        tts=FakeTts(),
+        search=FakeSearch(),
+    )
     app = create_app(connection_manager=manager, narration_engine=engine)
     with TestClient(app) as client:
         yield client, manager, engine
@@ -143,6 +150,16 @@ def test_api_ask_question_interruption(test_client):
     data = resp.json()
     assert data["status"] == "ok"
     assert data["query"] == "Who is David Martinez?"
+
+    # The interruption runs in the background: reply spoken first, then narration resumes.
+    tts = engine.tts
+    assert wait_until(lambda: len(tts.calls) >= 2), "interruption did not speak a reply and resume narration"
+    reply_text, reply_voice, _ = tts.calls[0]
+    assert reply_text.strip()
+    assert reply_text not in engine.sentences
+    assert reply_voice == "david-martinez"
+    assert tts.calls[1][0] in engine.sentences
+    assert manager.state == "NARRATING"
 
 
 def test_api_narration_control(test_client):
