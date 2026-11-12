@@ -11,9 +11,7 @@ dependencies = [
     "numpy>=1.24.0,<2.1.0",
     "scipy>=1.11.0",
     "sounddevice>=0.4.6",
-    "onnxruntime>=1.17.0",
     "pydantic>=2.6.0",
-    "pyyaml>=6.0.1",
     "colorama>=0.4.6",
     "fastapi>=0.110.0",
     "uvicorn>=0.28.0",
@@ -22,9 +20,13 @@ dependencies = [
     "pypdf>=5.0.0",
     "edge-tts>=7.0.0",
     "pyttsx3>=2.90",
-    "duckduckgo_search>=7.0.0",
+    "faster-whisper>=1.0",
+    "ddgs>=9.0",
     "python-multipart>=0.0.18"
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.17,<0.18", "mypy>=1.10"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
