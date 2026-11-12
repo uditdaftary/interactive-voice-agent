@@ -20,11 +20,12 @@ Coverage:
 import asyncio
 import json
 from typing import List
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
+from fakes import FakeLLM, FakeSearch, FakeTts
 from voice_agent.audio.hybrid import HybridMicrophoneBridge
 from voice_agent.audio.loopback import VirtualAudioDevice
 from voice_agent.audio.ring_buffer import AudioRingBuffer
@@ -33,6 +34,7 @@ from voice_agent.server.app import create_app
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.narration import NarrationEngine
 from voice_agent.server.schemas import CursorUpdateMessage, VADEventMessage
+from voice_agent.settings import Settings
 from voice_agent.stt.recognizer import MockSTTEngine
 from voice_agent.vad.energy_vad import VoiceActivityDetector
 
@@ -51,7 +53,13 @@ def safe_broadcast_json(manager: ConnectionManager, message) -> None:
 def e2e_system():
     """Builds a complete, integrated system harness wiring audio DSP, VAD, cursor, and WebSocket."""
     manager = ConnectionManager()
-    app = create_app(connection_manager=manager)
+    app = create_app(
+        connection_manager=manager,
+        settings=Settings.fast(),
+        llm_client=FakeLLM(tokens=["Arasaka ", "is ", "a ", "megacorporation."], web_search_enabled=False),
+        tts=FakeTts(),
+        search=FakeSearch(),
+    )
 
     ring_buffer = AudioRingBuffer(capacity_samples=24000 * 5, sample_rate=24000)
     vad = VoiceActivityDetector(sample_rate=16000, frame_duration_ms=30)
@@ -328,7 +336,6 @@ def test_e2e_voice_barge_in_stt_transcription(e2e_system) -> None:
     app.state.stt_engine = mock_stt
 
     engine: NarrationEngine = app.state.narration_engine
-    engine.llm.web_search_enabled = False
     engine.start_narration = MagicMock()
 
     # Wire bridge barge-in callback to broadcast barge_in and state_sync
@@ -342,66 +349,69 @@ def test_e2e_voice_barge_in_stt_transcription(e2e_system) -> None:
 
     bridge.add_barge_in_callback(on_barge_in_event)
 
-    with patch("voice_agent.server.narration.asyncio.sleep", new_callable=AsyncMock), \
-         patch("voice_agent.server.narration.synthesize_sentence", AsyncMock(return_value=(b"synth_audio", "pcm_s16le"))):
-        with TestClient(app) as client:
-            with client.websocket_connect("/ws") as ws:
-                _ = ws.receive_json()  # Handshake state_sync
-                assert manager.state == "NARRATING"
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            _ = ws.receive_json()  # Handshake state_sync
+            assert manager.state == "NARRATING"
 
-                # 1. Send speech audio frames while NARRATING to trigger VAD barge-in
-                t = np.linspace(0, 0.03, 720, endpoint=False)
-                loud_sine = (0.8 * 32767 * np.sin(2 * np.pi * 300.0 * t)).astype(np.int16).tobytes()
+            # 1. Send speech audio frames while NARRATING to trigger VAD barge-in
+            t = np.linspace(0, 0.03, 720, endpoint=False)
+            loud_sine = (0.8 * 32767 * np.sin(2 * np.pi * 300.0 * t)).astype(np.int16).tobytes()
 
-                ws.send_bytes(loud_sine)
-                ws.send_bytes(loud_sine)  # Speech onset detected here
+            ws.send_bytes(loud_sine)
+            ws.send_bytes(loud_sine)  # Speech onset detected here
 
-                # 2. Verify state changes: NARRATING -> BARGE_IN -> LISTENING
-                msg_barge = ws.receive_json()
-                assert msg_barge["type"] == "barge_in"
-                assert msg_barge["flushed_samples"] == 48000
-                assert ring_buffer.size == 0
+            # 2. Verify state changes: NARRATING -> BARGE_IN -> LISTENING
+            msg_barge = ws.receive_json()
+            assert msg_barge["type"] == "barge_in"
+            assert msg_barge["flushed_samples"] == 48000
+            assert ring_buffer.size == 0
 
-                msg_state = ws.receive_json()
-                assert msg_state["type"] == "state_sync"
-                assert msg_state["state"] == "LISTENING"
+            msg_state = ws.receive_json()
+            assert msg_state["type"] == "state_sync"
+            assert msg_state["state"] == "LISTENING"
 
-                # 3. Stream spoken speech during LISTENING
-                t_spk = np.linspace(0, 0.2, 3200, endpoint=False)
-                speech_chunk = (0.8 * 32767 * np.sin(2 * np.pi * 440.0 * t_spk)).astype(np.int16).tobytes()
-                ws.send_bytes(speech_chunk)
+            # 3. Stream spoken speech during LISTENING
+            t_spk = np.linspace(0, 0.2, 3200, endpoint=False)
+            speech_chunk = (0.8 * 32767 * np.sin(2 * np.pi * 440.0 * t_spk)).astype(np.int16).tobytes()
+            ws.send_bytes(speech_chunk)
 
-                # 4. Signal end of voice turn
-                ws.send_json({"type": "voice_end"})
+            # 4. Signal end of voice turn
+            ws.send_json({"type": "voice_end"})
 
-                # 5. Verify user_speech_transcript message received containing 'arasaka'
-                msg_transcript = ws.receive_json()
-                assert msg_transcript["type"] == "user_speech_transcript"
-                assert "arasaka" in msg_transcript["transcript"].lower()
-                assert msg_transcript["is_final"] is True
+            # 5. Verify user_speech_transcript message received containing 'arasaka'
+            msg_transcript = ws.receive_json()
+            assert msg_transcript["type"] == "user_speech_transcript"
+            assert "arasaka" in msg_transcript["transcript"].lower()
+            assert msg_transcript["is_final"] is True
 
-                # 6. Verify prompt_envelope with reply and pre-roll resumption cue
-                received_prompt_envelope = False
-                resumption_cue_received = False
+            # 6. Verify prompt_envelope with reply and pre-roll resumption cue
+            received_prompt_envelope = False
+            resumption_cue_received = False
+            replies: list[str] = []
 
-                for _ in range(40):
-                    frame = ws.receive()
-                    if "text" in frame:
-                        payload = json.loads(frame["text"])
-                        p_type = payload.get("type")
-                        if p_type == "prompt_envelope":
-                            received_prompt_envelope = True
-                            if payload.get("query"):
-                                assert "arasaka" in payload["query"].lower()
-                            if payload.get("state") == "NARRATING" and payload.get("pre_roll_words", 0) > 0:
-                                resumption_cue_received = True
-                                break
+            for _ in range(40):
+                frame = ws.receive()
+                if "text" in frame:
+                    payload = json.loads(frame["text"])
+                    p_type = payload.get("type")
+                    if p_type == "prompt_envelope":
+                        received_prompt_envelope = True
+                        replies.append(payload.get("reply", ""))
+                        if payload.get("query"):
+                            assert "arasaka" in payload["query"].lower()
+                        if payload.get("state") == "NARRATING" and payload.get("pre_roll_words", 0) > 0:
+                            resumption_cue_received = True
+                            break
 
-                assert received_prompt_envelope, "Expected prompt_envelope with query reply"
-                assert resumption_cue_received, "Expected resumption cue prompt_envelope"
+            assert received_prompt_envelope, "Expected prompt_envelope with query reply"
+            assert resumption_cue_received, "Expected resumption cue prompt_envelope"
+            # The injected LLM's answer reached the HUD and was handed to the injected TTS.
+            assert "Arasaka is a megacorporation." in replies
+            assert "Arasaka is a megacorporation." in engine.tts.texts
 
-                # 7. Verify returns to NARRATING state
-                final_state = ws.receive_json()
-                assert final_state["type"] == "state_sync"
-                assert final_state["state"] == "NARRATING"
+            # 7. Verify returns to NARRATING state
+            final_state = ws.receive_json()
+            assert final_state["type"] == "state_sync"
+            assert final_state["state"] == "NARRATING"
 
