@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -15,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from voice_agent.server.app import create_app, ensure_stt_engine
 from voice_agent.server.connection_manager import ConnectionManager
+from voice_agent.settings import Settings
 from voice_agent.stt import recognizer
 from fakes import FakeStt
 
@@ -95,8 +97,16 @@ async def test_ensure_stt_engine_builds_once_off_the_event_loop(counting_stt: ty
     assert first is second
     assert app.state.stt_engine is first
     assert len(counting_stt.built) == 1
-    assert counting_stt.built[0] == {}
+    assert counting_stt.built[0] == {"initial_prompt": ""}
     assert counting_stt.build_threads[0] != threading.get_ident()
+
+
+async def test_build_passes_the_configured_initial_prompt(counting_stt: type[CountingSTT]) -> None:
+    app = create_app(connection_manager=ConnectionManager(), settings=replace(Settings(), stt_initial_prompt="Arasaka"))
+
+    await ensure_stt_engine(app)
+
+    assert counting_stt.built == [{"initial_prompt": "Arasaka"}]
 
 
 async def test_cancelled_caller_does_not_discard_the_build(gated_stt: type[GatedSTT]) -> None:

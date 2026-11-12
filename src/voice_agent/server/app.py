@@ -22,7 +22,7 @@ from voice_agent.server.connection_manager import (
 )
 from voice_agent.server.narration import NarrationEngine, SearchFn, TtsFn
 from voice_agent.server.websocket import router as websocket_router
-from voice_agent.settings import Settings
+from voice_agent.settings import Settings, load_settings
 import asyncio
 
 logger = logging.getLogger(__name__)
@@ -69,8 +69,12 @@ def _stored_stt_engine(app: FastAPI) -> Any:
 async def _build_stt_engine(app: FastAPI) -> Any:
     from voice_agent.stt.recognizer import STTEngine
 
+    settings: Settings | None = getattr(app.state, "settings", None)
+    if settings is None:
+        # An app built without create_app has no settings on its state; it takes the environment's, as create_app would.
+        settings = load_settings()
     try:
-        engine = await asyncio.to_thread(STTEngine)
+        engine = await asyncio.to_thread(STTEngine, initial_prompt=settings.stt_initial_prompt)
         app.state.stt_engine = engine
         return engine
     finally:
@@ -146,13 +150,23 @@ def create_app(
     )
 
     # Store connection manager and narration engine in app state
+    # Resolved once, so the narration engine and the STT build read the same settings.
+    resolved_settings = settings if settings is not None else load_settings()
+    app.state.settings = resolved_settings
+
     manager = connection_manager if connection_manager is not None else default_connection_manager
     app.state.connection_manager = manager
 
     engine = (
         narration_engine
         if narration_engine is not None
-        else NarrationEngine(connection_manager=manager, llm_client=llm_client, settings=settings, tts=tts, search=search)
+        else NarrationEngine(
+            connection_manager=manager,
+            llm_client=llm_client,
+            settings=resolved_settings,
+            tts=tts,
+            search=search,
+        )
     )
     app.state.narration_engine = engine
 

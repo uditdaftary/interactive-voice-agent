@@ -93,3 +93,10 @@ def test_whisper_unavailable_reason(fake_whisper: FakeWhisper, caplog: pytest.Lo
 
     assert result == Transcript("", STT_UNAVAILABLE)
     assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+def test_initial_prompt_env() -> None:
+    from voice_agent.settings import load_settings
+
+    assert load_settings({"VOICE_AGENT_STT_INITIAL_PROMPT": "Arasaka"}).stt_initial_prompt == "Arasaka"
+    assert load_settings({}).stt_initial_prompt == ""
