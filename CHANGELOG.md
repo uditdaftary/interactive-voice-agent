@@ -5,6 +5,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [Unreleased]
+
+### Added
+- Remediation master spec `docs/superpowers/specs/2026-11-12-remediation-design.md`. It comes out of a full audit and covers roughly 70 findings: gaps between the docs and the code, about 59% of the source being unreachable, scripted answers by default, a hardcoded barge-in latency, no trust boundary, and tests that make live network calls. It sets out five gated phases (P0 to P4) and a traceability matrix, and was reviewed in two Opus rounds. No code changes yet.
+
+---
+
 ## [0.8.0] - 2026-11-11
 
 ### Conversational Fluidity, Continuous Phase Resampling & Low-Gain STT Normalization
