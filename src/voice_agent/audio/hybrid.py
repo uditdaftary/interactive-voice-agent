@@ -525,7 +525,7 @@ class HybridMicrophoneBridge:
     def _start_host_stream(self) -> bool:
         """Attempt to open and start a native sounddevice.InputStream."""
         try:
-            import sounddevice as sd  # type: ignore
+            import sounddevice as sd
 
             # Check if input devices exist
             devices = sd.query_devices()

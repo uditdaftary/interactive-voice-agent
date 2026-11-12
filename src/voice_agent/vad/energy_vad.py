@@ -172,7 +172,7 @@ class VoiceActivityDetector:
 
         return chunk
 
-    def _apply_filter(self, frame: np.ndarray) -> np.ndarray:  # type: ignore[return]  # tracked L8, fixed in S4.1
+    def _apply_filter(self, frame: np.ndarray) -> np.ndarray:  # type: ignore[return]  # matrix L8, fixed in S4.1
         """Apply zero-mean centering and stateful 1st-order IIR high-pass filter (80 Hz, R=0.968)."""
         if len(frame) == 0:
             return frame
