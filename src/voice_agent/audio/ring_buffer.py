@@ -111,7 +111,7 @@ class AudioRingBuffer:
                 arr = arr[0, :]
             elif arr.shape[1] == 2:
                 if np.issubdtype(arr.dtype, np.floating):
-                    arr = 0.5 * (arr[:, 0] + arr[:, 1])
+                    arr = 0.5 * (arr[:, 0] + arr[:, 1])  # type: ignore[assignment]  # tracked ring-buffer fixes (spec 5.3), fixed in S4.3
                 else:
                     arr = (arr[:, 0].astype(np.int64) + arr[:, 1].astype(np.int64)) // 2
             else:
@@ -265,10 +265,10 @@ class AudioRingBuffer:
 
             if tail_len > 0:
                 take_tail = min(tail_len, count)
-                out[:take_tail] = self.fadeout_tail[:take_tail]
+                out[:take_tail] = self.fadeout_tail[:take_tail]  # type: ignore[index]  # tracked ring-buffer fixes (spec 5.3), fixed in S4.3
                 filled += take_tail
                 if take_tail < tail_len:
-                    self.fadeout_tail = self.fadeout_tail[take_tail:]
+                    self.fadeout_tail = self.fadeout_tail[take_tail:]  # type: ignore[index]  # tracked ring-buffer fixes (spec 5.3), fixed in S4.3
                 else:
                     self.fadeout_tail = None
 

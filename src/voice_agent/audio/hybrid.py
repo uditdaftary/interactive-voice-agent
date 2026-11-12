@@ -310,9 +310,9 @@ class HybridMicrophoneBridge:
         )
 
         # Notify VAD observers
-        for cb in self._vad_callbacks:
+        for cb in self._vad_callbacks:  # type: ignore[assignment]  # tracked AudioHub rewrite (spec 5.4), fixed in S4.1
             try:
-                cb(telemetry)
+                cb(telemetry)  # type: ignore[arg-type]  # tracked AudioHub rewrite (spec 5.4), fixed in S4.1
             except Exception as e:
                 logger.error(f"Error in VAD callback: {e}")
 

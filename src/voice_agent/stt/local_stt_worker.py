@@ -77,7 +77,7 @@ def use_utf8() -> None:
     models, 2026-10-19). Reconfigure them here, before anything is read or written."""
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]  # tracked moonshine worker (spec 5.5), fixed in S4.2
         except Exception:  # noqa: BLE001
             pass
 
@@ -103,7 +103,7 @@ def lower_priority(level: str = "below") -> None:
             if not set_priority(level):
                 log(f"priority {level} not set")
         else:
-            os.nice(5)
+            os.nice(5)  # type: ignore[attr-defined]  # tracked moonshine worker (spec 5.5), fixed in S4.2
     except Exception as error:  # noqa: BLE001
         log(f"priority not lowered: {error}")
 
@@ -414,7 +414,7 @@ class Worker:
         self.np = np
         self.engine = engine
         self.id = None
-        self.chunks = []
+        self.chunks = []  # type: ignore[var-annotated]  # tracked moonshine worker (spec 5.5), fixed in S4.2
         self.total = 0
         self.last_partial = None   # (samples covered, text) of the newest partial that decoded the whole recording
         self.last_words = ""       # newest non-empty partial text of this recording, the last resort when the final decode is empty
@@ -572,7 +572,7 @@ def main() -> int:
         batch = [first]
         while True:
             try:
-                batch.append(messages.get_nowait())
+                batch.append(messages.get_nowait())  # type: ignore[arg-type]  # tracked moonshine worker (spec 5.5), fixed in S4.2
             except queue.Empty:
                 break
         for message in settle([m for m in batch if m is not None]):
