@@ -1,5 +1,6 @@
 import re
 import asyncio
+import importlib
 import logging
 from typing import Any, AsyncGenerator, List, Dict, Optional
 
@@ -363,10 +364,14 @@ def search_web_sync(query: str, max_results: int = 8) -> str:
         return ""
 
     try:
+        # ddgs and the legacy duckduckgo_search ship the same DDGS class under different module paths;
+        # one Any-typed module handle avoids two incompatible import bindings for the same name.
+        ddgs_module: Any
         try:
-            from ddgs import DDGS
+            ddgs_module = importlib.import_module("ddgs")
         except ImportError:
-            from duckduckgo_search import DDGS
+            ddgs_module = importlib.import_module("duckduckgo_search")
+        DDGS = ddgs_module.DDGS
     except Exception as imp_err:
         logger.warning("Failed to import DDGS: %s", imp_err)
         return ""
