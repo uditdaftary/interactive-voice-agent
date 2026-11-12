@@ -33,3 +33,38 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+# Vendored TTS workers stay out of lint and typecheck until S4.2 deletes them.
+extend-exclude = [
+    "src/voice_agent/tts/pocket_voice_worker.py",
+    "src/voice_agent/tts/pocket_voice_runtime.py",
+    "src/voice_agent/tts/resident_voice_worker.py",
+]
+
+[tool.ruff.lint]
+select = ["F", "E", "B", "ASYNC", "BLE", "S110", "RUF006"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Re-exports from package __init__ modules are the public API (permanent).
+"src/voice_agent/**/__init__.py" = ["F401"]
+# Cosmetic boolean comparisons in the VAD tests are intentional (permanent).
+"tests/test_vad.py" = ["E712"]
+# Tests may catch broadly and start fire-and-forget tasks (permanent).
+"tests/**" = ["BLE001", "RUF006"]
+# legacy blind excepts, removed in S3.3 (RC4 sweep)
+"src/voice_agent/audio/hybrid.py" = ["BLE001", "S110"]
+"src/voice_agent/document/parser.py" = ["BLE001", "S110"]
+"src/voice_agent/llm/client.py" = ["BLE001", "S110"]
+"src/voice_agent/server/app.py" = ["BLE001", "S110", "RUF006"]  # RUF006: untracked tasks, removed in S2.1 (TaskRegistry)
+"src/voice_agent/server/connection_manager.py" = ["BLE001", "S110"]
+"src/voice_agent/server/narration.py" = ["BLE001", "S110"]
+"src/voice_agent/server/schemas.py" = ["BLE001", "S110"]
+"src/voice_agent/server/websocket.py" = ["BLE001", "S110", "RUF006"]  # RUF006: untracked tasks, removed in S2.1 (TaskRegistry)
+"src/voice_agent/stt/recognizer.py" = ["BLE001", "S110"]
+"src/voice_agent/stt/local_stt_worker.py" = ["BLE001", "S110"]
+"src/voice_agent/tts/synthesizer.py" = ["BLE001", "S110"]
+"src/voice_agent/vad/energy_vad.py" = ["BLE001", "S110"]
