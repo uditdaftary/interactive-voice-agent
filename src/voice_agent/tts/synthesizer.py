@@ -10,13 +10,22 @@ import asyncio
 import logging
 import os
 import tempfile
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple, TypedDict
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
+class CharacterAudioProfile(TypedDict):
+    voice: str
+    pitch_hz: int
+    rate_offset: int
+    name: str
+    persona: str
+    quote: str
+
+
 # Character audio profiles with authentic Cyberpunk prosody and Edge-TTS neural models
-CHARACTER_AUDIO_PROFILES = {
+CHARACTER_AUDIO_PROFILES: Dict[str, CharacterAudioProfile] = {
     "johnny-silverhand": {
         "voice": "en-US-RogerNeural",
         "pitch_hz": -14,
@@ -78,21 +87,18 @@ async def synthesize_speech_edge(
     if not clean_text:
         return None
 
-    profile = CHARACTER_AUDIO_PROFILES.get(voice_id, {
-        "voice": DEFAULT_EDGE_VOICE,
-        "pitch_hz": 0,
-        "rate_offset": 0,
-    })
-    edge_voice = profile.get("voice", DEFAULT_EDGE_VOICE)
+    # Unknown voice ids fall back to the default voice with neutral prosody.
+    profile = CHARACTER_AUDIO_PROFILES.get(voice_id)
+    edge_voice = profile["voice"] if profile is not None else DEFAULT_EDGE_VOICE
 
     # Cadence combined with character rate offset
-    base_rate_offset = profile.get("rate_offset", 0)
+    base_rate_offset = profile["rate_offset"] if profile is not None else 0
     cadence_offset = int(round((cadence - 1.0) * 100))
     total_rate = base_rate_offset + cadence_offset
     rate_str = f"{total_rate:+d}%"
 
     # Edge-TTS regex pitch format strictly requires ^[+-]\d+Hz$
-    pitch_hz = profile.get("pitch_hz", 0)
+    pitch_hz = profile["pitch_hz"] if profile is not None else 0
     pitch_str = f"{pitch_hz:+d}Hz"
 
     try:
