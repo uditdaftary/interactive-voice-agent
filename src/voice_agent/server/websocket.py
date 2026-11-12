@@ -187,9 +187,8 @@ async def handle_client_text_message(
             active_stt = stt_engine or getattr(manager, "stt_engine", None)
             utterance = acc.flush() if acc is not None else None
             fb = getattr(msg, "fallback_query", None)
-            clean_text = None
             if utterance and active_stt is not None:
-                clean_text = await process_stt_utterance(
+                await process_stt_utterance(
                     utterance, manager, active_stt, engine, fallback_query=fb
                 )
             elif fb and fb.strip():

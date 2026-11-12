@@ -313,7 +313,7 @@ class NarrationEngine:
             })
 
             # 6. Stream LLM tokens to Prompt Envelope
-            parser = PunctuationStreamParser()
+            parser = PunctuationStreamParser()  # noqa: F841  # wired in S3.3 (N4)
             accumulated_reply = ""
 
             await self.manager.broadcast_json(PromptEnvelopeMessage(
