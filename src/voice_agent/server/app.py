@@ -14,12 +14,14 @@ import wave
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from voice_agent.document.parser import DocumentParser
 from voice_agent.server.connection_manager import (
     ConnectionManager,
     default_connection_manager,
 )
+from voice_agent.server import security
 from voice_agent.server.narration import NarrationEngine, SearchFn, TtsFn
 from voice_agent.server.websocket import router as websocket_router
 from voice_agent.settings import Settings
@@ -120,6 +122,7 @@ def create_app(
     llm_client: Optional[Any] = None,
     tts: Optional[TtsFn] = None,
     search: Optional[SearchFn] = None,
+    allowed_hosts: Optional[list[str]] = None,
 ) -> FastAPI:
     """Create and configure the unified FastAPI application.
 
@@ -134,6 +137,7 @@ def create_app(
         tts: Async speech synthesizer for the default NarrationEngine. Defaults to `synthesize_sentence`.
         search: Async web search for the default NarrationEngine. Defaults to `search_web`.
         The last four are ignored when `narration_engine` is supplied.
+        allowed_hosts: Host header names the server answers to. Defaults to loopback only; tests add `testserver`.
 
     Returns:
         Configured FastAPI application instance.
@@ -144,6 +148,10 @@ def create_app(
         description="Unified local offline voice agent server and single-page HUD dashboard",
         lifespan=lifespan,
     )
+
+    # Last added is outermost, so a bad Host is rejected before the Origin check runs.
+    app.add_middleware(security.OriginCheckMiddleware)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts or list(security.DEFAULT_ALLOWED_HOSTS))
 
     # Store connection manager and narration engine in app state
     manager = connection_manager if connection_manager is not None else default_connection_manager
@@ -355,9 +363,16 @@ def create_app(
 app = create_app()
 
 
-def run(host: str = "0.0.0.0", port: int = 8000, reload: bool = False) -> None:
+def run(host: str = "127.0.0.1", port: int = 8000, reload: bool = False) -> None:
     """CLI runner helper for local execution."""
     import uvicorn
+
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        logger.warning(
+            "Binding to %s exposes the server beyond this machine. It has no login, and the Host allowlist "
+            "still only accepts loopback names.",
+            host,
+        )
     uvicorn.run("voice_agent.server.app:app", host=host, port=port, reload=reload)
 
 

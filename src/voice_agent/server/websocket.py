@@ -14,6 +14,7 @@ from voice_agent.server.connection_manager import (
     ConnectionManager,
     default_connection_manager,
 )
+from voice_agent.server.security import origin_allowed
 from voice_agent.server.schemas import (
     BargeInTriggerMessage,
     PlaybackControlMessage,
@@ -227,6 +228,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
       - Traps WebSocketDisconnect cleanly.
       - Deregisters connection without dangling tasks or memory leaks.
     """
+    # A WebSocket handshake is never preflighted, so any page could otherwise open this socket.
+    if not origin_allowed(websocket.headers.get("origin"), websocket.headers.get("host")):
+        logger.warning("Rejected WebSocket handshake from origin %r", websocket.headers.get("origin"))
+        await websocket.close(code=1008)
+        return
+
     manager: ConnectionManager = getattr(
         websocket.app.state, "connection_manager", default_connection_manager
     )
