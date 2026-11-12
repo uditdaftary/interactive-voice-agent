@@ -2,11 +2,11 @@
 import sys
 from pathlib import Path
 
+import uvicorn
+
 # Add project src to sys.path
 root_dir = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root_dir / "src"))
-
-import uvicorn
 
 
 def run_server(port: int = 8000):
