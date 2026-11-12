@@ -6,6 +6,7 @@ thread-safe broadcasting, and clean disconnection cleanup without memory leaks.
 
 from typing import Any, Callable, Dict, List, Optional, Union
 import asyncio
+import concurrent.futures
 import json
 import logging
 import threading
