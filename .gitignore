@@ -54,3 +54,6 @@ desktop.ini
 
 # Multi-Agent runtime scratch
 .agents/
+
+# Inter-agent scratch messages (orchestration protocol)
+AGENT_COMMS_*.txt
