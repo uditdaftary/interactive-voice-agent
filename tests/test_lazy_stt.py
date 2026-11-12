@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from voice_agent.server.app import create_app, ensure_stt_engine
@@ -73,6 +74,16 @@ async def test_ensure_stt_engine_builds_once_off_the_event_loop(counting_stt: ty
     assert len(counting_stt.built) == 1
     assert counting_stt.built[0] == {"fallback_mock": False}
     assert counting_stt.build_threads[0] != threading.get_ident()
+
+
+async def test_ensure_stt_engine_works_without_create_app(counting_stt: type[CountingSTT]) -> None:
+    # An app that only mounts the websocket router has no pre-made lock on app.state.
+    app = FastAPI()
+
+    first, second = await asyncio.gather(ensure_stt_engine(app), ensure_stt_engine(app))
+
+    assert first is second
+    assert len(counting_stt.built) == 1
 
 
 async def test_ensure_stt_engine_prefers_existing_engines(counting_stt: type[CountingSTT]) -> None:

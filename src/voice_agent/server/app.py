@@ -76,7 +76,11 @@ async def ensure_stt_engine(app: FastAPI) -> Any:
     engine = _stored_stt_engine(app)
     if engine is not None:
         return engine
-    async with app.state.stt_lock:
+    lock = getattr(app.state, "stt_lock", None)
+    if lock is None:
+        # No await between the check and the set, so two first callers cannot create two locks.
+        lock = app.state.stt_lock = asyncio.Lock()
+    async with lock:
         engine = _stored_stt_engine(app)
         if engine is None:
             from voice_agent.stt.recognizer import STTEngine
@@ -147,7 +151,6 @@ def create_app(
 
     # STT is built on first use by ensure_stt_engine; only an injected or pre-set engine is stored here.
     app.state.stt_engine = stt_engine if stt_engine is not None else manager.stt_engine
-    app.state.stt_lock = asyncio.Lock()
 
     # Include WebSocket streaming router at /ws
     app.include_router(websocket_router)
