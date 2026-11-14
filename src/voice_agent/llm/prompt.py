@@ -53,16 +53,16 @@ def _fit_lines(lines: Sequence[str], max_tokens: int) -> list[str]:
     return fitted
 
 
-def _render_block(opening: str, closing: str, note: str | None, lines: Sequence[str], max_tokens: int) -> str:
+def _render_block(opening: str, closing: str, note: str, lines: Sequence[str], max_tokens: int) -> str:
     """The block with as many lines as fit in `max_tokens`; "" when there is nothing to show or no room.
 
     Truncation only ever shortens the lines between the tags, so a closing tag is never lost.
     """
-    framing = [opening, *([note] if note else []), closing]
+    framing = [opening, note, closing]
     body = _fit_lines(lines, max_tokens - estimate_tokens("\n".join(framing)) - 1)
     if not body:
         return ""
-    return "\n".join([opening, *([note] if note else []), *body, closing])
+    return "\n".join([opening, note, *body, closing])
 
 
 def build_messages(
@@ -103,7 +103,7 @@ def build_messages(
     flag = "true" if authoritative else "false"
     specs = (
         (f'<book_passages authoritative="{flag}">', "</book_passages>", FENCE_NOTE, [f"- {line}" for line in clean_passages]),
-        ("<current_sentence>", "</current_sentence>", None, [clean_sentence] if clean_sentence else []),
+        ("<current_sentence>", "</current_sentence>", FENCE_NOTE, [clean_sentence] if clean_sentence else []),
         ("<web_results>", "</web_results>", FENCE_NOTE, clean_web),
     )
     sections: list[str] = []
