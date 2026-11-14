@@ -385,6 +385,16 @@ class UserSpeechTranscriptMessage(BaseProtocolMessage):
     )
 
 
+class ErrorMessage(BaseProtocolMessage):
+    """Reply to a client message that was rejected. The session stays open."""
+
+    type: Literal["error"] = "error"
+    detail: str = Field(
+        ...,
+        description="Short reason, never an echo of the client's payload",
+    )
+
+
 ServerMessage = Union[
     StateSyncMessage,
     VADEventMessage,
@@ -393,6 +403,7 @@ ServerMessage = Union[
     PromptEnvelopeMessage,
     TelemetryMessage,
     UserSpeechTranscriptMessage,
+    ErrorMessage,
 ]
 
 
@@ -401,30 +412,42 @@ ServerMessage = Union[
 # ============================================================================
 
 
-def parse_client_message(raw: Union[str, bytes, Dict[str, Any]]) -> Optional[ClientMessage]:
+class InvalidClientMessage(ValueError):
+    """A client message that cannot be dispatched. `str(exc)` is a short reason safe to send back and to log."""
+
+
+def _first_validation_problem(msg_type: str, error: ValidationError) -> InvalidClientMessage:
+    # loc and msg only: `input` (and msg for some validators) would echo what the client sent.
+    problem = error.errors(include_url=False, include_context=False, include_input=False)[0]
+    field = ".".join(str(part) for part in problem["loc"]) or "message"
+    return InvalidClientMessage(f"invalid {msg_type}: {field}: {problem['msg']}")
+
+
+def parse_client_message(raw: Union[str, bytes, Dict[str, Any]]) -> ClientMessage:
     """Parse raw client message payload into a typed client message model.
 
     Supports canonical snake_case types as well as common uppercase aliases.
-    Returns None if payload cannot be parsed or message type is unrecognized.
+    Raises InvalidClientMessage when the payload is not JSON, not an object, has an unknown type, or
+    fails a field constraint. The reason never contains the payload text.
     """
     if isinstance(raw, (bytes, bytearray)):
         try:
             raw = raw.decode("utf-8")
         except UnicodeDecodeError:
-            return None
+            raise InvalidClientMessage("message is not valid UTF-8") from None
 
     if isinstance(raw, str):
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
-            return None
+            raise InvalidClientMessage("message is not valid JSON") from None
     elif isinstance(raw, dict):
         payload = dict(raw)
     else:
-        return None
+        raise InvalidClientMessage("message must be a JSON object")
 
     if not isinstance(payload, dict):
-        return None
+        raise InvalidClientMessage("message must be a JSON object")
 
     msg_type = str(payload.get("type", "")).strip().lower()
 
@@ -433,51 +456,41 @@ def parse_client_message(raw: Union[str, bytes, Dict[str, Any]]) -> Optional[Cli
             voice_id = payload.get("voice_id")
             if voice_id is None:
                 voice_id = payload.get("voice", "")
-            return SelectVoiceMessage(voice_id=str(voice_id))
+            return SelectVoiceMessage.model_validate({"voice_id": voice_id})
 
         if msg_type in ("set_mic_source", "switch_mic_source", "setmicsource"):
             source = payload.get("source") or payload.get("mic_source") or "browser"
-            return SetMicSourceMessage.model_validate({"source": str(source)})  # validated at runtime, typed as a Literal
+            return SetMicSourceMessage.model_validate({"source": source})
 
         if msg_type in ("barge_in_trigger", "barge_in", "bargeintrigger"):
             return BargeInTriggerMessage()
 
         if msg_type in ("set_cadence", "setcadence"):
-            cadence_val = float(payload.get("cadence", 1.0))
-            return SetCadenceMessage(cadence=cadence_val)
+            return SetCadenceMessage.model_validate({"cadence": payload.get("cadence", 1.0)})
 
         if msg_type in ("playback_control", "playbackcontrol", "start_narration", "pause_narration", "resume_narration"):
             action = payload.get("action")
             if not action:
-                if msg_type == "start_narration":
-                    action = "resume"
-                elif msg_type == "pause_narration":
-                    action = "pause"
-                elif msg_type == "resume_narration":
-                    action = "resume"
-                else:
-                    return None
-            return PlaybackControlMessage.model_validate({"action": str(action)})
+                action = {"start_narration": "resume", "pause_narration": "pause", "resume_narration": "resume"}.get(msg_type)
+            if not action:
+                raise InvalidClientMessage("invalid playback_control: action: Field required")
+            return PlaybackControlMessage.model_validate({"action": action})
 
         if msg_type in ("query_interruption", "user_query", "ask_question", "query"):
-            query = str(payload.get("query") or payload.get("text") or "").strip()
-            if query:
-                return QueryInterruptionMessage(query=query)
-            return None
+            return QueryInterruptionMessage.model_validate({"query": payload.get("query") or payload.get("text") or ""})
 
         if msg_type in ("voice_end", "voiceend", "speech_end", "speechend", "voice_stop"):
             return VoiceEndMessage()
 
         if msg_type in ("update_config", "set_config", "configure_llm"):
-            return UpdateLLMConfigMessage(
-                provider=payload.get("provider"),
-                base_url=payload.get("base_url"),
-                api_key=payload.get("api_key"),
-                model=payload.get("model"),
-                web_search_enabled=payload.get("web_search_enabled"),
+            return UpdateLLMConfigMessage.model_validate(
+                {
+                    key: payload.get(key)
+                    for key in ("provider", "base_url", "api_key", "model", "web_search_enabled")
+                }
             )
 
-    except Exception:  # noqa: BLE001  # S3.3 RC4
-        return None
+    except ValidationError as error:
+        raise _first_validation_problem(msg_type, error) from None
 
-    return None
+    raise InvalidClientMessage("unknown message type")

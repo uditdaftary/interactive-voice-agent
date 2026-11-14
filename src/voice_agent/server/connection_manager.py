@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from voice_agent.server.schemas import (
     BargeInEventMessage,
+    ErrorMessage,
     StateSyncMessage,
 )
 
@@ -275,6 +276,11 @@ class ConnectionManager:
         """Send current state sync snapshot to a specific client connection."""
         msg = self.get_state_sync_message()
         await websocket.send_text(msg.model_dump_json())
+
+    async def send_error(self, websocket: WebSocket, detail: str) -> None:
+        """Tell one client its last message was rejected. `detail` must not echo the client's payload."""
+        message = ErrorMessage(detail=detail)
+        await asyncio.wait_for(websocket.send_text(message.model_dump_json()), timeout=SEND_TIMEOUT_S)
 
     async def _fan_out(self, send_one: Callable[[WebSocket], Awaitable[None]]) -> None:
         """Run `send_one` for every client concurrently; drop any client whose send fails or stalls.

@@ -290,11 +290,13 @@ def test_malformed_client_payload_resilience(isolated_app) -> None:
         with client.websocket_connect("/ws") as ws:
             _ = ws.receive_json()
 
-            # Send raw non-JSON text
+            # Send raw non-JSON text: rejected with an error reply
             ws.send_text("MALFORMED NON-JSON STRING")
+            assert ws.receive_json()["type"] == "error"
 
-            # Send unrecognized JSON message
+            # Send unrecognized JSON message: rejected with an error reply
             ws.send_json({"type": "non_existent_op_code", "foo": "bar"})
+            assert ws.receive_json()["type"] == "error"
 
             # Connection remains open and responsive to valid action
             ws.send_json({"type": "set_cadence", "cadence": 1.1})

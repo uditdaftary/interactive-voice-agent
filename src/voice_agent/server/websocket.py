@@ -6,7 +6,7 @@ and raw binary audio frames.
 
 import asyncio
 import time
-from typing import Optional, Any
+from typing import Any, Mapping, Optional
 import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -23,6 +23,7 @@ from voice_agent.server.schemas import (
     SetCadenceMessage,
     SetMicSourceMessage,
     UpdateLLMConfigMessage,
+    InvalidClientMessage,
     UserSpeechTranscriptMessage,
     VoiceEndMessage,
     parse_client_message,
@@ -116,9 +117,12 @@ async def handle_client_text_message(
     stt_engine: Optional[Any] = None,
 ) -> None:
     """Parse and dispatch an incoming client JSON action message."""
-    msg = parse_client_message(text)
-    if msg is None:
-        logger.debug(f"Unrecognized or unparseable client payload: {text[:100]}")
+    try:
+        msg = parse_client_message(text)
+    except InvalidClientMessage as exc:
+        # The reason names the field, never the value, so neither the log nor the reply echoes the payload.
+        logger.debug("Rejected client message: %s", exc)
+        await manager.send_error(websocket, str(exc))
         return
 
     if isinstance(msg, SelectVoiceMessage):
@@ -212,6 +216,34 @@ async def handle_client_text_message(
                     asyncio.create_task(engine.handle_user_interruption(clean_fb))  # noqa: RUF006  # S2.1
 
 
+async def _handle_frame(
+    raw_msg: Mapping[str, Any],
+    websocket: WebSocket,
+    manager: ConnectionManager,
+    engine: Optional[Any],
+    stt_engine: Optional[Any],
+) -> None:
+    """Dispatch one received text or binary frame."""
+    # Text frame (JSON protocol actions)
+    if raw_msg.get("text") is not None:
+        await handle_client_text_message(raw_msg["text"], websocket, manager, engine, stt_engine)
+
+    # Binary frame (24kHz / 16kHz 16-bit PCM from browser mic)
+    elif raw_msg.get("bytes") is not None:
+        pcm_data = raw_msg["bytes"]
+        manager.on_audio_frame(pcm_data)
+        acc = getattr(manager, "accumulator", None)
+        if acc is not None:
+            if manager.state in ("LISTENING", "BARGE_IN"):
+                utterance = acc.feed(pcm_data)
+                if utterance:
+                    active_stt = stt_engine or await _ensure_stt_engine(websocket.app)
+                    await process_stt_utterance(utterance, manager, active_stt, engine)
+            else:
+                # Feed pre-roll buffer continuously during NARRATING so initial consonants are never lost
+                acc.feed(pcm_data)
+
+
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     """Bi-directional WebSocket streaming endpoint.
@@ -254,24 +286,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             if msg_type == "websocket.disconnect":
                 break
 
-            # Handle text frame (JSON protocol actions)
-            if "text" in raw_msg and raw_msg["text"] is not None:
-                await handle_client_text_message(raw_msg["text"], websocket, manager, engine, stt_engine)
-
-            # Handle binary frame (24kHz / 16kHz 16-bit PCM from browser mic)
-            elif "bytes" in raw_msg and raw_msg["bytes"] is not None:
-                pcm_data = raw_msg["bytes"]
-                manager.on_audio_frame(pcm_data)
-                acc = getattr(manager, "accumulator", None)
-                if acc is not None:
-                    if manager.state in ("LISTENING", "BARGE_IN"):
-                        utterance = acc.feed(pcm_data)
-                        if utterance:
-                            active_stt = stt_engine or await _ensure_stt_engine(websocket.app)
-                            await process_stt_utterance(utterance, manager, active_stt, engine)
-                    else:
-                        # Feed pre-roll buffer continuously during NARRATING so initial consonants are never lost
-                        acc.feed(pcm_data)
+            try:
+                await _handle_frame(raw_msg, websocket, manager, engine, stt_engine)
+            except WebSocketDisconnect:
+                raise
+            except Exception:  # noqa: BLE001  # one failing message must not end the session; logged below and answered
+                logger.exception("Error while handling a WebSocket message")
+                await manager.send_error(websocket, "internal error while handling the message")
 
     except WebSocketDisconnect:
         logger.info("Client disconnected via WebSocketDisconnect.")

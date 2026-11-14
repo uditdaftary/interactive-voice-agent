@@ -204,16 +204,19 @@ def test_upload_text_plain_body_rejected(rig: Rig) -> None:
     assert resp.status_code == 415
 
 
-def test_ws_invalid_values_ignored_without_state_change(rig: Rig) -> None:
-    """Each bad control message is dropped; the first reply on the socket is for the later valid one."""
+def test_ws_invalid_values_rejected_without_state_change(rig: Rig) -> None:
+    """Each bad control message gets an error reply and changes nothing."""
     with rig.client.websocket_connect("/ws") as ws:
         assert ws.receive_json()["type"] == "state_sync"
-        ws.send_json({"type": "set_cadence", "cadence": 99})
-        ws.send_json({"type": "select_voice", "voice_id": "Bad Voice!"})
-        ws.send_json({"type": "set_mic_source", "source": "quantum"})
-        ws.send_json({"type": "playback_control", "action": "explode"})
+        for bad in (
+            {"type": "set_cadence", "cadence": 99},
+            {"type": "select_voice", "voice_id": "Bad Voice!"},
+            {"type": "set_mic_source", "source": "quantum"},
+            {"type": "playback_control", "action": "explode"},
+        ):
+            ws.send_json(bad)
+            assert ws.receive_json()["type"] == "error"
         ws.send_json({"type": "set_cadence", "cadence": 1.2})
-
         reply = ws.receive_json()
 
     assert reply["type"] == "state_sync"
