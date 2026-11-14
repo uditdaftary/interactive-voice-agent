@@ -235,12 +235,15 @@ async def _handle_frame(
         acc = getattr(manager, "accumulator", None)
         if acc is not None:
             if manager.state in ("LISTENING", "BARGE_IN"):
+                acc.arm()
                 utterance = acc.feed(pcm_data)
                 if utterance:
                     active_stt = stt_engine or await _ensure_stt_engine(websocket.app)
                     await process_stt_utterance(utterance, manager, active_stt, engine)
             else:
-                # Feed pre-roll buffer continuously during NARRATING so initial consonants are never lost
+                # Disarmed, the accumulator only refreshes its pre-roll (so initial consonants are never lost)
+                # and drops any half-built turn: an hour of narration must not buffer an hour of microphone.
+                acc.disarm()
                 acc.feed(pcm_data)
 
 
