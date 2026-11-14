@@ -207,13 +207,13 @@ async def test_url_scheme_is_case_insensitive(base_url: str) -> None:
 
 
 async def test_non_ascii_api_key_is_error_and_never_raises(caplog: pytest.LogCaptureFixture) -> None:
-    client = make_client(lambda request: sse_response(sse("never")), api_key="kéy")
+    client = make_client(lambda request: sse_response(sse("never")), api_key="k\u00e9y")
 
     with caplog.at_level(logging.DEBUG):
         assert await collect(client) == [OFFLINE_LINE]
 
     assert client.status == "error"
-    assert "kéy" not in caplog.text
+    assert "k\u00e9y" not in caplog.text
 
 
 async def _parked_stream_client() -> tuple[LLMClient, ScriptedStream, asyncio.Event]:

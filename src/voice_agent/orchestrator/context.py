@@ -14,19 +14,14 @@ _CHATML_CONTROL_TOKENS = re.compile(
     re.IGNORECASE
 )
 
-# The fence tags build_messages wraps untrusted text in. Callers collapse whitespace after sanitising, which
-# turns "</book_passages\n>" into "</book_passages >", so a tag that is only blanks and well-formed attributes
-# must match whatever the whitespace between its parts (newlines, any number of blanks). Junk after the tag
-# name is different: a stray "<current_sentence" must not swallow the text after it, so a junk body only counts
-# when it closes with '>' on the same line within 200 characters and without another '<' in between. A bare tag
-# start followed only by whitespace up to the next '<' or the end of the text (a tag cut off) is removed too;
-# the lookahead lets one pass remove many of them, where matching only at the very end took one pass each.
-_FENCE_ATTRIBUTE = r'\s+[\w:.-]+\s*=\s*(?:"[^"<>]{0,200}"|\'[^\'<>]{0,200}\'|[^\s<>"\']{1,200})'
-_FENCE_TAGS = re.compile(
-    r'<\s*/?\s*(?:book_passages|current_sentence|web_results)\b'
-    r'(?:(?:' + _FENCE_ATTRIBUTE + r')*\s*/?>|[^<>\n]{0,200}>|\s*(?=<|$))',
-    re.IGNORECASE,
-)
+# The start of one of the fence tags build_messages wraps untrusted text in: "<", an optional "/", the name, with
+# blanks allowed between them. Only this is matched, never the rest of the tag. Matching tag bodies failed twice (a
+# body is any shape or length, and callers collapse whitespace after sanitising, which turns "</book_passages\n>"
+# into "</book_passages >"), and every shape added to the pattern left others that still got through. Without its "<"
+# and name, whatever follows cannot read as a fence tag, however it is spelled, and nothing after the start is
+# removed, so a stray "<current_sentence" cannot swallow text. No word boundary after the name: "</book_passages_>"
+# and "<web_resultsx" lose their start too, so no text that begins like a fence tag survives.
+_FENCE_TAG_START = re.compile(r'<\s*/?\s*(?:book_passages|current_sentence|web_results)', re.IGNORECASE)
 
 # Characters that show nothing but can sit inside a tag name, so "</book_\u00adpassages>" is not a tag to the
 # regexes yet reads as one to a model whose tokenizer drops or merges them. str.split() does not treat them as
@@ -49,14 +44,14 @@ def _strip_hidden(text: str) -> str:
 
 
 def sanitize_chatml(text: str) -> str:
-    """Strip ChatML / instruction delimiters, fence tags and hidden characters to prevent prompt injection."""
+    """Strip ChatML / instruction delimiters, fence tag starts and hidden characters to prevent prompt injection."""
     if not text:
         return ""
-    # Hidden characters go first so none can sit inside a tag name. Then repeat until nothing changes:
-    # removing an inner tag can join its neighbours into a new one ("</book_pas<web_results>sages>").
+    # Hidden characters go first so none can sit inside a tag name. Then repeat until nothing changes: removing a
+    # ChatML token or a tag start can join its neighbours into a new one ("<<web_results/book_passages>").
     cleaned = _strip_hidden(text)
     while True:
-        stripped = _FENCE_TAGS.sub("", _CHATML_CONTROL_TOKENS.sub("", cleaned))
+        stripped = _FENCE_TAG_START.sub("", _CHATML_CONTROL_TOKENS.sub("", cleaned))
         if stripped == cleaned:
             return cleaned.strip()
         cleaned = stripped
