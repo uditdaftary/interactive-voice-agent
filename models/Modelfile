@@ -1,0 +1,13 @@
+# Ollama Modelfile for the local "voice-agent" model.
+#
+# Build it from the repository root:
+#     ollama create voice-agent -f models/Modelfile
+# The GGUF is not in git (see .gitignore); keep it in this folder.
+#
+# No TEMPLATE override: Ollama reads the chat template embedded in the GGUF.
+# UNVERIFIED on this project's machine (Ollama is not installed there): that the installed Ollama loads this
+# architecture, that it picks up the embedded template, and how to switch thinking off for this model.
+# Check with `ollama run voice-agent "Say hello in one sentence."` before relying on it.
+# The client strips <think> blocks as a guard, but reasoning still spends the 300-token reply budget.
+FROM ./Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf
+PARAMETER num_ctx 2048
