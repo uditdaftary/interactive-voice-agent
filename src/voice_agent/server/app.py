@@ -13,7 +13,7 @@ from typing import Annotated, Any, Optional, Union
 import wave
 import numpy as np
 from scipy.signal import resample_poly
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
@@ -247,7 +247,7 @@ def create_app(
                 logger.warning("Rejected upload %r: %s", file.filename, exc)
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
         else:
-            if "application/json" not in request.headers.get("content-type", "").lower():
+            if not security.is_json_content_type(request.headers.get("content-type")):
                 raise HTTPException(status_code=415, detail="Send a multipart file or a JSON body.")
             try:
                 payload = TextDocumentRequest.model_validate_json(await request.body())
@@ -304,7 +304,7 @@ def create_app(
             },
         }
 
-    @app.post("/api/config")
+    @app.post("/api/config", dependencies=[Depends(security.require_json_content_type)])
     async def update_config(body: ConfigUpdateRequest):
         """Update runtime LLM endpoint, model, search grounding, or voice cadence.
 
@@ -340,14 +340,14 @@ def create_app(
             },
         }
 
-    @app.post("/api/ask")
+    @app.post("/api/ask", dependencies=[Depends(security.require_json_content_type)])
     async def ask_question(body: AskRequest):
         """Trigger an ad-hoc voice question interruption with live web search grounding."""
         eng: NarrationEngine = app.state.narration_engine
         asyncio.create_task(eng.handle_user_interruption(body.query))  # noqa: RUF006  # S2.1
         return {"status": "ok", "query": body.query}
 
-    @app.post("/api/narration/control")
+    @app.post("/api/narration/control", dependencies=[Depends(security.require_json_content_type)])
     async def narration_control(body: PlaybackControlRequest):
         """Programmatic control over narration (resume, pause, next, prev)."""
         action = body.action

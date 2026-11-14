@@ -3,11 +3,14 @@
 The server has no login, so the network boundary is the only protection: it must answer only to
 loopback Host names, and only to pages it served itself. A foreign page can POST a multipart form
 to localhost without a CORS preflight, and a WebSocket handshake is never preflighted, so both
-need an explicit Origin check.
+need an explicit Origin check. Likewise a form can send text/plain or urlencoded bodies without a
+preflight, so the JSON routes insist on a JSON Content-Type.
 """
 
+import re
 from urllib.parse import urlsplit
 
+from fastapi import HTTPException, Request
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -17,6 +20,19 @@ DEFAULT_ALLOWED_HOSTS: tuple[str, ...] = ("127.0.0.1", "localhost")
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
+# Same shape FastAPI itself treats as JSON: application/json or application/<vendor>+json.
+_JSON_MEDIA_TYPE = re.compile(r"^application/([\w.-]+\+)?json$")
+
+
+def is_json_content_type(content_type: str | None) -> bool:
+    """True for application/json (and +json types), ignoring parameters such as charset and case."""
+    return _JSON_MEDIA_TYPE.match((content_type or "").split(";", 1)[0].strip().lower()) is not None
+
+
+async def require_json_content_type(request: Request) -> None:
+    """Route dependency: reject any other Content-Type with 415 before the body is looked at."""
+    if not is_json_content_type(request.headers.get("content-type")):
+        raise HTTPException(status_code=415, detail="Content-Type must be application/json.")
 
 
 def origin_allowed(origin: str | None, host: str | None) -> bool:

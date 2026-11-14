@@ -78,8 +78,52 @@ def test_config_text_plain_rejected(rig: Rig) -> None:
 
     resp = rig.client.post("/api/config", content='{"model": "x"}', headers={"Content-Type": "text/plain"})
 
-    assert resp.status_code == 422
+    assert resp.status_code == 415
     assert rig.llm.get_config() == llm_before
+
+
+JSON_ROUTE_BODIES = {
+    "/api/config": '{"model": "x"}',
+    "/api/ask": '{"query": "Who is Lucy?"}',
+    "/api/narration/control": '{"action": "pause"}',
+}
+
+
+@pytest.mark.parametrize("path", list(JSON_ROUTE_BODIES))
+@pytest.mark.parametrize("content_type", ["text/plain", "application/x-www-form-urlencoded", "text/html", "application/jsonp"])
+def test_json_routes_reject_a_non_json_content_type_with_415(rig: Rig, path: str, content_type: str) -> None:
+    """A cross-site form can send these types without a preflight; the body must never be read as JSON."""
+    llm_before = rig.llm.get_config()
+    state_before = rig.manager.state
+
+    resp = rig.client.post(path, content=JSON_ROUTE_BODIES[path], headers={"Content-Type": content_type})
+
+    assert resp.status_code == 415
+    assert "application/json" in resp.json()["detail"]
+    assert rig.llm.get_config() == llm_before
+    assert rig.manager.state == state_before
+
+
+@pytest.mark.parametrize("path", list(JSON_ROUTE_BODIES))
+def test_json_routes_reject_a_missing_content_type_with_415(rig: Rig, path: str) -> None:
+    request = rig.client.build_request("POST", path, content=JSON_ROUTE_BODIES[path])
+    request.headers.pop("content-type", None)
+
+    assert rig.client.send(request).status_code == 415
+
+
+@pytest.mark.parametrize("path", list(JSON_ROUTE_BODIES))
+@pytest.mark.parametrize("content_type", ["application/json", "application/json; charset=utf-8", "Application/JSON", "application/vnd.api+json"])
+def test_json_routes_accept_json_media_types(rig: Rig, path: str, content_type: str) -> None:
+    resp = rig.client.post(path, content=JSON_ROUTE_BODIES[path], headers={"Content-Type": content_type})
+
+    assert resp.status_code == 200
+
+
+def test_content_type_is_checked_before_the_body(rig: Rig) -> None:
+    """An invalid body with the wrong type is a 415 (wrong kind of request), not a 422."""
+    assert rig.client.post("/api/config", content="not json", headers={"Content-Type": "text/plain"}).status_code == 415
+    assert rig.client.post("/api/config", content="not json", headers={"Content-Type": "application/json"}).status_code == 422
 
 
 @pytest.mark.parametrize("body", ["[1, 2]", '"text"', "null", "42"])
