@@ -3,6 +3,8 @@
 import asyncio
 import io
 import logging
+import random
+import struct
 import time
 import tracemalloc
 import zipfile
@@ -64,6 +66,49 @@ def two_chapter_epub(spine: list[str] | None) -> bytes:
         {"c1": "ch1.xhtml", "c2": "ch2.xhtml"},
         spine,
     )
+
+
+def central_header(data: bytes, member: str) -> int:
+    """Offset of a member's central-directory header, for crafting corrupt archives."""
+    position = 0
+    while True:
+        position = data.index(b"PK", position)
+        name_length = struct.unpack_from("<H", data, position + 28)[0]
+        if data[position + 46 : position + 46 + name_length] == member.encode():
+            return position
+        position += 4
+
+
+def with_future_zip_version(data: bytes) -> bytes:
+    """`zipfile` refuses to open an archive that needs a newer extractor (NotImplementedError)."""
+    crafted = bytearray(data)
+    crafted[central_header(data, "OEBPS/ch1.xhtml") + 6] = 0xF0
+    return bytes(crafted)
+
+
+def with_invalid_utf8_member_name(data: bytes) -> bytes:
+    """Flag a name as UTF-8, then break it: opening the archive raises UnicodeDecodeError."""
+    crafted = bytearray(data)
+    header = central_header(data, "OEBPS/ch1.xhtml")
+    crafted[header + 9] |= 0x08
+    crafted[header + 46] = 0xFF
+    return bytes(crafted)
+
+
+def with_unsupported_compression(data: bytes, member: str) -> bytes:
+    """Reading that one member raises NotImplementedError; the others are untouched."""
+    crafted = bytearray(data)
+    struct.pack_into("<H", crafted, central_header(data, member) + 10, 99)
+    return bytes(crafted)
+
+
+def with_misplaced_directory(data: bytes) -> bytes:
+    """A wrong central-directory offset shifts every member offset negative: reads raise ValueError."""
+    crafted = bytearray(data)
+    end_of_directory = data.rindex(b"PK")
+    offset = struct.unpack_from("<I", data, end_of_directory + 16)[0]
+    struct.pack_into("<I", crafted, end_of_directory + 16, offset + 5000)
+    return bytes(crafted)
 
 
 def test_epub_spine_order() -> None:
@@ -199,6 +244,68 @@ def test_corrupt_epub_raises(payload: bytes) -> None:
     assert "EPUB" in str(raised.value)
 
 
+@pytest.mark.parametrize("corrupt", [with_future_zip_version, with_invalid_utf8_member_name], ids=["future-version", "bad-utf8-name"])
+def test_epub_that_cannot_be_opened_raises_parse_error(corrupt) -> None:
+    """Stdlib zipfile raises NotImplementedError and UnicodeDecodeError here; neither may escape the parser."""
+    with pytest.raises(DocumentParseError, match="EPUB"):
+        DocumentParser.parse_bytes(corrupt(two_chapter_epub(["c1", "c2"])), "broken.epub")
+
+
+def test_epub_unsupported_compression_skips_only_that_chapter() -> None:
+    data = with_unsupported_compression(two_chapter_epub(["c1", "c2"]), "OEBPS/ch2.xhtml")
+
+    doc = DocumentParser.parse_bytes(data, "book.epub")
+
+    assert doc.sentences == ["Alpha one is here.", "Alpha two follows."]
+    assert len(doc.skipped_parts) == 1
+    assert "OEBPS/ch2.xhtml" in doc.skipped_parts[0]
+    assert "NotImplementedError" in doc.skipped_parts[0]
+
+
+def test_epub_with_misplaced_directory_reports_every_member_instead_of_raising() -> None:
+    """ValueError from a negative seek is per member too, so it lands in skipped_parts."""
+    doc = DocumentParser.parse_bytes(with_misplaced_directory(two_chapter_epub(["c1", "c2"])), "book.epub")
+
+    assert doc.sentences == []
+    assert any("ValueError" in reason for reason in doc.skipped_parts)
+
+
+def test_epub_random_corruption_only_ever_raises_parse_error() -> None:
+    """Seeded fuzz over a valid book: every outcome is a document or a DocumentParseError, never another type."""
+    valid = two_chapter_epub(["c1", "c2"])
+    rng = random.Random(20261114)
+    outcomes = {"document": 0, "parse_error": 0}
+
+    for _ in range(600):
+        data = bytearray(valid)
+        for _ in range(rng.randint(1, 6)):
+            data[rng.randrange(len(data))] = rng.randrange(256)
+        try:
+            DocumentParser.parse_bytes(bytes(data), "fuzz.epub")
+        except DocumentParseError:
+            outcomes["parse_error"] += 1
+        else:
+            outcomes["document"] += 1
+
+    assert outcomes["document"] > 0 and outcomes["parse_error"] > 0  # the seed exercises both paths
+
+
+def test_skipped_part_log_escapes_member_names_from_the_archive(caplog: pytest.LogCaptureFixture) -> None:
+    """A crafted href with a line break must not forge a log line."""
+    data = make_epub(
+        {"OEBPS/ch1.xhtml": chapter("Alpha one is here. Alpha two follows.")},
+        {"c1": "ch1.xhtml", "c2": "x%0A2026-11-14 CRITICAL forged.xhtml"},
+        ["c1", "c2"],
+    )
+
+    with caplog.at_level(logging.WARNING):
+        doc = DocumentParser.parse_bytes(data, "book.epub")
+
+    assert any("forged" in reason for reason in doc.skipped_parts)
+    assert caplog.records
+    assert not any(len(record.getMessage().splitlines()) > 1 for record in caplog.records)
+
+
 def test_corrupt_pdf_raises() -> None:
     with pytest.raises(DocumentParseError, match="PDF"):
         DocumentParser.parse_bytes(b"%PDF-1.4 this is not a pdf", "broken.pdf")
@@ -267,6 +374,28 @@ def test_corrupt_epub_upload_returns_422_and_ingests_no_error_text(client: TestC
 
     assert resp.status_code == 422
     assert "Failed to read" not in " ".join(client.get("/api/document").json()["sentences"])
+
+
+@pytest.mark.parametrize("corrupt", [with_future_zip_version, with_invalid_utf8_member_name], ids=["future-version", "bad-utf8-name"])
+def test_unopenable_epub_upload_returns_422_not_500(client: TestClient, corrupt) -> None:
+    title_before = client.get("/api/document").json()["title"]
+    data = corrupt(two_chapter_epub(["c1", "c2"]))
+
+    resp = client.post("/api/upload-document", files={"file": ("broken.epub", data, "application/epub+zip")})
+
+    assert resp.status_code == 422
+    assert "EPUB" in resp.json()["detail"]
+    assert client.get("/api/document").json()["title"] == title_before
+
+
+def test_epub_upload_with_one_bad_chapter_loads_the_rest(client: TestClient) -> None:
+    data = with_unsupported_compression(two_chapter_epub(["c1", "c2"]), "OEBPS/ch2.xhtml")
+
+    resp = client.post("/api/upload-document", files={"file": ("book.epub", data, "application/epub+zip")})
+
+    assert resp.status_code == 200
+    assert resp.json()["sentences"] == ["Alpha one is here.", "Alpha two follows."]
+    assert "OEBPS/ch2.xhtml" in resp.json()["skipped_parts"][0]
 
 
 @pytest.mark.parametrize("name", ["notes.docx", "run.exe", "page.html", "archive.tar.gz", "noextension"])

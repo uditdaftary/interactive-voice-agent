@@ -14,7 +14,6 @@ import re
 from typing import Callable, Dict, List, Optional
 from urllib.parse import unquote
 import zipfile
-import zlib
 
 import pypdf
 
@@ -118,7 +117,8 @@ def _build_document_content(raw_text: str, title: str, filename: str) -> Documen
 
 def _skip(skipped: List[str], filename: str, reason: str) -> None:
     """Record a part of the file that was not read: logged, and returned to the caller."""
-    logger.warning("%r: skipped %s", filename, reason)
+    # %r on the reason too: it can carry a member name from the archive, which is attacker-controlled text.
+    logger.warning("%r: skipped %r", filename, reason)
     skipped.append(reason)
 
 
@@ -240,7 +240,7 @@ def parse_epub_bytes(data: bytes, filename: str = "document.epub") -> DocumentCo
     """
     try:
         archive = zipfile.ZipFile(io.BytesIO(data), "r")
-    except (zipfile.BadZipFile, OSError, EOFError) as exc:
+    except Exception as exc:  # noqa: BLE001  # crafted zips raise BadZipFile, NotImplementedError, UnicodeDecodeError and more; callers see one type
         raise DocumentParseError(f"not a readable EPUB (zip) file: {type(exc).__name__}: {exc}") from exc
 
     skipped: List[str] = []
@@ -262,7 +262,7 @@ def parse_epub_bytes(data: bytes, filename: str = "document.epub") -> DocumentCo
             else:
                 try:
                     content = archive.read(info)
-                except (zipfile.BadZipFile, zlib.error, RuntimeError, NotImplementedError, OSError, EOFError) as exc:
+                except Exception as exc:  # noqa: BLE001  # the decompressors' exception set is open (BadZipFile, zlib.error, NotImplementedError, ValueError, ...); one bad member is skipped and listed
                     _skip(skipped, filename, f"{label} {name}: read failed: {type(exc).__name__}: {exc}")
                 else:
                     total_read += len(content)
