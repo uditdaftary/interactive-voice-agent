@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Annotated, Any, Optional, Union
 import wave
 import numpy as np
+from scipy.signal import resample_poly
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -39,31 +40,71 @@ import asyncio
 logger = logging.getLogger(__name__)
 
 
-def extract_audio_and_duration(content: bytes) -> tuple[bytes, float]:
-    """Extract raw PCM bytes and duration in seconds from audio content.
+AUDIO_EXTENSIONS = frozenset({".wav", ".pcm", ".raw"})
+STT_SAMPLE_RATE = 16000
+# Real audio sits well inside this. A header rate outside it is garbage, and it would otherwise
+# choose the resampler's filter length (memory) for us.
+MIN_UPLOAD_SAMPLE_RATE = 8000
+MAX_UPLOAD_SAMPLE_RATE = 192000
 
-    Supports RIFF WAV containers (converting stereo to mono PCM if needed)
-    or falls back to raw 16kHz 16-bit mono PCM.
+
+class UnsupportedAudio(ValueError):
+    """Valid audio in a form the transcriber does not take (maps to 415)."""
+
+
+class InvalidAudio(ValueError):
+    """Bytes that are not the audio they claim to be (maps to 400)."""
+
+
+def extract_audio(content: bytes) -> tuple[np.ndarray, int]:
+    """Decode an upload to mono int16 samples and the sample rate they were recorded at.
+
+    A RIFF/WAVE container must hold 16-bit PCM (channels are averaged). Anything else is raw
+    16-bit little-endian mono PCM at 16 kHz.
     """
     if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WAVE":
         try:
             with wave.open(io.BytesIO(content), "rb") as wf:
-                framerate = wf.getframerate()
-                n_frames = wf.getnframes()
-                channels = wf.getnchannels()
-                duration = round(n_frames / float(framerate), 3) if framerate > 0 else 0.0
-                raw_frames = wf.readframes(n_frames)
-                if channels > 1:
-                    pcm_np = np.frombuffer(raw_frames, dtype=np.int16)
-                    pcm_np = pcm_np.reshape(-1, channels).mean(axis=1).astype(np.int16)
-                    return pcm_np.tobytes(), duration
-                return raw_frames, duration
-        except Exception as exc:  # noqa: BLE001  # S3.3 RC4
-            logger.debug("Could not parse WAV container: %s", exc)
+                width, channels, rate = wf.getsampwidth(), wf.getnchannels(), wf.getframerate()
+                if width != 2:
+                    raise UnsupportedAudio(f"{width * 8}-bit WAV is not supported; send 16-bit PCM.")
+                if not MIN_UPLOAD_SAMPLE_RATE <= rate <= MAX_UPLOAD_SAMPLE_RATE:
+                    raise UnsupportedAudio(
+                        f"Sample rate {rate} Hz is outside {MIN_UPLOAD_SAMPLE_RATE}-{MAX_UPLOAD_SAMPLE_RATE} Hz."
+                    )
+                frames = wf.readframes(wf.getnframes())
+        except wave.Error as exc:
+            # The stdlib reader only decodes PCM; any other format tag is valid audio we cannot take.
+            if "unknown format" in str(exc):
+                raise UnsupportedAudio("Only 16-bit PCM WAV is supported.") from exc
+            raise InvalidAudio(f"Unreadable WAV file: {exc}") from exc
+        except EOFError as exc:
+            raise InvalidAudio("Unreadable WAV file: truncated header.") from exc
+        usable = len(frames) - len(frames) % (2 * channels)  # drop a trailing partial frame
+        samples = np.frombuffer(frames[:usable], dtype="<i2")
+        if channels > 1:
+            samples = samples.reshape(-1, channels).mean(axis=1).astype(np.int16)
+    else:
+        if len(content) % 2:
+            raise InvalidAudio("Raw PCM must be 16-bit samples, but the byte count is odd.")
+        samples, rate = np.frombuffer(content, dtype="<i2"), STT_SAMPLE_RATE
 
-    # Fallback: assume raw PCM 16-bit mono 16kHz (32000 bytes/sec)
-    duration = round(len(content) / 32000.0, 3)
-    return content, duration
+    if samples.size == 0:
+        raise InvalidAudio("The audio contains no samples.")
+    return samples, rate
+
+
+def prepare_transcription_audio(content: bytes) -> tuple[bytes, float]:
+    """Upload bytes to 16 kHz int16 PCM for the transcriber, plus the original duration in seconds.
+
+    CPU-bound (decode and resample): call it through `asyncio.to_thread`.
+    """
+    samples, rate = extract_audio(content)
+    duration_sec = round(len(samples) / rate, 3)
+    if rate != STT_SAMPLE_RATE:
+        resampled = resample_poly(samples.astype(np.float32), STT_SAMPLE_RATE, rate)
+        samples = np.clip(np.rint(resampled), -32768, 32767).astype(np.int16)
+    return samples.astype("<i2").tobytes(), duration_sec
 
 
 def _stored_stt_engine(app: FastAPI) -> Any:
@@ -338,13 +379,22 @@ def create_app(
         Returns:
             JSON with transcript, duration_sec, and status "ok".
         """
+        if Path(file.filename or "").suffix.lower() not in AUDIO_EXTENSIONS:
+            raise HTTPException(
+                status_code=415, detail=f"Unsupported file type. Allowed: {', '.join(sorted(AUDIO_EXTENSIONS))}."
+            )
         content = await file.read()
         if not content:
             raise HTTPException(status_code=400, detail="Uploaded audio file is empty.")
 
-        pcm_data, duration_sec = extract_audio_and_duration(content)
+        try:
+            pcm_data, duration_sec = await asyncio.to_thread(prepare_transcription_audio, content)
+        except UnsupportedAudio as exc:
+            raise HTTPException(status_code=415, detail=str(exc)) from exc
+        except InvalidAudio as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         stt = await ensure_stt_engine(app)
-        transcript = stt.transcribe(pcm_data)
+        transcript = await asyncio.to_thread(stt.transcribe, pcm_data)
         if transcript is None:
             transcript = ""
 
