@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import math
 import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
@@ -40,7 +42,10 @@ class SttBackend(Protocol):
 
 
 class WhisperBackend:
-    """faster-whisper on the CPU. The model loads on the first utterance that reaches it, and a failed load is retried on the next."""
+    """faster-whisper on the CPU. The model is loaded by `load()` (the STT build does this), or by the first transcribe if that
+    never ran. A failed load is not retried for LOAD_RETRY_COOLDOWN_S seconds, so a missing model does not stall every turn."""
+
+    LOAD_RETRY_COOLDOWN_S = 30.0
 
     def __init__(
         self,
@@ -48,14 +53,21 @@ class WhisperBackend:
         device: str = "cpu",
         compute_type: str = "int8",
         initial_prompt: str = "",
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.model_size = model_size
         self.device = device
         self.compute_type = compute_type
         self.initial_prompt = initial_prompt
+        self._clock = clock
         self._model: WhisperModel | None = None
+        self._failed_at: float | None = None
         # Guards the load only: transcribe runs on worker threads, and two first utterances must not load the model twice.
         self._load_lock = threading.Lock()
+
+    def load(self) -> bool:
+        """Loads the model now, if it is not loaded and the retry cooldown allows. Returns whether it is loaded."""
+        return self._load_model() is not None
 
     def transcribe(self, pcm16: bytes, sample_rate: int) -> Transcript:
         if not pcm16:
@@ -84,14 +96,25 @@ class WhisperBackend:
 
     def _load_model(self) -> WhisperModel | None:
         with self._load_lock:
-            if self._model is None:
-                try:
-                    from faster_whisper import WhisperModel
+            if self._model is not None:
+                return self._model
+            if self._failed_at is not None and self._clock() - self._failed_at < self.LOAD_RETRY_COOLDOWN_S:
+                return None  # inside the cooldown: no attempt, no log
+            try:
+                from faster_whisper import WhisperModel
 
-                    logger.info("Loading faster-whisper %s on %s", self.model_size, self.device)
-                    self._model = WhisperModel(self.model_size, device=self.device, compute_type=self.compute_type)
-                except Exception as error:  # noqa: BLE001  # a missing model must not end the session; the next utterance retries
-                    logger.warning("faster-whisper %s did not load (%s); transcripts are unavailable until it loads", self.model_size, error)
+                logger.info("Loading faster-whisper %s on %s", self.model_size, self.device)
+                self._model = WhisperModel(self.model_size, device=self.device, compute_type=self.compute_type)
+            except Exception as error:  # noqa: BLE001  # a missing model must not end the session; the load is retried after the cooldown
+                self._failed_at = self._clock()
+                logger.warning(
+                    "faster-whisper %s did not load (%s); transcripts are unavailable, retrying in %d s",
+                    self.model_size,
+                    error,
+                    int(self.LOAD_RETRY_COOLDOWN_S),
+                )
+                return None
+            self._failed_at = None
             return self._model
 
     def _decode(self, model: WhisperModel, samples: np.ndarray) -> str:

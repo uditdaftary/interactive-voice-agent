@@ -102,16 +102,32 @@ def test_initial_prompt_env() -> None:
     assert load_settings({}).stt_initial_prompt == ""
 
 
-def test_failed_whisper_load_is_retried_on_the_next_utterance(fake_whisper: FakeWhisper, caplog: pytest.LogCaptureFixture) -> None:
+class FakeClock:
+    """A monotonic clock the test moves by hand."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_failed_whisper_load_waits_out_the_cooldown_then_retries(fake_whisper: FakeWhisper, caplog: pytest.LogCaptureFixture) -> None:
     fake_whisper.text = "hello there"
     fake_whisper.fail_loads = 1
     caplog.set_level(logging.WARNING, logger="voice_agent.stt.backends")
-    backend = WhisperBackend()
+    clock = FakeClock()
+    backend = WhisperBackend(clock=clock)
 
-    first = backend.transcribe(speech_like_pcm(), SAMPLE_RATE)
-    second = backend.transcribe(speech_like_pcm(), SAMPLE_RATE)
+    failed = backend.transcribe(speech_like_pcm(), SAMPLE_RATE)  # t=0: the load attempt fails
+    clock.now = 5.0
+    skipped = backend.transcribe(speech_like_pcm(), SAMPLE_RATE)  # inside the 30 s cooldown: no load attempt
+    clock.now = 31.0
+    retried = backend.transcribe(speech_like_pcm(), SAMPLE_RATE)  # past it: the load is retried and succeeds
 
-    assert first == Transcript("", STT_UNAVAILABLE)
-    assert second == Transcript("hello there", None)
+    assert failed == Transcript("", STT_UNAVAILABLE)
+    assert skipped == Transcript("", STT_UNAVAILABLE)
+    assert retried == Transcript("hello there", None)
     assert len(fake_whisper.constructions) == 2
-    assert any(record.levelno == logging.WARNING for record in caplog.records)
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1  # one per failed attempt, none for the skipped call
