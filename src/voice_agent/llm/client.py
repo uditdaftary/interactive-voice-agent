@@ -430,6 +430,56 @@ async def search_web(query: str, max_results: int = 8) -> str:
     return await asyncio.to_thread(search_web_sync, query, max_results)
 
 
+class ThinkFilter:
+    """Strips `<think>...</think>` blocks from a token stream, whatever the chunk boundaries.
+
+    Thinking is switched off at the source (Modelfile / request), so this is a guard: a model that
+    reasons anyway must not have its reasoning spoken. Only a suffix that could still grow into a
+    tag is held back, so text without a think block streams with no added latency.
+    """
+
+    _OPEN = "<think>"
+    _CLOSE = "</think>"
+
+    def __init__(self) -> None:
+        self._pending = ""  # text not yet decided: a possible partial tag
+        self._inside = False
+
+    @staticmethod
+    def _partial_tag_length(text: str, tag: str) -> int:
+        """Length of the longest suffix of `text` that is a proper prefix of `tag`."""
+        for length in range(min(len(text), len(tag) - 1), 0, -1):
+            if text.endswith(tag[:length]):
+                return length
+        return 0
+
+    def feed(self, chunk: str) -> str:
+        """Return the part of `chunk` that is safe to emit now."""
+        self._pending += chunk
+        emitted: list[str] = []
+        while True:
+            tag = self._CLOSE if self._inside else self._OPEN
+            index = self._pending.find(tag)
+            if index >= 0:
+                if not self._inside:
+                    emitted.append(self._pending[:index])
+                self._pending = self._pending[index + len(tag):]
+                self._inside = not self._inside
+                continue
+            settled = len(self._pending) - self._partial_tag_length(self._pending, tag)
+            if not self._inside:
+                emitted.append(self._pending[:settled])
+            self._pending = self._pending[settled:]
+            return "".join(emitted)
+
+    def flush(self) -> str:
+        """End of stream: release a held partial tag, or drop it with an unclosed think block."""
+        tail = "" if self._inside else self._pending
+        self._pending = ""
+        self._inside = False
+        return tail
+
+
 def _delta_content(data: str) -> str:
     """Text carried by one SSE `data:` payload; "" for anything that carries none."""
     try:
@@ -520,6 +570,7 @@ class LLMClient:
         outcome: LlmOutcome = "interrupted"
         detail = ""
         spoke = False  # any non-blank text reached the consumer
+        think_filter = ThinkFilter()
         try:
             if self.provider in _NO_MODEL_PROVIDERS:
                 outcome, detail = "offline", f"provider {self.provider!r} has no model"
@@ -543,10 +594,14 @@ class LLMClient:
                                     data = line[5:].strip()
                                     if data == "[DONE]":
                                         break
-                                    visible = _delta_content(data)
+                                    visible = think_filter.feed(_delta_content(data))
                                     if visible:
                                         spoke = spoke or bool(visible.strip())
                                         yield visible
+                                tail = think_filter.flush()
+                                if tail:
+                                    spoke = spoke or bool(tail.strip())
+                                    yield tail
                                 outcome = "ok" if spoke else "error"
                                 detail = "" if spoke else f"HTTP {response.status_code}, no content"
                             else:

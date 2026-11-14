@@ -7,12 +7,12 @@ and bypasses httpcore, which is why timeouts are asserted on the request extensi
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
 import httpx
 import pytest
 
-from voice_agent.llm.client import OFFLINE_LINE, LLMClient, LlmOutcome
+from voice_agent.llm.client import OFFLINE_LINE, LLMClient, LlmOutcome, ThinkFilter
 
 MESSAGES = [{"role": "user", "content": "Who is the narrator?"}]
 SECRET = "sk-secret-123"
@@ -328,6 +328,37 @@ async def test_status_is_ok_before_any_call_and_recovers_after_failure() -> None
     assert client.status == "ok"
 
 
+# --- think blocks inside the stream ---
+
+
+async def test_think_block_never_reaches_the_consumer() -> None:
+    pieces = ["<thi", "nk>weigh the ", "options</th", "ink>Answer", " here."]
+    client = make_client(lambda request: sse_response(sse(*pieces)))
+
+    assert "".join(await collect(client)) == "Answer here."
+    assert client.status == "ok"
+
+
+async def test_think_only_reply_is_error() -> None:
+    client = make_client(lambda request: sse_response(sse("<think>", "I should say hello", "</think>")))
+
+    assert await collect(client) == [OFFLINE_LINE]
+    assert client.status == "error"
+
+
+async def test_unclosed_think_at_end_of_stream_is_dropped() -> None:
+    client = make_client(lambda request: sse_response(sse("Ready. ", "<think>trailing thoughts")))
+
+    assert "".join(await collect(client)) == "Ready. "
+    assert client.status == "ok"
+
+
+async def test_held_partial_tag_is_released_at_end_of_stream() -> None:
+    client = make_client(lambda request: sse_response(sse("a <")))
+
+    assert "".join(await collect(client)) == "a <"
+
+
 @pytest.mark.parametrize(
     "event",
     [
@@ -348,3 +379,56 @@ async def test_odd_events_are_skipped_not_raised(event: str) -> None:
 
     assert await collect(client) == ["real"]
     assert client.status == "ok"
+
+
+# --- ThinkFilter ---
+
+
+def run_filter(chunks: Sequence[str]) -> str:
+    think_filter = ThinkFilter()
+    return "".join(think_filter.feed(chunk) for chunk in chunks) + think_filter.flush()
+
+
+def test_think_split_across_chunks() -> None:
+    assert run_filter(["<thi", "nk>reasoning</th", "ink>Answer"]) == "Answer"
+
+
+def test_no_think_passthrough_has_no_added_latency() -> None:
+    think_filter = ThinkFilter()
+    # Each feed emits at once: nothing is held back unless it could start a tag.
+    assert think_filter.feed("Hello") == "Hello"
+    assert think_filter.feed(", world") == ", world"
+    assert think_filter.feed("!") == "!"
+    assert think_filter.flush() == ""
+
+
+def test_partial_tag_is_held_only_while_it_could_still_be_a_tag() -> None:
+    think_filter = ThinkFilter()
+    assert think_filter.feed("see <th") == "see "
+    assert think_filter.feed("ings") == "<things"  # not a tag after all: released with the new text
+    assert think_filter.flush() == ""
+
+
+def test_unclosed_think_dropped() -> None:
+    assert run_filter(["Hi. <think>never closed", " and more"]) == "Hi. "
+
+
+def test_lone_lt_passes() -> None:
+    assert run_filter(["a ", "<", " b"]) == "a < b"
+    think_filter = ThinkFilter()
+    assert think_filter.feed("a < b") == "a < b"
+
+
+def test_multiple_think_blocks_and_text_between() -> None:
+    assert run_filter(["<think>a</think>One<think>b</think> two"]) == "One two"
+
+
+def test_filter_is_reusable_after_flush() -> None:
+    think_filter = ThinkFilter()
+    think_filter.feed("<think>half")
+    assert think_filter.flush() == ""
+    assert think_filter.feed("fresh") == "fresh"
+
+
+def test_close_tag_split_one_character_at_a_time() -> None:
+    assert run_filter(list("<think>x</think>ok")) == "ok"
