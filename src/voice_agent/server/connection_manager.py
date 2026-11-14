@@ -4,7 +4,7 @@ Manages active client connections, session state synchronization,
 thread-safe broadcasting, and clean disconnection cleanup without memory leaks.
 """
 
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 import asyncio
 import concurrent.futures
 import json
@@ -15,10 +15,17 @@ from pydantic import BaseModel
 
 from voice_agent.server.schemas import (
     BargeInEventMessage,
+    ErrorMessage,
     StateSyncMessage,
 )
 
 logger = logging.getLogger(__name__)
+
+# A client that cannot take a frame within this long is dropped rather than holding up every broadcast.
+SEND_TIMEOUT_S = 2.0
+
+# Session states in which microphone audio is recorded as a user turn.
+LISTENING_STATES = frozenset({"LISTENING", "BARGE_IN"})
 
 
 class ConnectionManager:
@@ -101,6 +108,11 @@ class ConnectionManager:
     def set_state(self, state: str) -> None:
         with self._lock:
             self._state = state
+            if state not in LISTENING_STATES and self._accumulator is not None:
+                # Drop the half-recorded turn on every exit from LISTENING, here and not when the next
+                # audio frame happens to arrive: until then a stale tail could be transcribed together
+                # with the next question. Callers run on the event loop, like the accumulator's feed().
+                self._accumulator.disarm()
 
     @property
     def active_voice(self) -> str:
@@ -273,11 +285,16 @@ class ConnectionManager:
         msg = self.get_state_sync_message()
         await websocket.send_text(msg.model_dump_json())
 
-    async def broadcast_text(self, text: str) -> None:
-        """Broadcast a text payload to all active connections.
+    async def send_error(self, websocket: WebSocket, detail: str) -> None:
+        """Tell one client its last message was rejected. `detail` must not echo the client's payload."""
+        message = ErrorMessage(detail=detail)
+        await asyncio.wait_for(websocket.send_text(message.model_dump_json()), timeout=SEND_TIMEOUT_S)
 
-        Non-blocking concurrent fan-out using asyncio.gather to eliminate head-of-line
-        blocking, safely pruning disconnected clients via set comprehension.
+    async def _fan_out(self, send_one: Callable[[WebSocket], Awaitable[None]]) -> None:
+        """Run `send_one` for every client concurrently; drop any client whose send fails or stalls.
+
+        One slow client must not hold up the others (no head-of-line blocking), nor stall the caller
+        indefinitely, so each send gets SEND_TIMEOUT_S.
         """
         with self._lock:
             sockets = list(self.active_connections)
@@ -285,20 +302,38 @@ class ConnectionManager:
         if not sockets:
             return
 
-        async def _safe_send(ws: WebSocket) -> Optional[WebSocket]:
+        async def guarded_send(ws: WebSocket) -> Optional[WebSocket]:
             try:
-                await ws.send_text(text)
+                await asyncio.wait_for(send_one(ws), timeout=SEND_TIMEOUT_S)
                 return None
-            except Exception:  # noqa: BLE001  # S3.3 RC4
+            except Exception as exc:  # noqa: BLE001  # any failed or timed-out send drops that client; logged here
+                # Type name only: the message of a send error can carry peer addresses or payload fragments.
+                logger.info("Dropping WebSocket client after failed send: %s", type(exc).__name__)
                 return ws
 
-        results = await asyncio.gather(*[_safe_send(ws) for ws in sockets], return_exceptions=False)
-        dead_sockets = [ws for ws in results if ws is not None]
+        results = await asyncio.gather(*[guarded_send(ws) for ws in sockets])
+        dead_set = {ws for ws in results if ws is not None}
 
-        if dead_sockets:
+        if dead_set:
             with self._lock:
-                dead_set = set(dead_sockets)
                 self.active_connections = [ws for ws in self.active_connections if ws not in dead_set]
+            await asyncio.gather(*[self._close_dropped(ws) for ws in dead_set])
+
+    @staticmethod
+    async def _close_dropped(ws: WebSocket) -> None:
+        """Close a dropped client so its page sees the loss and reconnects.
+
+        Without this the socket is merely forgotten: its endpoint loop keeps answering that client's
+        messages, but it never receives another broadcast, so its HUD would freeze silently.
+        """
+        try:
+            await asyncio.wait_for(ws.close(code=1011), timeout=SEND_TIMEOUT_S)
+        except Exception as exc:  # noqa: BLE001  # best effort on a client that is already failing; logged
+            logger.debug("Closing a dropped WebSocket client failed: %s", type(exc).__name__)
+
+    async def broadcast_text(self, text: str) -> None:
+        """Broadcast a text payload to all active connections."""
+        await self._fan_out(lambda ws: ws.send_text(text))
 
     async def broadcast_json(self, message: Union[BaseModel, Dict[str, Any], str]) -> None:
         """Serialize and broadcast a JSON message to all active clients."""
@@ -315,26 +350,7 @@ class ConnectionManager:
 
     async def broadcast_bytes(self, data: bytes) -> None:
         """Broadcast raw binary PCM audio frame to all active clients."""
-        with self._lock:
-            sockets = list(self.active_connections)
-
-        if not sockets:
-            return
-
-        async def _safe_send(ws: WebSocket) -> Optional[WebSocket]:
-            try:
-                await ws.send_bytes(data)
-                return None
-            except Exception:  # noqa: BLE001  # S3.3 RC4
-                return ws
-
-        results = await asyncio.gather(*[_safe_send(ws) for ws in sockets], return_exceptions=False)
-        dead_sockets = [ws for ws in results if ws is not None]
-
-        if dead_sockets:
-            with self._lock:
-                dead_set = set(dead_sockets)
-                self.active_connections = [ws for ws in self.active_connections if ws not in dead_set]
+        await self._fan_out(lambda ws: ws.send_bytes(data))
 
     @staticmethod
     def _log_future_exception(fut: Any) -> None:
@@ -347,20 +363,28 @@ class ConnectionManager:
         except Exception as e:  # noqa: BLE001  # S3.3 RC4
             logger.debug(f"Error inspecting broadcast future: {e}")
 
-    def broadcast_json_sync(
-        self,
-        message: Union[BaseModel, Dict[str, Any], str],
-        loop: Optional[asyncio.AbstractEventLoop] = None,
-    ) -> None:
-        """Thread-safe synchronous broadcast helper for background audio threads."""
+    @staticmethod
+    def _usable_loop(loop: Optional[asyncio.AbstractEventLoop], caller: str) -> Optional[asyncio.AbstractEventLoop]:
+        """The loop to post to, or None after a WARNING: a dropped broadcast must never be silent."""
         target_loop = loop
         if target_loop is None:
             try:
                 target_loop = asyncio.get_running_loop()
             except RuntimeError:
                 target_loop = None
+        if target_loop is None or not target_loop.is_running() or target_loop.is_closed():
+            logger.warning("%s dropped a message: no running event loop to deliver it on.", caller)
+            return None
+        return target_loop
 
-        if target_loop is not None and target_loop.is_running() and not target_loop.is_closed():
+    def broadcast_json_sync(
+        self,
+        message: Union[BaseModel, Dict[str, Any], str],
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+    ) -> None:
+        """Thread-safe synchronous broadcast helper for background audio threads."""
+        target_loop = self._usable_loop(loop, "broadcast_json_sync")
+        if target_loop is not None:
             fut = asyncio.run_coroutine_threadsafe(self.broadcast_json(message), target_loop)
             fut.add_done_callback(self._log_future_exception)
 
@@ -370,14 +394,8 @@ class ConnectionManager:
         loop: Optional[asyncio.AbstractEventLoop] = None,
     ) -> None:
         """Thread-safe synchronous binary broadcast helper for background audio threads."""
-        target_loop = loop
-        if target_loop is None:
-            try:
-                target_loop = asyncio.get_running_loop()
-            except RuntimeError:
-                target_loop = None
-
-        if target_loop is not None and target_loop.is_running() and not target_loop.is_closed():
+        target_loop = self._usable_loop(loop, "broadcast_bytes_sync")
+        if target_loop is not None:
             fut = asyncio.run_coroutine_threadsafe(self.broadcast_bytes(data), target_loop)
             fut.add_done_callback(self._log_future_exception)
 

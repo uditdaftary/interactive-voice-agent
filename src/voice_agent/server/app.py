@@ -12,15 +12,26 @@ from pathlib import Path
 from typing import Annotated, Any, Optional, Union
 import wave
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from scipy.signal import resample_poly
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 from fastapi.staticfiles import StaticFiles
 
-from voice_agent.document.parser import DocumentParser
+from voice_agent.document.parser import DOCUMENT_EXTENSIONS, DocumentParseError, DocumentParser
 from voice_agent.server.connection_manager import (
     ConnectionManager,
     default_connection_manager,
 )
+from voice_agent.server import security
 from voice_agent.server.narration import NarrationEngine, SearchFn, TtsFn
+from voice_agent.server.schemas import (
+    AskRequest,
+    ConfigUpdateRequest,
+    PlaybackControlRequest,
+    TextDocumentRequest,
+)
 from voice_agent.server.websocket import router as websocket_router
 from voice_agent.settings import Settings, load_settings
 import asyncio
@@ -28,31 +39,71 @@ import asyncio
 logger = logging.getLogger(__name__)
 
 
-def extract_audio_and_duration(content: bytes) -> tuple[bytes, float]:
-    """Extract raw PCM bytes and duration in seconds from audio content.
+AUDIO_EXTENSIONS = frozenset({".wav", ".pcm", ".raw"})
+STT_SAMPLE_RATE = 16000
+# Real audio sits well inside this. A header rate outside it is garbage, and it would otherwise
+# choose the resampler's filter length (memory) for us.
+MIN_UPLOAD_SAMPLE_RATE = 8000
+MAX_UPLOAD_SAMPLE_RATE = 192000
 
-    Supports RIFF WAV containers (converting stereo to mono PCM if needed)
-    or falls back to raw 16kHz 16-bit mono PCM.
+
+class UnsupportedAudio(ValueError):
+    """Valid audio in a form the transcriber does not take (maps to 415)."""
+
+
+class InvalidAudio(ValueError):
+    """Bytes that are not the audio they claim to be (maps to 400)."""
+
+
+def extract_audio(content: bytes) -> tuple[np.ndarray, int]:
+    """Decode an upload to mono int16 samples and the sample rate they were recorded at.
+
+    A RIFF/WAVE container must hold 16-bit PCM (channels are averaged). Anything else is raw
+    16-bit little-endian mono PCM at 16 kHz.
     """
     if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WAVE":
         try:
             with wave.open(io.BytesIO(content), "rb") as wf:
-                framerate = wf.getframerate()
-                n_frames = wf.getnframes()
-                channels = wf.getnchannels()
-                duration = round(n_frames / float(framerate), 3) if framerate > 0 else 0.0
-                raw_frames = wf.readframes(n_frames)
-                if channels > 1:
-                    pcm_np = np.frombuffer(raw_frames, dtype=np.int16)
-                    pcm_np = pcm_np.reshape(-1, channels).mean(axis=1).astype(np.int16)
-                    return pcm_np.tobytes(), duration
-                return raw_frames, duration
-        except Exception as exc:  # noqa: BLE001  # S3.3 RC4
-            logger.debug("Could not parse WAV container: %s", exc)
+                width, channels, rate = wf.getsampwidth(), wf.getnchannels(), wf.getframerate()
+                if width != 2:
+                    raise UnsupportedAudio(f"{width * 8}-bit WAV is not supported; send 16-bit PCM.")
+                if not MIN_UPLOAD_SAMPLE_RATE <= rate <= MAX_UPLOAD_SAMPLE_RATE:
+                    raise UnsupportedAudio(
+                        f"Sample rate {rate} Hz is outside {MIN_UPLOAD_SAMPLE_RATE}-{MAX_UPLOAD_SAMPLE_RATE} Hz."
+                    )
+                frames = wf.readframes(wf.getnframes())
+        except wave.Error as exc:
+            # The stdlib reader only decodes PCM; any other format tag is valid audio we cannot take.
+            if "unknown format" in str(exc):
+                raise UnsupportedAudio("Only 16-bit PCM WAV is supported.") from exc
+            raise InvalidAudio(f"Unreadable WAV file: {exc}") from exc
+        except EOFError as exc:
+            raise InvalidAudio("Unreadable WAV file: truncated header.") from exc
+        usable = len(frames) - len(frames) % (2 * channels)  # drop a trailing partial frame
+        samples = np.frombuffer(frames[:usable], dtype="<i2")
+        if channels > 1:
+            samples = samples.reshape(-1, channels).mean(axis=1).astype(np.int16)
+    else:
+        if len(content) % 2:
+            raise InvalidAudio("Raw PCM must be 16-bit samples, but the byte count is odd.")
+        samples, rate = np.frombuffer(content, dtype="<i2"), STT_SAMPLE_RATE
 
-    # Fallback: assume raw PCM 16-bit mono 16kHz (32000 bytes/sec)
-    duration = round(len(content) / 32000.0, 3)
-    return content, duration
+    if samples.size == 0:
+        raise InvalidAudio("The audio contains no samples.")
+    return samples, rate
+
+
+def prepare_transcription_audio(content: bytes) -> tuple[bytes, float]:
+    """Upload bytes to 16 kHz int16 PCM for the transcriber, plus the original duration in seconds.
+
+    CPU-bound (decode and resample): call it through `asyncio.to_thread`.
+    """
+    samples, rate = extract_audio(content)
+    duration_sec = round(len(samples) / rate, 3)
+    if rate != STT_SAMPLE_RATE:
+        resampled = resample_poly(samples.astype(np.float32), STT_SAMPLE_RATE, rate)
+        samples = np.clip(np.rint(resampled), -32768, 32767).astype(np.int16)
+    return samples.astype("<i2").tobytes(), duration_sec
 
 
 def _stored_stt_engine(app: FastAPI) -> Any:
@@ -132,6 +183,7 @@ def create_app(
     llm_client: Optional[Any] = None,
     tts: Optional[TtsFn] = None,
     search: Optional[SearchFn] = None,
+    allowed_hosts: Optional[list[str]] = None,
 ) -> FastAPI:
     """Create and configure the unified FastAPI application.
 
@@ -146,6 +198,7 @@ def create_app(
         tts: Async speech synthesizer for the default NarrationEngine. Defaults to `synthesize_sentence`.
         search: Async web search for the default NarrationEngine. Defaults to `search_web`.
         The last four are ignored when `narration_engine` is supplied.
+        allowed_hosts: Host header names the server answers to. Defaults to loopback only; tests add `testserver`.
 
     Returns:
         Configured FastAPI application instance.
@@ -156,6 +209,10 @@ def create_app(
         description="Unified local offline voice agent server and single-page HUD dashboard",
         lifespan=lifespan,
     )
+
+    # Last added is outermost, so a bad Host is rejected before the Origin check runs.
+    app.add_middleware(security.OriginCheckMiddleware)
+    app.add_middleware(security.LoggingTrustedHostMiddleware, allowed_hosts=allowed_hosts or list(security.DEFAULT_ALLOWED_HOSTS))
 
     # Store connection manager and narration engine in app state
     # Resolved once, so the narration engine and the STT build read the same settings.
@@ -197,21 +254,34 @@ def create_app(
         eng: NarrationEngine = app.state.narration_engine
 
         if file is not None and file.filename:
+            if Path(file.filename).suffix.lower() not in DOCUMENT_EXTENSIONS:
+                raise HTTPException(
+                    status_code=415, detail=f"Unsupported file type. Allowed: {', '.join(sorted(DOCUMENT_EXTENSIONS))}."
+                )
             content = await file.read()
             if not content:
                 raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-            doc = DocumentParser.parse_bytes(content, filename=file.filename)
-        else:
             try:
-                data = await request.json()
-            except Exception:  # noqa: BLE001  # S3.3 RC4
-                raise HTTPException(status_code=400, detail="No file or JSON text payload provided.") from None
+                # Parsing is CPU-bound; on the event loop it would stall every WebSocket for its duration.
+                doc = await asyncio.to_thread(DocumentParser.parse_bytes, content, file.filename)
+            except DocumentParseError as exc:
+                logger.warning("Rejected upload %r: %s", file.filename, exc)
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        else:
+            if not security.is_json_content_type(request.headers.get("content-type")):
+                raise HTTPException(status_code=415, detail="Send a multipart file or a JSON body.")
+            try:
+                payload = TextDocumentRequest.model_validate_json(await request.body())
+            except ValidationError as exc:
+                raise RequestValidationError(exc.errors(include_url=False, include_context=False, include_input=False)) from None
+            doc = await asyncio.to_thread(DocumentParser.parse_text, payload.text, payload.title)
 
-            text = data.get("text", "").strip()
-            title = data.get("title", "Custom Document").strip()
-            if not text:
-                raise HTTPException(status_code=400, detail="Text field cannot be empty.")
-            doc = DocumentParser.parse_text(text, title=title)
+        if not doc.sentences:
+            # The old document stays loaded. Say what was skipped: it is usually why nothing was left.
+            rejection: dict[str, Any] = {"detail": "document contains no readable text"}
+            if doc.skipped_parts:
+                rejection["skipped_parts"] = doc.skipped_parts
+            return JSONResponse(rejection, status_code=422)
 
         eng.load_document(doc)
         return {
@@ -220,6 +290,7 @@ def create_app(
             "sentence_count": len(doc.sentences),
             "word_count": doc.total_words,
             "sentences": doc.sentences[:10],
+            "skipped_parts": doc.skipped_parts,
         }
 
     @app.get("/api/document")
@@ -254,29 +325,28 @@ def create_app(
             },
         }
 
-    @app.post("/api/config")
-    async def update_config(request: Request):
-        """Update runtime LLM endpoint, model, search grounding, or voice cadence."""
-        data = await request.json()
+    @app.post("/api/config", dependencies=[Depends(security.require_json_content_type)])
+    async def update_config(body: ConfigUpdateRequest):
+        """Update runtime LLM endpoint, model, search grounding, or voice cadence.
+
+        FastAPI validates the whole body before this runs, so an invalid field applies nothing.
+        """
         eng: NarrationEngine = app.state.narration_engine
         mgr: ConnectionManager = app.state.connection_manager
 
-        # Update LLM Client
         eng.llm.update_config(
-            base_url=data.get("base_url") or data.get("endpoint"),
-            api_key=data.get("api_key"),
-            provider=data.get("provider"),
-            model=data.get("model") or data.get("model_name"),
-            web_search_enabled=data.get("web_search_enabled"),
+            base_url=body.base_url,
+            api_key=body.api_key,
+            provider=body.provider,
+            model=body.model,
+            web_search_enabled=body.web_search_enabled,
         )
-
-        # Update Manager parameters if provided
-        if "active_voice" in data:
-            mgr.set_voice(data["active_voice"])
-        if "cadence" in data:
-            mgr.set_cadence(float(data["cadence"]))
-        if "mic_source" in data:
-            mgr.set_mic_source(data["mic_source"])
+        if body.active_voice is not None:
+            mgr.set_voice(body.active_voice)
+        if body.cadence is not None:
+            mgr.set_cadence(body.cadence)
+        if body.mic_source is not None:
+            mgr.set_mic_source(body.mic_source)
 
         # Broadcast state synchronization to clients
         await mgr.broadcast_json(mgr.get_state_sync_message())
@@ -291,23 +361,17 @@ def create_app(
             },
         }
 
-    @app.post("/api/ask")
-    async def ask_question(request: Request):
+    @app.post("/api/ask", dependencies=[Depends(security.require_json_content_type)])
+    async def ask_question(body: AskRequest):
         """Trigger an ad-hoc voice question interruption with live web search grounding."""
-        data = await request.json()
-        query = str(data.get("query", "")).strip()
-        if not query:
-            raise HTTPException(status_code=400, detail="Query cannot be empty.")
-
         eng: NarrationEngine = app.state.narration_engine
-        asyncio.create_task(eng.handle_user_interruption(query))  # noqa: RUF006  # S2.1
-        return {"status": "ok", "query": query}
+        asyncio.create_task(eng.handle_user_interruption(body.query))  # noqa: RUF006  # S2.1
+        return {"status": "ok", "query": body.query}
 
-    @app.post("/api/narration/control")
-    async def narration_control(request: Request):
+    @app.post("/api/narration/control", dependencies=[Depends(security.require_json_content_type)])
+    async def narration_control(body: PlaybackControlRequest):
         """Programmatic control over narration (resume, pause, next, prev)."""
-        data = await request.json()
-        action = str(data.get("action", "resume")).lower().strip()
+        action = body.action
         eng: NarrationEngine = app.state.narration_engine
         mgr: ConnectionManager = app.state.connection_manager
 
@@ -336,13 +400,22 @@ def create_app(
         Returns:
             JSON with transcript, duration_sec, and status "ok".
         """
+        if Path(file.filename or "").suffix.lower() not in AUDIO_EXTENSIONS:
+            raise HTTPException(
+                status_code=415, detail=f"Unsupported file type. Allowed: {', '.join(sorted(AUDIO_EXTENSIONS))}."
+            )
         content = await file.read()
         if not content:
             raise HTTPException(status_code=400, detail="Uploaded audio file is empty.")
 
-        pcm_data, duration_sec = extract_audio_and_duration(content)
+        try:
+            pcm_data, duration_sec = await asyncio.to_thread(prepare_transcription_audio, content)
+        except UnsupportedAudio as exc:
+            raise HTTPException(status_code=415, detail=str(exc)) from exc
+        except InvalidAudio as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         stt = await ensure_stt_engine(app)
-        transcript = stt.transcribe(pcm_data)
+        transcript = await asyncio.to_thread(stt.transcribe, pcm_data)
         if transcript is None:
             transcript = ""
 
@@ -377,9 +450,16 @@ def create_app(
 app = create_app()
 
 
-def run(host: str = "0.0.0.0", port: int = 8000, reload: bool = False) -> None:
+def run(host: str = "127.0.0.1", port: int = 8000, reload: bool = False) -> None:
     """CLI runner helper for local execution."""
     import uvicorn
+
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        logger.warning(
+            "Binding to %s exposes the server beyond this machine. It has no login, and the Host allowlist "
+            "still only accepts loopback names.",
+            host,
+        )
     uvicorn.run("voice_agent.server.app:app", host=host, port=port, reload=reload)
 
 

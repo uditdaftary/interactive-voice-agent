@@ -101,3 +101,152 @@ def test_transcribe_with_default_app(offline_stt: None) -> None:
         # With no Whisper model and no recognizer, the real engine reports an empty transcript.
         assert data["transcript"] == ""
         assert pytest.approx(data["duration_sec"], rel=1e-2) == 0.5
+
+
+# ---------------------------------------------------------------------------
+# Audio validation and resampling (M9)
+# ---------------------------------------------------------------------------
+
+
+class RecordingStt:
+    """Records every buffer it is asked to transcribe, as int16 samples."""
+
+    def __init__(self) -> None:
+        self.received: list[np.ndarray] = []
+
+    def transcribe(self, pcm: bytes, *args: object, **kwargs: object) -> str:
+        self.received.append(np.frombuffer(pcm, dtype=np.int16))
+        return "heard"
+
+
+def make_wav(samples: np.ndarray, *, sample_rate: int, channels: int = 1, sample_width: int = 2) -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(sample_width)
+        wf.setframerate(sample_rate)
+        wf.writeframes(samples.tobytes())
+    return buf.getvalue()
+
+
+@pytest.fixture
+def recording() -> tuple[TestClient, RecordingStt]:
+    stt = RecordingStt()
+    return TestClient(create_app(stt_engine=stt)), stt  # no lifespan needed: nothing here starts background work
+
+
+def post_audio(client: TestClient, name: str, content: bytes):
+    return client.post("/api/transcribe", files={"file": (name, content, "application/octet-stream")})
+
+
+def test_transcribe_44k_wav_resampled(recording: tuple[TestClient, RecordingStt]) -> None:
+    client, stt = recording
+    tone = (np.sin(2 * np.pi * 440 * np.arange(44100) / 44100) * 12000).astype(np.int16)
+
+    resp = post_audio(client, "tone.wav", make_wav(tone, sample_rate=44100))
+
+    assert resp.status_code == 200
+    assert resp.json()["duration_sec"] == 1.0
+    assert [len(received) for received in stt.received] == [16000]
+    # The 440 Hz tone survives the resample: 16 kHz output still has most of its energy.
+    assert np.abs(stt.received[0]).max() > 9000
+
+
+def test_transcribe_8khz_wav_resampled_up(recording: tuple[TestClient, RecordingStt]) -> None:
+    client, stt = recording
+
+    resp = post_audio(client, "phone.wav", make_wav(np.zeros(8000, dtype=np.int16), sample_rate=8000))
+
+    assert resp.status_code == 200
+    assert [len(received) for received in stt.received] == [16000]
+
+
+def test_transcribe_stereo_wav_is_downmixed(recording: tuple[TestClient, RecordingStt]) -> None:
+    client, stt = recording
+    left, right = np.full(1600, 1000, dtype=np.int16), np.full(1600, 3000, dtype=np.int16)
+    stereo = np.column_stack([left, right]).astype(np.int16)
+
+    resp = post_audio(client, "stereo.wav", make_wav(stereo, sample_rate=16000, channels=2))
+
+    assert resp.status_code == 200
+    assert len(stt.received[0]) == 1600
+    assert set(stt.received[0].tolist()) == {2000}
+
+
+def test_transcribe_8bit_wav_415(recording: tuple[TestClient, RecordingStt]) -> None:
+    client, stt = recording
+
+    resp = post_audio(client, "eight.wav", make_wav(np.full(1600, 128, dtype=np.uint8), sample_rate=16000, sample_width=1))
+
+    assert resp.status_code == 415
+    assert "16-bit" in resp.json()["detail"]
+    assert stt.received == []
+
+
+def test_transcribe_float_wav_415(recording: tuple[TestClient, RecordingStt]) -> None:
+    client, stt = recording
+    wav = bytearray(make_wav(np.zeros(1600, dtype=np.int16), sample_rate=16000))
+    wav[20:22] = (3).to_bytes(2, "little")  # format tag 3: IEEE float
+
+    resp = post_audio(client, "float.wav", bytes(wav))
+
+    assert resp.status_code == 415
+    assert stt.received == []
+
+
+@pytest.mark.parametrize("sample_rate", [100, 4_000_000_000])
+def test_transcribe_absurd_sample_rate_415(recording: tuple[TestClient, RecordingStt], sample_rate: int) -> None:
+    """A header rate must not pick the resampler's filter size (memory) for us."""
+    client, stt = recording
+    wav = bytearray(make_wav(np.zeros(1600, dtype=np.int16), sample_rate=16000))
+    wav[24:28] = sample_rate.to_bytes(4, "little")
+
+    resp = post_audio(client, "rate.wav", bytes(wav))
+
+    assert resp.status_code == 415
+    assert stt.received == []
+
+
+def test_transcribe_truncated_wav_400(recording: tuple[TestClient, RecordingStt]) -> None:
+    client, stt = recording
+    wav = make_wav(np.zeros(1600, dtype=np.int16), sample_rate=16000)
+
+    resp = post_audio(client, "cut.wav", wav[:30])
+
+    assert resp.status_code == 400
+    assert stt.received == []
+
+
+def test_transcribe_wav_without_samples_400(recording: tuple[TestClient, RecordingStt]) -> None:
+    client, _ = recording
+
+    assert post_audio(client, "silence.wav", make_wav(np.zeros(0, dtype=np.int16), sample_rate=16000)).status_code == 400
+
+
+def test_transcribe_odd_raw_400(recording: tuple[TestClient, RecordingStt]) -> None:
+    client, stt = recording
+
+    resp = post_audio(client, "odd.pcm", b"\x01\x00\x02")
+
+    assert resp.status_code == 400
+    assert "odd" in resp.json()["detail"]
+    assert stt.received == []
+
+
+def test_transcribe_raw_pcm_is_passed_through_unchanged(recording: tuple[TestClient, RecordingStt]) -> None:
+    client, stt = recording
+    raw = (np.arange(3200) % 200).astype(np.int16)
+
+    resp = post_audio(client, "mic.raw", raw.tobytes())
+
+    assert resp.status_code == 200
+    assert resp.json()["duration_sec"] == 0.2
+    assert stt.received[0].tolist() == raw.tolist()
+
+
+@pytest.mark.parametrize("name", ["voice.mp3", "voice.ogg", "voice", "voice.wav.exe"])
+def test_transcribe_unknown_extension_415(recording: tuple[TestClient, RecordingStt], name: str) -> None:
+    client, stt = recording
+
+    assert post_audio(client, name, b"\x00\x00" * 160).status_code == 415
+    assert stt.received == []

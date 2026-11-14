@@ -210,6 +210,7 @@ def test_e2e_word_cursor_tracking_and_resumption(e2e_system) -> None:
 def test_e2e_hybrid_mic_switching_without_corruption(e2e_system) -> None:
     """Test switching between browser, virtual, and host mic modes preserves stream integrity."""
     app = e2e_system["app"]
+    manager: ConnectionManager = e2e_system["manager"]
     bridge: HybridMicrophoneBridge = e2e_system["bridge"]
     virtual_dev: VirtualAudioDevice = e2e_system["virtual_device"]
 
@@ -220,11 +221,10 @@ def test_e2e_hybrid_mic_switching_without_corruption(e2e_system) -> None:
             # 1. Start in browser mode
             assert bridge.get_source() == "browser"
 
-            # 2. Switch to virtual mode via WebSocket client action
-            ws.send_json({"type": "set_mic_source", "source": "virtual"})
-            resp = ws.receive_json()
-            assert resp["type"] == "state_sync"
-            assert resp["mic_source"] == "virtual"
+            # 2. Switch to virtual mode. It is a headless-test source the HUD never offers, so the
+            # WebSocket protocol only accepts "browser" and "host"; drive it through the manager.
+            manager.set_mic_source("virtual")
+            assert manager.mic_source == "virtual"
             assert bridge.get_source() == "virtual"
 
             # Virtual mode generates frames
