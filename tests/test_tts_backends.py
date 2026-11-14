@@ -85,7 +85,14 @@ def test_build_tts_primary_first() -> None:
 
 def test_tts_primary_env() -> None:
     assert load_settings({"VOICE_AGENT_TTS_PRIMARY": "pyttsx3"}).tts_primary == "pyttsx3"
+    assert load_settings({"VOICE_AGENT_TTS_PRIMARY": "  Edge "}).tts_primary == "edge"
     assert load_settings({}).tts_primary == "edge"
+
+
+@pytest.mark.parametrize("bad", ["espeak", "", "edge,pyttsx3"])
+def test_tts_primary_rejects_unknown_names_at_load(bad: str) -> None:
+    with pytest.raises(ValueError, match="VOICE_AGENT_TTS_PRIMARY"):
+        load_settings({"VOICE_AGENT_TTS_PRIMARY": bad})
 
 
 class FakeCommunicate:

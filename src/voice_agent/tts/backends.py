@@ -244,6 +244,8 @@ _BACKEND_FACTORIES: dict[str, Callable[[], TtsBackend]] = {
     "edge": EdgeTtsBackend,
     "pyttsx3": Pyttsx3Backend,
 }
+# The names a setting may choose from; settings validates against this, so the two cannot drift apart.
+TTS_BACKEND_NAMES: tuple[str, ...] = tuple(_BACKEND_FACTORIES)
 
 
 def build_tts(primary: str = "edge") -> ChainedTts:
