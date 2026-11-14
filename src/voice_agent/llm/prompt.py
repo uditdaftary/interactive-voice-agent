@@ -16,11 +16,15 @@ _TURN_MAX_TOKENS = 256  # one history turn, and the question itself
 _ENVELOPE_ALLOWANCE = 30  # role markers and message framing around the system prompt
 _BLOCK_SEPARATOR_TOKENS = 2  # the blank line between blocks
 _CHARS_PER_TOKEN = 3.8  # what orchestrator.context.estimate_tokens charges per character
+# Untrusted text is cut to this many characters per budget token before it is sanitised. The prompt holds about
+# 4 characters per budget token, so the cut loses nothing real; it bounds the sanitiser's repeat-until-stable loop,
+# which a hostile megabyte of nested tag fragments would otherwise make quadratic.
+_RAW_CHARS_PER_BUDGET_TOKEN = 8
 
 
-def _one_line(text: str) -> str:
+def _one_line(text: str, raw_limit: int) -> str:
     """Sanitised text on a single line, so a passage cannot forge a list item or a `Question:` line."""
-    return " ".join(sanitize_chatml(text).split())
+    return " ".join(sanitize_chatml(text[:raw_limit]).split())
 
 
 def _clip(text: str, max_tokens: int) -> str:
@@ -84,9 +88,10 @@ def build_messages(
     are cut in order (passages, current sentence, web results), and the question is clamped to 256 tokens.
     """
     limit = budget_tokens - output_headroom - estimate_tokens(system_prompt) - _ENVELOPE_ALLOWANCE
+    raw_limit = _RAW_CHARS_PER_BUDGET_TOKEN * budget_tokens
 
     turns = [
-        {"role": turn["role"], "content": _clip(sanitize_chatml(turn["content"]), _TURN_MAX_TOKENS)}
+        {"role": turn["role"], "content": _clip(sanitize_chatml(turn["content"][:raw_limit]), _TURN_MAX_TOKENS)}
         for turn in history[-_HISTORY_TURNS:]
     ]
     history_cap = limit // 3  # history must never crowd out the grounding or the question
@@ -94,12 +99,12 @@ def build_messages(
         turns.pop(0)
     limit -= sum(estimate_tokens(turn["content"]) for turn in turns)
 
-    question_line = "Question: " + _clip(sanitize_chatml(question), _TURN_MAX_TOKENS)
+    question_line = "Question: " + _clip(sanitize_chatml(question[:raw_limit]), _TURN_MAX_TOKENS)
     limit -= estimate_tokens(question_line)
 
-    clean_passages = [line for line in (_one_line(passage) for passage in passages) if line]
-    clean_sentence = _one_line(current_sentence)
-    clean_web = [line for line in (" ".join(raw.split()) for raw in sanitize_chatml(web_results).splitlines()) if line]
+    clean_passages = [line for line in (_one_line(passage, raw_limit) for passage in passages) if line]
+    clean_sentence = _one_line(current_sentence, raw_limit)
+    clean_web = [line for line in (" ".join(raw.split()) for raw in sanitize_chatml(web_results[:raw_limit]).splitlines()) if line]
     flag = "true" if authoritative else "false"
     specs = (
         (f'<book_passages authoritative="{flag}">', "</book_passages>", FENCE_NOTE, [f"- {line}" for line in clean_passages]),

@@ -13,12 +13,17 @@ _CHATML_CONTROL_TOKENS = re.compile(
     re.IGNORECASE
 )
 
-# The fence tags build_messages wraps untrusted text in: opening (attributes allowed) or closing, loose
-# whitespace allowed. A tag must close with '>' on the same line within 200 characters and without another '<'
-# in between, so a stray "<current_sentence" cannot swallow the text after it; a bare tag start with nothing
-# after it but whitespace (a tag cut off at the end of the text) is removed too.
+# The fence tags build_messages wraps untrusted text in. Callers collapse whitespace after sanitising, which
+# turns "</book_passages\n>" into "</book_passages >", so a tag that is only blanks and well-formed attributes
+# must match whatever the whitespace between its parts (newlines, any number of blanks). Junk after the tag
+# name is different: a stray "<current_sentence" must not swallow the text after it, so a junk body only counts
+# when it closes with '>' on the same line within 200 characters and without another '<' in between. A bare tag
+# start followed only by whitespace up to the next '<' or the end of the text (a tag cut off) is removed too;
+# the lookahead lets one pass remove many of them, where matching only at the very end took one pass each.
+_FENCE_ATTRIBUTE = r'\s+[\w:.-]+\s*=\s*(?:"[^"<>]{0,200}"|\'[^\'<>]{0,200}\'|[^\s<>"\']{1,200})'
 _FENCE_TAGS = re.compile(
-    r'<\s*/?\s*(?:book_passages|current_sentence|web_results)\b(?:[^<>\n]{0,200}>|\s*$)',
+    r'<\s*/?\s*(?:book_passages|current_sentence|web_results)\b'
+    r'(?:(?:' + _FENCE_ATTRIBUTE + r')*\s*/?>|[^<>\n]{0,200}>|\s*(?=<|$))',
     re.IGNORECASE,
 )
 
