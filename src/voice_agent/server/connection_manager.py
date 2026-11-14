@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 # A client that cannot take a frame within this long is dropped rather than holding up every broadcast.
 SEND_TIMEOUT_S = 2.0
 
+# Session states in which microphone audio is recorded as a user turn.
+LISTENING_STATES = frozenset({"LISTENING", "BARGE_IN"})
+
 
 class ConnectionManager:
     """Thread-safe WebSocket connection and session state manager."""
@@ -105,6 +108,11 @@ class ConnectionManager:
     def set_state(self, state: str) -> None:
         with self._lock:
             self._state = state
+            if state not in LISTENING_STATES and self._accumulator is not None:
+                # Drop the half-recorded turn on every exit from LISTENING, here and not when the next
+                # audio frame happens to arrive: until then a stale tail could be transcribed together
+                # with the next question. Callers run on the event loop, like the accumulator's feed().
+                self._accumulator.disarm()
 
     @property
     def active_voice(self) -> str:

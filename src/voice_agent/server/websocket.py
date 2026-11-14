@@ -11,6 +11,7 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from voice_agent.server.connection_manager import (
+    LISTENING_STATES,
     ConnectionManager,
     default_connection_manager,
 )
@@ -234,15 +235,17 @@ async def _handle_frame(
         manager.on_audio_frame(pcm_data)
         acc = getattr(manager, "accumulator", None)
         if acc is not None:
-            if manager.state in ("LISTENING", "BARGE_IN"):
+            if manager.state in LISTENING_STATES:
                 acc.arm()
                 utterance = acc.feed(pcm_data)
                 if utterance:
                     active_stt = stt_engine or await _ensure_stt_engine(websocket.app)
                     await process_stt_utterance(utterance, manager, active_stt, engine)
             else:
-                # Disarmed, the accumulator only refreshes its pre-roll (so initial consonants are never lost)
-                # and drops any half-built turn: an hour of narration must not buffer an hour of microphone.
+                # Disarmed, the accumulator only refreshes its pre-roll (so initial consonants are never lost):
+                # an hour of narration must not buffer an hour of microphone. `set_state` already dropped any
+                # half-built turn when LISTENING ended; disarming here also covers an accumulator that was
+                # created (armed) while the session was not listening.
                 acc.disarm()
                 acc.feed(pcm_data)
 
