@@ -94,7 +94,7 @@ async def ensure_stt_engine(app: FastAPI) -> Any:
     if engine is not None:
         return engine
     build = getattr(app.state, "stt_build", None)
-    if build is None:
+    if build is None or build.done():
         # No await between the check and the set, so concurrent first callers share one task.
         build = app.state.stt_build = asyncio.create_task(_build_stt_engine(app))
     return await asyncio.shield(build)

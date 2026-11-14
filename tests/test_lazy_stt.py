@@ -206,3 +206,20 @@ def test_importing_the_app_module_does_not_load_whisper() -> None:
     )
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
+
+
+async def test_cancelled_build_task_is_replaced(counting_stt: type[CountingSTT]) -> None:
+    """A build cancelled before its first step never runs its finally, so it stays on app.state; the next caller must build anew."""
+    from voice_agent.server.app import _build_stt_engine
+
+    app = create_app(connection_manager=ConnectionManager())
+    stale = asyncio.create_task(_build_stt_engine(app))
+    stale.cancel()
+    await asyncio.sleep(0)
+    assert stale.cancelled()
+    app.state.stt_build = stale
+
+    engine = await ensure_stt_engine(app)
+
+    assert engine is app.state.stt_engine
+    assert len(counting_stt.built) == 1
