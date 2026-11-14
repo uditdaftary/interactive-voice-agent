@@ -268,7 +268,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     """
     # A WebSocket handshake is never preflighted, so any page could otherwise open this socket.
     if not origin_allowed(websocket.headers.get("origin"), websocket.headers.get("host")):
-        logger.warning("Rejected WebSocket handshake from origin %r", websocket.headers.get("origin"))
+        logger.warning(
+            "Rejected WebSocket handshake: Origin %.100r, Host %.100r",
+            websocket.headers.get("origin"),
+            websocket.headers.get("host"),
+        )
         await websocket.close(code=1008)
         return
 

@@ -18,7 +18,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from voice_agent.document.parser import DOCUMENT_EXTENSIONS, DocumentParseError, DocumentParser
 from voice_agent.server.connection_manager import (
@@ -201,7 +200,7 @@ def create_app(
 
     # Last added is outermost, so a bad Host is rejected before the Origin check runs.
     app.add_middleware(security.OriginCheckMiddleware)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts or list(security.DEFAULT_ALLOWED_HOSTS))
+    app.add_middleware(security.LoggingTrustedHostMiddleware, allowed_hosts=allowed_hosts or list(security.DEFAULT_ALLOWED_HOSTS))
 
     # Store connection manager and narration engine in app state
     manager = connection_manager if connection_manager is not None else default_connection_manager

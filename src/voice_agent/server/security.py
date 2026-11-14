@@ -7,13 +7,18 @@ need an explicit Origin check. Likewise a form can send text/plain or urlencoded
 preflight, so the JSON routes insist on a JSON Content-Type.
 """
 
+from collections.abc import Sequence
+import logging
 import re
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
 from starlette.datastructures import Headers
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
+
+logger = logging.getLogger(__name__)
 
 # Read through the module at call time so tests can widen it (TestClient sends Host: testserver).
 DEFAULT_ALLOWED_HOSTS: tuple[str, ...] = ("127.0.0.1", "localhost")
@@ -65,7 +70,41 @@ class OriginCheckMiddleware:
         if scope["type"] == "http" and scope["method"] not in _SAFE_METHODS:
             headers = Headers(scope=scope)
             if not origin_allowed(headers.get("origin"), headers.get("host")):
+                # Header values are attacker-controlled: %r escapes them and the precision caps their length.
+                # Method, path and the two headers only; never the body, which may hold an API key.
+                logger.warning(
+                    "Rejected cross-origin %s %.100r: Origin %.100r, Host %.100r",
+                    scope["method"],
+                    scope["path"],
+                    headers.get("origin"),
+                    headers.get("host"),
+                )
                 response = JSONResponse({"detail": "cross-origin request rejected"}, status_code=403)
                 await response(scope, receive, send)
                 return
         await self.app(scope, receive, send)
+
+
+class LoggingTrustedHostMiddleware(TrustedHostMiddleware):
+    """Starlette's Host allowlist, plus a WARNING for every request it turns away.
+
+    The parent has no rejection hook, so the app it wraps marks the scope as admitted. A request that
+    comes back without the mark was refused (400, or a redirect) by the parent.
+    """
+
+    def __init__(self, app: ASGIApp, allowed_hosts: Sequence[str] | None = None) -> None:
+        async def admitted(scope: Scope, receive: Receive, send: Send) -> None:
+            scope["host_admitted"] = True
+            await app(scope, receive, send)
+
+        super().__init__(admitted, allowed_hosts=allowed_hosts)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        await super().__call__(scope, receive, send)
+        if scope["type"] in ("http", "websocket") and not scope.get("host_admitted"):
+            logger.warning(
+                "Rejected %s request to %.100r: Host %.100r is not in the allowlist",
+                scope["type"],
+                scope["path"],
+                Headers(scope=scope).get("host"),
+            )
