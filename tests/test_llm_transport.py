@@ -432,3 +432,74 @@ def test_filter_is_reusable_after_flush() -> None:
 
 def test_close_tag_split_one_character_at_a_time() -> None:
     assert run_filter(list("<think>x</think>ok")) == "ok"
+
+
+# --- an API key must not cross the network in clear text (M13) ---
+
+
+def key_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in warnings_from(caplog) if "http" in r.getMessage() and "key" in r.getMessage()]
+
+
+def test_http_key_warns_once(caplog: pytest.LogCaptureFixture) -> None:
+    client = LLMClient(provider="ollama")
+    with caplog.at_level(logging.WARNING):
+        client.update_config(base_url="http://models.example.com/v1", api_key=SECRET)
+        client.update_config(base_url="http://models.example.com/v1", api_key=SECRET)
+        client.update_config(model="another-model")
+
+    (message,) = key_warnings(caplog)
+    assert "models.example.com" in message
+    assert SECRET not in caplog.text
+
+
+def test_http_key_warns_per_url(caplog: pytest.LogCaptureFixture) -> None:
+    client = LLMClient(provider="ollama", api_key=SECRET)
+    with caplog.at_level(logging.WARNING):
+        client.update_config(base_url="http://one.example.com/v1")
+        client.update_config(base_url="http://two.example.com/v1")
+
+    assert len(key_warnings(caplog)) == 2
+
+
+def test_http_key_warns_from_the_constructor(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING):
+        LLMClient(base_url="http://models.example.com:8080/v1", api_key=SECRET, provider="openai")
+
+    (message,) = key_warnings(caplog)
+    assert "models.example.com" in message
+    assert SECRET not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://api.example.com/v1",
+        "http://127.0.0.1:11434/v1",
+        "http://localhost:11434/v1",
+        "http://LOCALHOST:11434/v1",
+        "http://[::1]:11434/v1",
+        "http://[::1",  # unparseable: reported as an error outcome when used, not as a key warning
+        "",
+    ],
+)
+def test_no_key_warning_for_https_loopback_or_unparseable_urls(base_url: str, caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING):
+        LLMClient(base_url=base_url, api_key=SECRET, provider="ollama")
+
+    assert key_warnings(caplog) == []
+
+
+@pytest.mark.parametrize("api_key", ["", "local"])
+def test_no_key_warning_without_a_real_key(api_key: str, caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING):
+        LLMClient(base_url="http://models.example.com/v1", api_key=api_key, provider="ollama")
+
+    assert key_warnings(caplog) == []
+
+
+def test_no_key_warning_in_no_model_mode(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING):
+        LLMClient(base_url="http://models.example.com/v1", api_key=SECRET, provider="builtin")
+
+    assert key_warnings(caplog) == []

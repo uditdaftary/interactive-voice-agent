@@ -2,6 +2,7 @@ import json
 import re
 import asyncio
 import logging
+from urllib.parse import urlsplit
 from typing import Any, AsyncGenerator, List, Dict, Literal, Optional
 
 import httpx
@@ -24,6 +25,8 @@ _NO_MODEL_PROVIDERS = frozenset({"builtin", "local-builtin", "native", "none"})
 _TIMEOUT = httpx.Timeout(connect=2.0, read=30.0, write=10.0, pool=2.0)
 
 _DEFAULTS = Settings()  # one source of truth for the endpoint, model and key defaults
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 # Sentinel used to shield periods in abbreviations, decimals, and ellipses
 _SENTINEL = "\uE000"
@@ -521,6 +524,8 @@ class LLMClient:
         self.web_search_enabled = web_search_enabled
         self.status: LlmOutcome = "ok"
         self._transport = transport  # tests only: lets them script the server
+        self._warned_key_urls: set[str] = set()
+        self._warn_if_key_would_travel_in_clear()
 
     def update_config(
         self,
@@ -541,6 +546,28 @@ class LLMClient:
             self.model = model
         if web_search_enabled is not None:
             self.web_search_enabled = bool(web_search_enabled)
+        self._warn_if_key_would_travel_in_clear()
+
+    def _warn_if_key_would_travel_in_clear(self) -> None:
+        """One WARNING per base URL when a real API key is set and the endpoint is remote plain http (M13)."""
+        if not self.api_key or self.api_key == "local" or self.provider in _NO_MODEL_PROVIDERS:
+            return
+        if self.base_url in self._warned_key_urls:
+            return
+        try:
+            parts = urlsplit(self.base_url)
+        except ValueError:
+            # Unparseable: the request itself reports it as an "error" outcome, with the same URL.
+            logger.debug("Not checking the API key transport: %s is not a parseable URL", self.base_url)
+            return
+        host = (parts.hostname or "").lower()
+        if parts.scheme == "http" and host and host not in _LOOPBACK_HOSTS:
+            self._warned_key_urls.add(self.base_url)
+            logger.warning(
+                "An API key is set but %s is a remote http:// endpoint, so the key would cross the network unencrypted. "
+                "Use an https:// URL.",
+                host,
+            )
 
     def get_config(self) -> Dict[str, Any]:
         """Return current provider configuration."""
