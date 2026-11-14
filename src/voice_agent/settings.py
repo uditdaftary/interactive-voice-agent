@@ -16,8 +16,8 @@ _FALSE_SPELLINGS = frozenset({"0", "false", "no"})
 @dataclass(frozen=True)
 class Settings:
     # LLM endpoint
-    llm_base_url: str = "http://localhost:11434/v1"
-    llm_model: str = "builtin-assistant"
+    llm_base_url: str = "http://127.0.0.1:11434/v1"
+    llm_model: str = "voice-agent"
     llm_api_key: str = field(default="local", repr=False)  # a secret: keep it out of logged settings
     web_search_enabled: bool = True
 
