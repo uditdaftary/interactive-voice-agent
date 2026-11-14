@@ -106,22 +106,31 @@ async def test_broken_socket_dropped_and_logged_by_type(short_send_timeout: None
 
 
 async def test_slow_client_does_not_delay_the_others(short_send_timeout: None) -> None:
-    healthy, stalled = RecordingSocket(), StalledSocket()
-    manager = manager_with(stalled, healthy)
+    """Asserts the order of events, not elapsed time: no wall-clock bound to flake on a loaded runner.
 
-    delivered_at: list[float] = []
-    loop = asyncio.get_running_loop()
-    original_send = healthy.send_text
+    Sent one after the other, the healthy client would be served only after the stalled one's send
+    was abandoned. Sent together, it is served while the stalled send is still pending.
+    """
+    events: list[str] = []
 
-    async def stamped(text: str) -> None:
-        delivered_at.append(loop.time())
-        await original_send(text)
+    class OrderedStalledSocket(RecordingSocket):
+        async def send_text(self, text: str) -> None:
+            events.append("stalled send started")
+            try:
+                await asyncio.Event().wait()
+            finally:
+                events.append("stalled send abandoned")  # runs when the send timeout cancels it
 
-    healthy.send_text = stamped  # type: ignore[method-assign]
-    started = loop.time()
+    class OrderedHealthySocket(RecordingSocket):
+        async def send_text(self, text: str) -> None:
+            events.append("healthy delivered")
+            await super().send_text(text)
+
+    manager = manager_with(OrderedStalledSocket(), OrderedHealthySocket())
+
     await manager.broadcast_text("hello")
 
-    assert delivered_at and delivered_at[0] - started < 0.03
+    assert events == ["stalled send started", "healthy delivered", "stalled send abandoned"]
 
 
 async def test_close_that_also_stalls_does_not_hang_the_broadcast(short_send_timeout: None) -> None:
