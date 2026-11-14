@@ -308,6 +308,26 @@ def test_upload_with_nothing_readable_still_reports_skipped_parts(client: TestCl
     assert resp.json()["skipped_parts"] == ["chapter OEBPS/gone.xhtml: not in the archive"]
 
 
+def test_zip_bomb_epub_upload_is_rejected_in_bounded_memory(client: TestClient) -> None:
+    """The P1 exit gate, at the route and with the shipped limits: a 50 MB chapter inside a ~50 KB file."""
+    bomb = make_epub({"OEBPS/bomb.xhtml": b"0" * (50 * 1024 * 1024)}, {"c1": "bomb.xhtml"}, ["c1"])
+    assert len(bomb) < 1024 * 1024
+    title_before = client.get("/api/document").json()["title"]
+
+    tracemalloc.start()
+    try:
+        resp = client.post("/api/upload-document", files={"file": ("bomb.epub", bomb, "application/epub+zip")})
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "document contains no readable text"
+    assert any("bomb.xhtml" in reason and "10 MB uncompressed" in reason for reason in resp.json()["skipped_parts"])
+    assert peak < 20 * 1024 * 1024
+    assert client.get("/api/document").json()["title"] == title_before
+
+
 async def test_upload_parses_off_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     def slow_parse(data: bytes, filename: str = "document.txt") -> parser.DocumentContent:
         time.sleep(0.3)
