@@ -1,5 +1,6 @@
 """Bounded, ordered and honest document parsing (H5, M14, N5)."""
 
+import asyncio
 import io
 import logging
 import time
@@ -7,6 +8,7 @@ import tracemalloc
 import zipfile
 from collections.abc import Iterator
 
+import httpx
 import pypdf
 import pytest
 from fastapi.testclient import TestClient
@@ -250,3 +252,85 @@ def client() -> Iterator[TestClient]:
         yield test_client
 
 
+def test_corrupt_pdf_upload_returns_422(client: TestClient) -> None:
+    title_before = client.get("/api/document").json()["title"]
+
+    resp = client.post("/api/upload-document", files={"file": ("broken.pdf", b"%PDF-1.4 nope", "application/pdf")})
+
+    assert resp.status_code == 422
+    assert "PDF" in resp.json()["detail"]
+    assert client.get("/api/document").json()["title"] == title_before
+
+
+def test_corrupt_epub_upload_returns_422_and_ingests_no_error_text(client: TestClient) -> None:
+    resp = client.post("/api/upload-document", files={"file": ("broken.epub", b"not a zip", "application/epub+zip")})
+
+    assert resp.status_code == 422
+    assert "Failed to read" not in " ".join(client.get("/api/document").json()["sentences"])
+
+
+@pytest.mark.parametrize("name", ["notes.docx", "run.exe", "page.html", "archive.tar.gz", "noextension"])
+def test_unknown_extension_415(client: TestClient, name: str) -> None:
+    resp = client.post("/api/upload-document", files={"file": (name, b"Some text here.", "application/octet-stream")})
+
+    assert resp.status_code == 415
+
+
+@pytest.mark.parametrize("name", ["Book.EPUB", "notes.TXT", "readme.md"])
+def test_allowed_extensions_are_case_insensitive(client: TestClient, name: str) -> None:
+    content = two_chapter_epub(["c1", "c2"]) if name.lower().endswith("epub") else b"Hello there. General Kenobi."
+
+    resp = client.post("/api/upload-document", files={"file": (name, content, "application/octet-stream")})
+
+    assert resp.status_code == 200
+
+
+def test_upload_reports_skipped_parts(client: TestClient) -> None:
+    data = make_epub(
+        {"OEBPS/ch1.xhtml": chapter("Alpha one is here. Alpha two follows.")},
+        {"c1": "ch1.xhtml", "c2": "gone.xhtml"},
+        ["c1", "c2"],
+    )
+
+    resp = client.post("/api/upload-document", files={"file": ("book.epub", data, "application/epub+zip")})
+
+    assert resp.status_code == 200
+    assert resp.json()["skipped_parts"] == ["chapter OEBPS/gone.xhtml: not in the archive"]
+
+
+def test_upload_with_nothing_readable_still_reports_skipped_parts(client: TestClient) -> None:
+    data = make_epub({}, {"c1": "gone.xhtml"}, ["c1"])
+
+    resp = client.post("/api/upload-document", files={"file": ("book.epub", data, "application/epub+zip")})
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "document contains no readable text"
+    assert resp.json()["skipped_parts"] == ["chapter OEBPS/gone.xhtml: not in the archive"]
+
+
+async def test_upload_parses_off_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    def slow_parse(data: bytes, filename: str = "document.txt") -> parser.DocumentContent:
+        time.sleep(0.3)
+        return parser.parse_text_bytes(data, filename=filename)
+
+    monkeypatch.setattr(DocumentParser, "parse_bytes", staticmethod(slow_parse))
+    transport = httpx.ASGITransport(app=build_app())
+
+    async def longest_loop_stall(until: "asyncio.Task[httpx.Response]") -> float:
+        """Tick every 10 ms while the upload runs; a blocked loop shows up as one long gap between ticks."""
+        worst, last = 0.0, time.perf_counter()
+        while not until.done():
+            await asyncio.sleep(0.01)
+            now = time.perf_counter()
+            worst, last = max(worst, now - last), now
+        return worst
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as http:
+        upload = asyncio.create_task(
+            http.post("/api/upload-document", files={"file": ("slow.txt", b"One sentence. Two sentences.", "text/plain")})
+        )
+        stall = await longest_loop_stall(upload)
+        resp = await upload
+
+    assert resp.status_code == 200
+    assert stall < 0.1

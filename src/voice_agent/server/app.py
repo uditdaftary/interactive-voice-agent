@@ -14,11 +14,12 @@ import wave
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from voice_agent.document.parser import DocumentParser
+from voice_agent.document.parser import DOCUMENT_EXTENSIONS, DocumentParseError, DocumentParser
 from voice_agent.server.connection_manager import (
     ConnectionManager,
     default_connection_manager,
@@ -191,10 +192,19 @@ def create_app(
         eng: NarrationEngine = app.state.narration_engine
 
         if file is not None and file.filename:
+            if Path(file.filename).suffix.lower() not in DOCUMENT_EXTENSIONS:
+                raise HTTPException(
+                    status_code=415, detail=f"Unsupported file type. Allowed: {', '.join(sorted(DOCUMENT_EXTENSIONS))}."
+                )
             content = await file.read()
             if not content:
                 raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-            doc = await asyncio.to_thread(DocumentParser.parse_bytes, content, file.filename)
+            try:
+                # Parsing is CPU-bound; on the event loop it would stall every WebSocket for its duration.
+                doc = await asyncio.to_thread(DocumentParser.parse_bytes, content, file.filename)
+            except DocumentParseError as exc:
+                logger.warning("Rejected upload %r: %s", file.filename, exc)
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         else:
             if "application/json" not in request.headers.get("content-type", "").lower():
                 raise HTTPException(status_code=415, detail="Send a multipart file or a JSON body.")
@@ -205,7 +215,11 @@ def create_app(
             doc = await asyncio.to_thread(DocumentParser.parse_text, payload.text, payload.title)
 
         if not doc.sentences:
-            raise HTTPException(status_code=422, detail="document contains no readable text")
+            # The old document stays loaded. Say what was skipped: it is usually why nothing was left.
+            rejection: dict[str, Any] = {"detail": "document contains no readable text"}
+            if doc.skipped_parts:
+                rejection["skipped_parts"] = doc.skipped_parts
+            return JSONResponse(rejection, status_code=422)
 
         eng.load_document(doc)
         return {
