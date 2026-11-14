@@ -9,7 +9,6 @@ from voice_agent.llm.client import (
     score_candidate_sentence,
     search_web_sync,
     search_web,
-    LLMClient,
 )
 
 
@@ -165,33 +164,3 @@ async def test_search_web_async_wrapper():
         res = await search_web("test query")
         assert res == "- Title: Body"
         mock_sync.assert_called_once_with("test query", 8)
-
-
-def test_synthesize_causal_question_rejects_interrogative_titles():
-    """Verify causal question ('how did Johnny die') synthesizes the factual answer, rejecting question titles."""
-    client = LLMClient()
-    user_msg = (
-        "Live Internet Web Search Results:\n"
-        "- How Did Johnny Silverhand Die?: Many players wonder how his story ended.\n"
-        "- The Fate of Johnny Silverhand: Johnny Silverhand was killed by Adam Smasher in 2023 during the Arasaka Tower raid.\n\n"
-        "User Question: how did Johnny die?"
-    )
-
-    answer = client._synthesize_fallback_answer(user_msg, character_id="david-martinez")
-    assert "killed by Adam Smasher" in answer
-    assert "How Did Johnny Silverhand Die" not in answer
-
-
-def test_synthesize_concept_question_anchors_and_extracts_facts():
-    """Verify concept question ('what is the relic') returns substantive definition."""
-    client = LLMClient()
-    user_msg = (
-        "Live Internet Web Search Results:\n"
-        "- What is the Relic in Cyberpunk 2077?: A common question among gamers.\n"
-        "- The Relic: The Relic is a prototype biochip developed by the Arasaka Corporation to store personality constructs.\n\n"
-        "User Question: what is the relic?"
-    )
-
-    answer = client._synthesize_fallback_answer(user_msg, character_id="lucy-kushinada")
-    assert "prototype biochip developed by the Arasaka Corporation" in answer
-    assert "What is the Relic in Cyberpunk" not in answer

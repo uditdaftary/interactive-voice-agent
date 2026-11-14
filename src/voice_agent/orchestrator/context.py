@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from typing import List, Dict
 
 SYSTEM_PROMPT = (
@@ -13,17 +14,52 @@ _CHATML_CONTROL_TOKENS = re.compile(
     re.IGNORECASE
 )
 
-# Control character stripper (preserves newline, carriage return, and tab)
-_CONTROL_CHAR_REGEX = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]')
+# The start of one of the fence tags build_messages wraps untrusted text in: "<", an optional "/", the name, with
+# blanks allowed between them. Only this is matched, never the rest of the tag. Matching tag bodies failed twice (a
+# body is any shape or length, and callers collapse whitespace after sanitising, which turns "</book_passages\n>"
+# into "</book_passages >"), and every shape added to the pattern left others that still got through. Without its "<"
+# and name, whatever follows cannot read as a fence tag, however it is spelled, and nothing after the start is
+# removed, so a stray "<current_sentence" cannot swallow text. No word boundary after the name: "</book_passages_>"
+# and "<web_resultsx" lose their start too, so no text that begins like a fence tag survives.
+_FENCE_TAG_START = re.compile(r'<\s*/?\s*(?:book_passages|current_sentence|web_results)', re.IGNORECASE)
+
+# Characters that show nothing but can sit inside a tag name, so "</book_\u00adpassages>" is not a tag to the
+# regexes yet reads as one to a model whose tokenizer drops or merges them. str.split() does not treat them as
+# blanks either. Control characters (preserves newline, carriage return, and tab) plus the invisible marks that
+# are not category Cf: the combining grapheme joiner and the variation selectors, which are category Mn.
+_HIDDEN_CHARS = re.compile('[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\u034f\ufe00-\ufe0f\U000e0100-\U000e01ef]')
+
+
+def _strip_hidden(text: str) -> str:
+    """Drop control characters and every Unicode format character (category Cf), instead of listing ranges.
+
+    Cf covers soft hyphen, zero-width and bidi controls, invisible math operators and the tag characters, and new
+    ones arrive with each Unicode version. The cost is that a zero-width joiner or non-joiner (also Cf) no longer
+    joins emoji sequences or shapes some Persian and Indic words; that does not matter in a prompt.
+    """
+    text = _HIDDEN_CHARS.sub("", text)
+    if text.isascii():  # no format characters in ASCII: skip the per-character pass for the common case
+        return text
+    return "".join(char for char in text if unicodedata.category(char) != "Cf")
 
 
 def sanitize_chatml(text: str) -> str:
-    """Strip ChatML / instruction delimiters and control tokens to prevent prompt injection."""
+    """Strip ChatML / instruction delimiters, fence tag starts and hidden characters to prevent prompt injection."""
     if not text:
         return ""
-    cleaned = _CHATML_CONTROL_TOKENS.sub("", text)
-    cleaned = _CONTROL_CHAR_REGEX.sub("", cleaned)
-    return cleaned.strip()
+    # Hidden characters go first so none can sit inside a tag name. Then repeat until nothing changes: removing a
+    # ChatML token or a tag start can join its neighbours into a new one ("<<web_results/book_passages>").
+    cleaned = _strip_hidden(text)
+    while True:
+        stripped = _FENCE_TAG_START.sub("", _CHATML_CONTROL_TOKENS.sub("", cleaned))
+        if stripped == cleaned:
+            return cleaned.strip()
+        cleaned = stripped
+
+
+# Characters per token charged by estimate_tokens. The one place this number lives: llm.prompt derives how much of
+# an unbroken word fits a budget from it, so a change here keeps both in step.
+CHARS_PER_TOKEN = 3.8
 
 
 def estimate_tokens(text: str) -> int:
@@ -36,7 +72,7 @@ def estimate_tokens(text: str) -> int:
         return 0
     words = len(text.split())
     chars = len(text)
-    return max(1, int(max(words * 1.33, chars / 3.8)))
+    return max(1, int(max(words * 1.33, chars / CHARS_PER_TOKEN)))
 
 
 def truncate_to_tokens(text: str, max_tokens: int, from_end: bool = False) -> str:

@@ -9,8 +9,9 @@ from voice_agent.settings import Settings, load_settings
 
 def test_defaults_match_legacy_literals() -> None:
     s = Settings()
-    assert s.llm_base_url == "http://localhost:11434/v1"
-    assert s.llm_model == "builtin-assistant"
+    # D2: the LLM defaults moved from the old built-in assistant to the local Ollama `voice-agent` model.
+    assert s.llm_base_url == "http://127.0.0.1:11434/v1"
+    assert s.llm_model == "voice-agent"
     assert s.llm_api_key == "local"
     assert s.web_search_enabled is True
     assert s.idle_poll_s == 0.5
