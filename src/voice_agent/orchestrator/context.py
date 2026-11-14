@@ -13,17 +13,26 @@ _CHATML_CONTROL_TOKENS = re.compile(
     re.IGNORECASE
 )
 
+# The fence tags build_messages wraps untrusted text in: opening (attributes allowed) or closing, loose
+# whitespace allowed, or an unclosed tag start at the very end of the text.
+_FENCE_TAGS = re.compile(r'<\s*/?\s*(?:book_passages|current_sentence|web_results)\b[^>]*(?:>|$)', re.IGNORECASE)
+
 # Control character stripper (preserves newline, carriage return, and tab)
 _CONTROL_CHAR_REGEX = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]')
 
 
 def sanitize_chatml(text: str) -> str:
-    """Strip ChatML / instruction delimiters and control tokens to prevent prompt injection."""
+    """Strip ChatML / instruction delimiters, fence tags and control characters to prevent prompt injection."""
     if not text:
         return ""
-    cleaned = _CHATML_CONTROL_TOKENS.sub("", text)
-    cleaned = _CONTROL_CHAR_REGEX.sub("", cleaned)
-    return cleaned.strip()
+    # Control characters go first so one cannot hide inside a tag name. Then repeat until nothing changes:
+    # removing an inner tag can join its neighbours into a new one ("</book_pas<web_results>sages>").
+    cleaned = _CONTROL_CHAR_REGEX.sub("", text)
+    while True:
+        stripped = _FENCE_TAGS.sub("", _CHATML_CONTROL_TOKENS.sub("", cleaned))
+        if stripped == cleaned:
+            return cleaned.strip()
+        cleaned = stripped
 
 
 def estimate_tokens(text: str) -> int:
