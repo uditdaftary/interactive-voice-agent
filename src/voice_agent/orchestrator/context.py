@@ -17,8 +17,9 @@ _CHATML_CONTROL_TOKENS = re.compile(
 # whitespace allowed, or an unclosed tag start at the very end of the text.
 _FENCE_TAGS = re.compile(r'<\s*/?\s*(?:book_passages|current_sentence|web_results)\b[^>]*(?:>|$)', re.IGNORECASE)
 
-# Control character stripper (preserves newline, carriage return, and tab)
-_CONTROL_CHAR_REGEX = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]')
+# Control and invisible characters (preserves newline, carriage return, and tab). The zero-width and
+# bidi-control ranges matter because str.split() does not treat them as blanks, so they could hide inside a tag.
+_CONTROL_CHAR_REGEX = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F​-‏‪-‮⁠﻿]')
 
 
 def sanitize_chatml(text: str) -> str:
