@@ -19,7 +19,7 @@ _FENCE_TAGS = re.compile(r'<\s*/?\s*(?:book_passages|current_sentence|web_result
 
 # Control and invisible characters (preserves newline, carriage return, and tab). The zero-width and
 # bidi-control ranges matter because str.split() does not treat them as blanks, so they could hide inside a tag.
-_CONTROL_CHAR_REGEX = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F​-‏‪-‮⁠﻿]')
+_CONTROL_CHAR_REGEX = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]')
 
 
 def sanitize_chatml(text: str) -> str:
