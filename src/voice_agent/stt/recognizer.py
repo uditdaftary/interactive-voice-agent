@@ -25,6 +25,10 @@ class STTEngine:
             initial_prompt=initial_prompt,
         )
 
+    def load(self) -> bool:
+        """Loads the Whisper model now (the STT build calls this off the event loop). Returns whether it is loaded."""
+        return self.backend.load()
+
     def transcribe(self, audio_data: bytes | bytearray | memoryview | np.ndarray | None, sample_rate: int = 16000) -> str:
         if audio_data is None:
             return ""

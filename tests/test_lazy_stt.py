@@ -18,7 +18,8 @@ from voice_agent.server.app import create_app, ensure_stt_engine
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.settings import Settings
 from voice_agent.stt import recognizer
-from fakes import FakeStt
+from fakes import FakeStt, FakeWhisper
+from speech_audio import speech_like_pcm
 
 SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 
@@ -39,6 +40,9 @@ class CountingSTT:
         CountingSTT.built.append(dict(kwargs))
         CountingSTT.build_threads.append(threading.get_ident())
 
+    def load(self) -> bool:
+        return True
+
     def transcribe(self, audio_data: bytes, sample_rate: int = 16000) -> str:
         return "lazily built transcript"
 
@@ -55,6 +59,9 @@ class GatedSTT:
         GatedSTT.started.set()
         if not GatedSTT.release.wait(timeout=10):
             raise AssertionError("test never released the build")
+
+    def load(self) -> bool:
+        return True
 
 
 @pytest.fixture
@@ -223,3 +230,15 @@ async def test_cancelled_build_task_is_replaced(counting_stt: type[CountingSTT])
 
     assert engine is app.state.stt_engine
     assert len(counting_stt.built) == 1
+
+
+async def test_build_loads_whisper_before_the_first_transcribe(fake_whisper: FakeWhisper) -> None:
+    """The model loads in the STT build thread, so the first utterance never pays for it on the event loop."""
+    fake_whisper.text = "hello there"
+    app = create_app(connection_manager=ConnectionManager())
+
+    engine = await ensure_stt_engine(app)
+
+    assert len(fake_whisper.constructions) == 1
+    assert engine.transcribe(speech_like_pcm()) == "hello there"
+    assert len(fake_whisper.constructions) == 1
