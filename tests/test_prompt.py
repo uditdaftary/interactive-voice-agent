@@ -1,5 +1,6 @@
 """Fenced prompt builder: untrusted text stays inside labelled blocks and the question comes last (M12)."""
 
+import inspect
 import re
 import sys
 import time
@@ -8,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from voice_agent.llm.prompt import FENCE_NOTE, build_messages
+from voice_agent.llm.prompt import FENCE_NOTE, _clip, build_messages
 from voice_agent.orchestrator.context import estimate_tokens, sanitize_chatml
 
 FENCE_NAMES = ("book_passages", "current_sentence", "web_results")
@@ -402,3 +403,28 @@ def test_visible_text_and_ordinary_combining_marks_survive_the_invisible_charact
     text = "café é 一二 \U0001f600 अि"  # precomposed, combining accent, CJK, emoji, Devanagari
 
     assert sanitize_chatml(text) == text
+
+
+# --- the characters-per-token ratio has one source, orchestrator.context.CHARS_PER_TOKEN (#57) ---
+
+
+def test_the_unbroken_text_cap_follows_the_estimators_ratio(monkeypatch: pytest.MonkeyPatch) -> None:
+    from voice_agent.orchestrator import context
+
+    monkeypatch.setattr(context, "CHARS_PER_TOKEN", 1.0)  # one token per character, as CJK is closer to
+    max_tokens = 100
+
+    clipped = _clip("一" * 5000, max_tokens)
+
+    # With a copy of the old 3.8 the cap would keep about 370 characters, which estimate_tokens now scores 370.
+    assert estimate_tokens(clipped) <= max_tokens
+    assert len(clipped) > 50  # a prefix is kept, not nothing
+
+
+def test_the_ratio_is_defined_once() -> None:
+    from voice_agent.llm import prompt
+    from voice_agent.orchestrator import context
+
+    assert not hasattr(prompt, "_CHARS_PER_TOKEN")
+    assert context.estimate_tokens("a" * 380) == int(380 / context.CHARS_PER_TOKEN)
+    assert "3.8" not in inspect.getsource(prompt)

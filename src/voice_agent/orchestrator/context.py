@@ -62,6 +62,11 @@ def sanitize_chatml(text: str) -> str:
         cleaned = stripped
 
 
+# Characters per token charged by estimate_tokens. The one place this number lives: llm.prompt derives how much of
+# an unbroken word fits a budget from it, so a change here keeps both in step.
+CHARS_PER_TOKEN = 3.8
+
+
 def estimate_tokens(text: str) -> int:
     """Estimate token count for LLM budgeting without requiring heavy external tokenizers.
     
@@ -72,7 +77,7 @@ def estimate_tokens(text: str) -> int:
         return 0
     words = len(text.split())
     chars = len(text)
-    return max(1, int(max(words * 1.33, chars / 3.8)))
+    return max(1, int(max(words * 1.33, chars / CHARS_PER_TOKEN)))
 
 
 def truncate_to_tokens(text: str, max_tokens: int, from_end: bool = False) -> str:
