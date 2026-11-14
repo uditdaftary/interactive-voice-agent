@@ -439,16 +439,39 @@ class ThinkFilter:
     Thinking is NOT disabled at the source yet: neither `models/Modelfile` nor the request turns it off
     (how to is unverified, see the Modelfile). This filter is therefore the only defence against the
     model's reasoning being spoken, and reasoning still spends the reply's token budget.
-    Only a suffix that could still grow into a tag is held back, so text without a think block streams
-    with no added latency.
+
+    Two stream shapes are handled:
+    - `<think>reasoning</think>Answer`: the block is removed.
+    - `reasoning</think>Answer`, which is what a chat template that prefills `<think>` makes the model
+      stream: everything before a `</think>` that has no `<think>` before it is reasoning.
+
+    The second shape cannot be told from a plain reply until `</think>` shows up, so the start of the
+    stream is held back. The choice is `LEAD_HOLD_CHARS` = 120 characters (about 30 tokens, under a second
+    at local-model speeds):
+    - A stream with no think tag in its first 120 characters is a plain reply. It is released from there
+      on, never altered, and a reply shorter than that is released whole when the stream ends, so the
+      first words of a reply arrive at most about 120 characters late.
+    - Reasoning that ends inside the hold is removed, together with the whitespace after its `</think>`.
+      Reasoning longer than the hold (the usual case for a thinking model) is NOT caught: it has already
+      been released, and a later lone `</think>` is ordinary text. Holding longer would only delay every
+      plain reply while still missing most reasoning, because reasoning tends to outrun the 300-token
+      reply budget. Disabling thinking at the source is the real fix.
+    After the hold, only a suffix that could still grow into `<think>` is held back.
     """
 
     _OPEN = "<think>"
     _CLOSE = "</think>"
+    LEAD_HOLD_CHARS = 120
 
     def __init__(self) -> None:
-        self._pending = ""  # text not yet decided: a possible partial tag
+        self._reset()
+
+    def _reset(self) -> None:
+        self._pending = ""  # text not yet decided: the held start of the stream or a possible partial tag
         self._inside = False
+        self._undecided = True  # the start of the stream has not been classified yet
+        self._spoken = False  # some text has been released
+        self._trim = False  # drop the whitespace after a think block that opened the reply
 
     @staticmethod
     def _partial_tag_length(text: str, tag: str) -> int:
@@ -458,16 +481,39 @@ class ThinkFilter:
                 return length
         return 0
 
+    def _release(self, emitted: list[str]) -> str:
+        text = "".join(emitted)
+        if self._trim:
+            text = text.lstrip()
+        if text:
+            self._spoken = True
+            self._trim = False
+        return text
+
     def feed(self, chunk: str) -> str:
         """Return the part of `chunk` that is safe to emit now."""
         self._pending += chunk
         emitted: list[str] = []
         while True:
+            if self._undecided:
+                opened = self._pending.find(self._OPEN)
+                closed = self._pending.find(self._CLOSE)
+                if closed >= 0 and (opened < 0 or closed < opened):
+                    # The stream began inside a think block whose opening tag was in the prompt.
+                    self._pending = self._pending[closed + len(self._CLOSE):]
+                    self._undecided = False
+                    self._trim = True
+                    continue
+                if opened < 0 and len(self._pending) < self.LEAD_HOLD_CHARS:
+                    return ""
+                self._undecided = False
             tag = self._CLOSE if self._inside else self._OPEN
             index = self._pending.find(tag)
             if index >= 0:
                 if not self._inside:
                     emitted.append(self._pending[:index])
+                elif not self._spoken and not "".join(emitted).strip():
+                    self._trim = True  # a block that opens the reply: the whitespace after it is not the answer
                 self._pending = self._pending[index + len(tag):]
                 self._inside = not self._inside
                 continue
@@ -475,13 +521,12 @@ class ThinkFilter:
             if not self._inside:
                 emitted.append(self._pending[:settled])
             self._pending = self._pending[settled:]
-            return "".join(emitted)
+            return self._release(emitted)
 
     def flush(self) -> str:
-        """End of stream: release a held partial tag, or drop it with an unclosed think block."""
-        tail = "" if self._inside else self._pending
-        self._pending = ""
-        self._inside = False
+        """End of stream: release whatever is held, or drop it with an unclosed think block. Resets the filter."""
+        tail = "" if self._inside else self._release([self._pending])
+        self._reset()
         return tail
 
 
@@ -613,9 +658,12 @@ class LLMClient:
                     "max_tokens": max_tokens,
                 }
                 headers = {"Authorization": f"Bearer {self.api_key}"}
+                failure: tuple[LlmOutcome, str] | None = None
+                status_code = 0
                 try:
                     async with httpx.AsyncClient(transport=self._transport, timeout=_TIMEOUT) as client:
                         async with client.stream("POST", self._chat_url(), json=payload, headers=headers) as response:
+                            status_code = response.status_code
                             if response.is_success:
                                 async for line in response.aiter_lines():
                                     if not line.startswith("data:"):
@@ -627,22 +675,27 @@ class LLMClient:
                                     if visible:
                                         spoke = spoke or bool(visible.strip())
                                         yield visible
-                                tail = think_filter.flush()
-                                if tail:
-                                    spoke = spoke or bool(tail.strip())
-                                    yield tail
-                                outcome = "ok" if spoke else "error"
-                                detail = "" if spoke else f"HTTP {response.status_code}, no content"
                             else:
-                                outcome = "auth" if response.status_code in (401, 403) else "error"
-                                detail = f"HTTP {response.status_code}"
+                                failure = ("auth" if status_code in (401, 403) else "error", f"HTTP {status_code}")
                 except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-                    outcome, detail = "offline", type(exc).__name__
+                    failure = ("offline", type(exc).__name__)
                 except (httpx.InvalidURL, httpx.UnsupportedProtocol, UnicodeEncodeError) as exc:
                     # UnicodeEncodeError: httpx cannot put a non-ASCII API key into a header.
-                    outcome, detail = "error", type(exc).__name__
+                    failure = ("error", type(exc).__name__)
                 except httpx.HTTPError as exc:
-                    outcome, detail = ("interrupted" if spoke else "error"), type(exc).__name__
+                    failure = ("interrupted", type(exc).__name__)
+
+                # Release what the filter still holds, also after a broken stream: a partial reply is spoken (N3).
+                tail = think_filter.flush()
+                if tail:
+                    spoke = spoke or bool(tail.strip())
+                    yield tail
+                if failure is None:
+                    outcome, detail = ("ok", "") if spoke else ("error", f"HTTP {status_code}, no content")
+                else:
+                    outcome, detail = failure
+                    if outcome == "interrupted" and not spoke:
+                        outcome = "error"
 
             if outcome != "ok":
                 logger.warning("LLM %s at %s: %s", outcome, self.base_url, detail)

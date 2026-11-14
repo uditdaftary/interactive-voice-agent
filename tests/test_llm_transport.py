@@ -17,6 +17,7 @@ from voice_agent.llm.client import OFFLINE_LINE, LLMClient, LlmOutcome, ThinkFil
 MESSAGES = [{"role": "user", "content": "Who is the narrator?"}]
 SECRET = "sk-secret-123"
 BASE_URL = "http://127.0.0.1:11434/v1"
+FIRST = "f" * ThinkFilter.LEAD_HOLD_CHARS  # long enough to pass the filter's hold at the start of a stream
 
 
 def sse(*contents: str, done: bool = True) -> bytes:
@@ -71,7 +72,8 @@ async def test_ok_streams_tokens() -> None:
 
     client = make_client(handler)
 
-    assert await collect(client) == ["Hi", " there"]
+    # A reply shorter than ThinkFilter.LEAD_HOLD_CHARS is held until the stream ends (see ThinkFilter).
+    assert "".join(await collect(client)) == "Hi there"
     assert client.status == "ok"
     body = json.loads(seen[0].content)
     assert body["max_tokens"] == 300
@@ -207,7 +209,7 @@ async def _parked_stream_client() -> tuple[LLMClient, ScriptedStream, asyncio.Ev
         parked.set()
         await asyncio.Event().wait()
 
-    stream = ScriptedStream(sse("first", done=False), block_forever)
+    stream = ScriptedStream(sse(FIRST, done=False), block_forever)
     return make_client(lambda request: httpx.Response(200, stream=stream)), stream, parked
 
 
@@ -221,7 +223,7 @@ async def test_cancel_closes_response() -> None:
 
     task = asyncio.create_task(consume())
     await asyncio.wait_for(parked.wait(), timeout=5)  # the consumer has the first token and awaits the second
-    assert got == ["first"]
+    assert got == [FIRST]
     assert not stream.closed
 
     task.cancel()
@@ -236,7 +238,7 @@ async def test_closing_the_generator_closes_response() -> None:
     client, stream, _ = await _parked_stream_client()
     generator = client.stream_generate(MESSAGES)
 
-    assert await anext(generator) == "first"
+    assert await anext(generator) == FIRST
     assert not stream.closed
     await generator.aclose()
 
@@ -339,6 +341,32 @@ async def test_think_block_never_reaches_the_consumer() -> None:
     assert client.status == "ok"
 
 
+async def test_stream_that_starts_inside_a_think_block_is_cleaned() -> None:
+    # A chat template that prefills "<think>" makes the model stream "reasoning</think>Answer" with no opening tag.
+    pieces = ["I should greet. ", "</thi", "nk>\n\n", "Hello there."]
+    client = make_client(lambda request: sse_response(sse(*pieces)))
+
+    assert "".join(await collect(client)) == "Hello there."
+    assert client.status == "ok"
+
+
+async def test_prefilled_think_with_no_answer_is_error() -> None:
+    client = make_client(lambda request: sse_response(sse("I should greet.", " </think>", "\n\n")))
+
+    assert await collect(client) == [OFFLINE_LINE]
+    assert client.status == "error"
+
+
+async def test_partial_reply_held_by_the_filter_is_spoken_when_the_stream_breaks() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=ScriptedStream(sse("Part", done=False), httpx.ReadError("cut", request=request)))
+
+    client = make_client(handler)
+
+    assert await collect(client) == ["Part"]
+    assert client.status == "interrupted"
+
+
 async def test_think_only_reply_is_error() -> None:
     client = make_client(lambda request: sse_response(sse("<think>", "I should say hello", "</think>")))
 
@@ -393,20 +421,82 @@ def test_think_split_across_chunks() -> None:
     assert run_filter(["<thi", "nk>reasoning</th", "ink>Answer"]) == "Answer"
 
 
-def test_no_think_passthrough_has_no_added_latency() -> None:
+def test_no_think_passthrough_is_delayed_by_at_most_the_lead_hold() -> None:
     think_filter = ThinkFilter()
-    # Each feed emits at once: nothing is held back unless it could start a tag.
-    assert think_filter.feed("Hello") == "Hello"
-    assert think_filter.feed(", world") == ", world"
-    assert think_filter.feed("!") == "!"
-    assert think_filter.flush() == ""
+    plain = "Right, the narrator is never named in these passages. " * 8
+    fed = emitted = 0
+    pieces: list[str] = []
+    for start in range(0, len(plain), 7):
+        chunk = plain[start : start + 7]
+        pieces.append(think_filter.feed(chunk))
+        fed += len(chunk)
+        emitted += len(pieces[-1])
+        assert fed - emitted <= ThinkFilter.LEAD_HOLD_CHARS  # the documented ceiling on added latency
+    pieces.append(think_filter.flush())
+
+    assert "".join(pieces) == plain  # a plain reply is never altered, only briefly held at the start
+    assert sum(1 for piece in pieces if piece) > 3  # and it still streams in pieces once past the hold
+
+
+def test_short_plain_reply_is_released_at_the_end_of_the_stream() -> None:
+    think_filter = ThinkFilter()
+    assert think_filter.feed("  Hello there.") == ""
+    assert think_filter.flush() == "  Hello there."
 
 
 def test_partial_tag_is_held_only_while_it_could_still_be_a_tag() -> None:
     think_filter = ThinkFilter()
+    assert think_filter.feed("x" * ThinkFilter.LEAD_HOLD_CHARS) == "x" * ThinkFilter.LEAD_HOLD_CHARS  # past the hold
     assert think_filter.feed("see <th") == "see "
     assert think_filter.feed("ings") == "<things"  # not a tag after all: released with the new text
     assert think_filter.flush() == ""
+
+
+# --- a stream that starts inside a think block (the chat template put "<think>" in the prompt) ---
+
+
+REPRO = "I should greet. </think>\n\nHello there."
+
+
+def test_prefilled_think_is_dropped_up_to_the_lone_close_tag() -> None:
+    assert run_filter([REPRO]) == "Hello there."
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        list(REPRO),
+        ["I should greet. </thi", "nk>\n", "\nHello there."],
+        ["I should greet. </think", ">", "\n\nHello there."],
+        ["I should greet. ", "</think>", "\n\n", "Hello", " there."],
+    ],
+)
+def test_prefilled_think_split_across_chunks(chunks: list[str]) -> None:
+    assert run_filter(chunks) == "Hello there."
+
+
+def test_whitespace_after_a_leading_think_block_is_trimmed_but_later_whitespace_is_kept() -> None:
+    assert run_filter(["<think>a</think>\n\nAnswer one. ", "<think>b</think> Two."]) == "Answer one.  Two."
+
+
+def test_lone_close_tag_with_nothing_before_it() -> None:
+    assert run_filter(["</think>Answer"]) == "Answer"
+
+
+def test_prefilled_think_that_never_closes_is_released_at_the_end() -> None:
+    # Indistinguishable from a short plain reply, so it is released rather than lost.
+    assert run_filter(["Okay, the user greets me."]) == "Okay, the user greets me."
+
+
+def test_reasoning_longer_than_the_lead_hold_is_not_caught() -> None:
+    """The documented ceiling: past LEAD_HOLD_CHARS the stream is taken for a plain reply, so a later lone
+    close tag is ordinary text. Only thinking disabled at the source fixes this; the filter cannot."""
+    reasoning = "Okay, so the user wants to know who the narrator is. " * 4
+    assert len(reasoning) > ThinkFilter.LEAD_HOLD_CHARS
+
+    output = run_filter([reasoning, "</think>Answer"])
+
+    assert output == reasoning + "</think>Answer"
 
 
 def test_unclosed_think_dropped() -> None:
@@ -415,8 +505,7 @@ def test_unclosed_think_dropped() -> None:
 
 def test_lone_lt_passes() -> None:
     assert run_filter(["a ", "<", " b"]) == "a < b"
-    think_filter = ThinkFilter()
-    assert think_filter.feed("a < b") == "a < b"
+    assert run_filter(["a < b"]) == "a < b"
 
 
 def test_multiple_think_blocks_and_text_between() -> None:
@@ -427,7 +516,8 @@ def test_filter_is_reusable_after_flush() -> None:
     think_filter = ThinkFilter()
     think_filter.feed("<think>half")
     assert think_filter.flush() == ""
-    assert think_filter.feed("fresh") == "fresh"
+    assert think_filter.feed("fresh") == ""  # held again: a reused filter starts a new stream
+    assert think_filter.flush() == "fresh"
 
 
 def test_close_tag_split_one_character_at_a_time() -> None:
