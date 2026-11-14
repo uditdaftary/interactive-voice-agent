@@ -4,9 +4,55 @@ Provides typed Pydantic models for client actions and server events,
 strictly conforming to Section 4.2 of PROJECT.md.
 """
 
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 import json
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import (
+    AfterValidator,
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
+
+# ============================================================================
+# Shared field constraints (REST bodies and WebSocket client messages)
+# ============================================================================
+
+# An identifier shape, not an enumerated set: the voice registry arrives in sprint S4.2.
+VOICE_ID_PATTERN = r"^[a-z0-9][a-z0-9-]{0,63}$"
+MAX_QUERY_CHARS = 2000
+# The HUD's default "builtin" provider sends this placeholder instead of a URL (removed with that provider in S3.1).
+BUILTIN_ENDPOINT = "in-process"
+
+MicSource = Literal["browser", "host"]
+PlaybackAction = Literal["resume", "start", "pause", "stop", "next", "prev"]
+
+_HTTP_URL = TypeAdapter(AnyHttpUrl)
+
+
+def _check_base_url(value: str) -> str:
+    value = value.strip()
+    if value == BUILTIN_ENDPOINT:
+        return value
+    try:
+        _HTTP_URL.validate_python(value)
+    except ValidationError:
+        # Do not chain: the original message echoes the rejected input.
+        raise ValueError("must be an http(s) URL") from None
+    return value
+
+
+VoiceId = Annotated[str, StringConstraints(pattern=VOICE_ID_PATTERN)]
+Cadence = Annotated[float, Field(ge=0.1, le=3.0, description="Playback speed cadence multiplier (e.g. 0.8, 1.0, 1.2)")]
+QueryText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_QUERY_CHARS)]
+BaseUrl = Annotated[str, AfterValidator(_check_base_url)]
+ApiKey = Annotated[str, StringConstraints(max_length=512)]
+ProviderName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9_-]{1,32}$")]
+ModelName = Annotated[str, StringConstraints(min_length=1, max_length=128)]
 
 
 class BaseProtocolMessage(BaseModel):
@@ -32,7 +78,7 @@ class SelectVoiceMessage(BaseProtocolMessage):
     """Client request to switch character persona voice."""
 
     type: Literal["select_voice"] = "select_voice"
-    voice_id: str = Field(
+    voice_id: VoiceId = Field(
         ...,
         description="Character voice identifier (e.g. david-martinez, lucy-kushinada, v-male, v-female, johnny-silverhand)",
     )
@@ -42,9 +88,9 @@ class SetMicSourceMessage(BaseProtocolMessage):
     """Client request to switch microphone ingestion source."""
 
     type: Literal["set_mic_source"] = "set_mic_source"
-    source: str = Field(
+    source: MicSource = Field(
         ...,
-        description="Microphone source: 'browser' (Web Audio PCM) or 'host' (sounddevice) or 'mock'",
+        description="Microphone source: 'browser' (Web Audio PCM) or 'host' (sounddevice)",
     )
 
 
@@ -58,19 +104,14 @@ class SetCadenceMessage(BaseProtocolMessage):
     """Client request to update playback reading speed cadence multiplier."""
 
     type: Literal["set_cadence"] = "set_cadence"
-    cadence: float = Field(
-        ...,
-        ge=0.1,
-        le=3.0,
-        description="Playback speed cadence multiplier (e.g. 0.8, 1.0, 1.2)",
-    )
+    cadence: Cadence
 
 
 class PlaybackControlMessage(BaseProtocolMessage):
     """Client request to control narration playback state."""
 
     type: Literal["playback_control"] = "playback_control"
-    action: str = Field(
+    action: PlaybackAction = Field(
         ...,
         description="Playback action: 'pause', 'resume', 'next', 'prev'",
     )
@@ -80,7 +121,7 @@ class QueryInterruptionMessage(BaseProtocolMessage):
     """User speech query or text prompt sent to interrupt narration with a question."""
 
     type: Literal["query_interruption"] = "query_interruption"
-    query: str = Field(
+    query: QueryText = Field(
         ...,
         description="Question or prompt asked by the user during interruption",
     )
@@ -90,10 +131,10 @@ class UpdateLLMConfigMessage(BaseProtocolMessage):
     """Update local or remote LLM endpoint provider and web search configuration."""
 
     type: Literal["update_config"] = "update_config"
-    provider: Optional[str] = Field(default=None, description="LLM provider ('ollama', 'openai', 'groq', 'gemini')")
-    base_url: Optional[str] = Field(default=None, description="API Base URL (e.g. 'http://localhost:11434')")
-    api_key: Optional[str] = Field(default=None, description="API Key for remote LLM provider")
-    model: Optional[str] = Field(default=None, description="Model identifier (e.g. 'llama3.2', 'gpt-4o-mini')")
+    provider: Optional[ProviderName] = Field(default=None, description="LLM provider ('ollama', 'openai', 'groq', 'gemini')")
+    base_url: Optional[BaseUrl] = Field(default=None, description="API Base URL (e.g. 'http://localhost:11434')")
+    api_key: Optional[ApiKey] = Field(default=None, description="API Key for remote LLM provider")
+    model: Optional[ModelName] = Field(default=None, description="Model identifier (e.g. 'llama3.2', 'gpt-4o-mini')")
     web_search_enabled: Optional[bool] = Field(default=None, description="Enable live internet web search grounding")
 
 
@@ -102,6 +143,59 @@ class VoiceEndMessage(BaseProtocolMessage):
 
     type: Literal["voice_end"] = "voice_end"
     fallback_query: Optional[str] = Field(default=None, description="Optional client preview transcript if available")
+
+
+# ============================================================================
+# REST request bodies
+# ============================================================================
+
+
+class ConfigUpdateRequest(BaseModel):
+    """POST /api/config. Every field is optional; a request with any invalid field applies nothing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    base_url: Optional[BaseUrl] = None
+    api_key: Optional[ApiKey] = None
+    provider: Optional[ProviderName] = None
+    model: Optional[ModelName] = None
+    web_search_enabled: Optional[bool] = None
+    active_voice: Optional[VoiceId] = None
+    cadence: Optional[Cadence] = None
+    mic_source: Optional[MicSource] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fold_legacy_aliases(cls, data: Any) -> Any:
+        """The HUD still sends `endpoint` and `model_name` next to `base_url` and `model`."""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        for legacy, current in (("endpoint", "base_url"), ("model_name", "model")):
+            if legacy in data:
+                legacy_value = data.pop(legacy)
+                if data.get(current) is None:
+                    data[current] = legacy_value
+        return data
+
+
+class AskRequest(BaseModel):
+    """POST /api/ask."""
+
+    query: QueryText
+
+
+class PlaybackControlRequest(BaseModel):
+    """POST /api/narration/control."""
+
+    action: PlaybackAction = "resume"
+
+
+class TextDocumentRequest(BaseModel):
+    """POST /api/upload-document with a JSON body instead of a file."""
+
+    text: str = Field(min_length=1)
+    title: str = Field(default="Custom Document", max_length=200)
 
 
 ClientMessage = Union[
@@ -343,7 +437,7 @@ def parse_client_message(raw: Union[str, bytes, Dict[str, Any]]) -> Optional[Cli
 
         if msg_type in ("set_mic_source", "switch_mic_source", "setmicsource"):
             source = payload.get("source") or payload.get("mic_source") or "browser"
-            return SetMicSourceMessage(source=str(source))
+            return SetMicSourceMessage.model_validate({"source": str(source)})  # validated at runtime, typed as a Literal
 
         if msg_type in ("barge_in_trigger", "barge_in", "bargeintrigger"):
             return BargeInTriggerMessage()
@@ -363,7 +457,7 @@ def parse_client_message(raw: Union[str, bytes, Dict[str, Any]]) -> Optional[Cli
                     action = "resume"
                 else:
                     return None
-            return PlaybackControlMessage(action=str(action))
+            return PlaybackControlMessage.model_validate({"action": str(action)})
 
         if msg_type in ("query_interruption", "user_query", "ask_question", "query"):
             query = str(payload.get("query") or payload.get("text") or "").strip()

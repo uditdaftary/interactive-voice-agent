@@ -28,6 +28,8 @@ class DocumentContent:
     sentences: List[str] = field(default_factory=list)
     paragraphs: List[str] = field(default_factory=list)
     passages: List[str] = field(default_factory=list)
+    # Human-readable reasons for parts of the file that were not read (corrupt page, oversized chapter, ...).
+    skipped_parts: List[str] = field(default_factory=list)
 
     def to_dict(self):
         return {
@@ -38,6 +40,7 @@ class DocumentContent:
             "sentences": self.sentences,
             "paragraphs": self.paragraphs,
             "passages": self.passages,
+            "skipped_parts": self.skipped_parts,
         }
 
 
@@ -56,11 +59,9 @@ def _clean_extracted_text(text: str) -> str:
 def _build_document_content(raw_text: str, title: str, filename: str) -> DocumentContent:
     """Build DocumentContent by segmenting raw text into sentences and paragraphs."""
     cleaned = _clean_extracted_text(raw_text)
-    if not cleaned:
-        cleaned = "Empty document."
-
-    sentences = split_sentences(cleaned)
-    if not sentences:
+    # No placeholder text for an empty document: callers see zero sentences and reject it.
+    sentences = split_sentences(cleaned) if cleaned else []
+    if cleaned and not sentences:
         sentences = [cleaned]
 
     # Reconstruct readable paragraphs (grouping every 2-4 sentences or keeping headers intact)

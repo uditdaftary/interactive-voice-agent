@@ -13,6 +13,8 @@ from typing import Annotated, Any, Optional, Union
 import wave
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -23,6 +25,12 @@ from voice_agent.server.connection_manager import (
 )
 from voice_agent.server import security
 from voice_agent.server.narration import NarrationEngine, SearchFn, TtsFn
+from voice_agent.server.schemas import (
+    AskRequest,
+    ConfigUpdateRequest,
+    PlaybackControlRequest,
+    TextDocumentRequest,
+)
 from voice_agent.server.websocket import router as websocket_router
 from voice_agent.settings import Settings
 import asyncio
@@ -186,18 +194,18 @@ def create_app(
             content = await file.read()
             if not content:
                 raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-            doc = DocumentParser.parse_bytes(content, filename=file.filename)
+            doc = await asyncio.to_thread(DocumentParser.parse_bytes, content, file.filename)
         else:
+            if "application/json" not in request.headers.get("content-type", "").lower():
+                raise HTTPException(status_code=415, detail="Send a multipart file or a JSON body.")
             try:
-                data = await request.json()
-            except Exception:  # noqa: BLE001  # S3.3 RC4
-                raise HTTPException(status_code=400, detail="No file or JSON text payload provided.") from None
+                payload = TextDocumentRequest.model_validate_json(await request.body())
+            except ValidationError as exc:
+                raise RequestValidationError(exc.errors(include_url=False, include_context=False, include_input=False)) from None
+            doc = await asyncio.to_thread(DocumentParser.parse_text, payload.text, payload.title)
 
-            text = data.get("text", "").strip()
-            title = data.get("title", "Custom Document").strip()
-            if not text:
-                raise HTTPException(status_code=400, detail="Text field cannot be empty.")
-            doc = DocumentParser.parse_text(text, title=title)
+        if not doc.sentences:
+            raise HTTPException(status_code=422, detail="document contains no readable text")
 
         eng.load_document(doc)
         return {
@@ -206,6 +214,7 @@ def create_app(
             "sentence_count": len(doc.sentences),
             "word_count": doc.total_words,
             "sentences": doc.sentences[:10],
+            "skipped_parts": doc.skipped_parts,
         }
 
     @app.get("/api/document")
@@ -241,28 +250,27 @@ def create_app(
         }
 
     @app.post("/api/config")
-    async def update_config(request: Request):
-        """Update runtime LLM endpoint, model, search grounding, or voice cadence."""
-        data = await request.json()
+    async def update_config(body: ConfigUpdateRequest):
+        """Update runtime LLM endpoint, model, search grounding, or voice cadence.
+
+        FastAPI validates the whole body before this runs, so an invalid field applies nothing.
+        """
         eng: NarrationEngine = app.state.narration_engine
         mgr: ConnectionManager = app.state.connection_manager
 
-        # Update LLM Client
         eng.llm.update_config(
-            base_url=data.get("base_url") or data.get("endpoint"),
-            api_key=data.get("api_key"),
-            provider=data.get("provider"),
-            model=data.get("model") or data.get("model_name"),
-            web_search_enabled=data.get("web_search_enabled"),
+            base_url=body.base_url,
+            api_key=body.api_key,
+            provider=body.provider,
+            model=body.model,
+            web_search_enabled=body.web_search_enabled,
         )
-
-        # Update Manager parameters if provided
-        if "active_voice" in data:
-            mgr.set_voice(data["active_voice"])
-        if "cadence" in data:
-            mgr.set_cadence(float(data["cadence"]))
-        if "mic_source" in data:
-            mgr.set_mic_source(data["mic_source"])
+        if body.active_voice is not None:
+            mgr.set_voice(body.active_voice)
+        if body.cadence is not None:
+            mgr.set_cadence(body.cadence)
+        if body.mic_source is not None:
+            mgr.set_mic_source(body.mic_source)
 
         # Broadcast state synchronization to clients
         await mgr.broadcast_json(mgr.get_state_sync_message())
@@ -278,22 +286,16 @@ def create_app(
         }
 
     @app.post("/api/ask")
-    async def ask_question(request: Request):
+    async def ask_question(body: AskRequest):
         """Trigger an ad-hoc voice question interruption with live web search grounding."""
-        data = await request.json()
-        query = str(data.get("query", "")).strip()
-        if not query:
-            raise HTTPException(status_code=400, detail="Query cannot be empty.")
-
         eng: NarrationEngine = app.state.narration_engine
-        asyncio.create_task(eng.handle_user_interruption(query))  # noqa: RUF006  # S2.1
-        return {"status": "ok", "query": query}
+        asyncio.create_task(eng.handle_user_interruption(body.query))  # noqa: RUF006  # S2.1
+        return {"status": "ok", "query": body.query}
 
     @app.post("/api/narration/control")
-    async def narration_control(request: Request):
+    async def narration_control(body: PlaybackControlRequest):
         """Programmatic control over narration (resume, pause, next, prev)."""
-        data = await request.json()
-        action = str(data.get("action", "resume")).lower().strip()
+        action = body.action
         eng: NarrationEngine = app.state.narration_engine
         mgr: ConnectionManager = app.state.connection_manager
 
