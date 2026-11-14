@@ -309,6 +309,19 @@ class ConnectionManager:
         if dead_set:
             with self._lock:
                 self.active_connections = [ws for ws in self.active_connections if ws not in dead_set]
+            await asyncio.gather(*[self._close_dropped(ws) for ws in dead_set])
+
+    @staticmethod
+    async def _close_dropped(ws: WebSocket) -> None:
+        """Close a dropped client so its page sees the loss and reconnects.
+
+        Without this the socket is merely forgotten: its endpoint loop keeps answering that client's
+        messages, but it never receives another broadcast, so its HUD would freeze silently.
+        """
+        try:
+            await asyncio.wait_for(ws.close(code=1011), timeout=SEND_TIMEOUT_S)
+        except Exception as exc:  # noqa: BLE001  # best effort on a client that is already failing; logged
+            logger.debug("Closing a dropped WebSocket client failed: %s", type(exc).__name__)
 
     async def broadcast_text(self, text: str) -> None:
         """Broadcast a text payload to all active connections."""

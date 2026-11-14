@@ -14,6 +14,10 @@ class RecordingSocket:
     def __init__(self) -> None:
         self.texts: list[str] = []
         self.blobs: list[bytes] = []
+        self.close_codes: list[int] = []
+
+    async def close(self, code: int = 1000) -> None:
+        self.close_codes.append(code)
 
     async def send_text(self, text: str) -> None:
         self.texts.append(text)
@@ -33,6 +37,9 @@ class StalledSocket(RecordingSocket):
 
 
 class BrokenSocket(RecordingSocket):
+    async def close(self, code: int = 1000) -> None:
+        raise RuntimeError("already closed")
+
     async def send_text(self, text: str) -> None:
         raise RuntimeError('Cannot call "send" once a close message has been sent.')
 
@@ -66,6 +73,9 @@ async def test_stalled_socket_dropped_after_timeout(short_send_timeout: None, ca
     assert healthy.texts == ["hello"]
     assert manager.active_connections == [healthy]
     assert "TimeoutError" in caplog.text
+    # The dropped client is told, so its page reconnects instead of freezing on a socket nobody broadcasts to.
+    assert stalled.close_codes == [1011]
+    assert healthy.close_codes == []
 
 
 async def test_stalled_socket_dropped_for_binary_frames(short_send_timeout: None, caplog: pytest.LogCaptureFixture) -> None:
@@ -112,6 +122,19 @@ async def test_slow_client_does_not_delay_the_others(short_send_timeout: None) -
     await manager.broadcast_text("hello")
 
     assert delivered_at and delivered_at[0] - started < 0.03
+
+
+async def test_close_that_also_stalls_does_not_hang_the_broadcast(short_send_timeout: None) -> None:
+    class UncloseableSocket(StalledSocket):
+        async def close(self, code: int = 1000) -> None:
+            await asyncio.Event().wait()
+
+    manager = manager_with(UncloseableSocket())
+
+    async with asyncio.timeout(2):
+        await manager.broadcast_text("hello")
+
+    assert manager.active_connections == []
 
 
 def test_sync_broadcast_without_loop_warns(caplog: pytest.LogCaptureFixture) -> None:
