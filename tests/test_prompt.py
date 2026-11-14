@@ -209,6 +209,25 @@ def test_sanitize_chatml_removes_fence_tags_to_a_fixed_point(hostile: str, expec
     assert sanitize_chatml(hostile) == expected
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "see <current_sentence for details and more",  # a stray tag start with no '>' keeps the text after it
+        "a <web_results is never closed, and neither is this one: <book_passages also open",
+        "a <current_sentence\nmore text on the next line > 3",  # a tag does not span lines
+        "x <book_passages " + "y" * 300 + ">",  # nor an unbounded attribute run
+        "if a <web_results then b",
+    ],
+)
+def test_stray_fence_tag_start_does_not_delete_the_text_after_it(text: str) -> None:
+    assert sanitize_chatml(text) == text
+
+
+def test_dangling_fence_tag_start_at_the_very_end_is_still_removed() -> None:
+    assert sanitize_chatml("end </book_passages") == "end"
+    assert sanitize_chatml("end <current_sentence  \n") == "end"
+
+
 def test_sanitize_chatml_leaves_ordinary_markup_alone() -> None:
     assert sanitize_chatml("a < b and <b>bold</b> and 3 > 2") == "a < b and <b>bold</b> and 3 > 2"
 

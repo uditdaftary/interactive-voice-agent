@@ -14,8 +14,13 @@ _CHATML_CONTROL_TOKENS = re.compile(
 )
 
 # The fence tags build_messages wraps untrusted text in: opening (attributes allowed) or closing, loose
-# whitespace allowed, or an unclosed tag start at the very end of the text.
-_FENCE_TAGS = re.compile(r'<\s*/?\s*(?:book_passages|current_sentence|web_results)\b[^>]*(?:>|$)', re.IGNORECASE)
+# whitespace allowed. A tag must close with '>' on the same line within 200 characters and without another '<'
+# in between, so a stray "<current_sentence" cannot swallow the text after it; a bare tag start with nothing
+# after it but whitespace (a tag cut off at the end of the text) is removed too.
+_FENCE_TAGS = re.compile(
+    r'<\s*/?\s*(?:book_passages|current_sentence|web_results)\b(?:[^<>\n]{0,200}>|\s*$)',
+    re.IGNORECASE,
+)
 
 # Control and invisible characters (preserves newline, carriage return, and tab). The zero-width and
 # bidi-control ranges matter because str.split() does not treat them as blanks, so they could hide inside a tag.
