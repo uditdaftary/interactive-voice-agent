@@ -348,6 +348,14 @@ async def test_status_is_ok_before_any_call_and_recovers_after_failure() -> None
 # --- think blocks inside the stream ---
 
 
+async def test_prefilled_reasoning_whose_close_tag_straddles_the_hold_limit_is_cleaned() -> None:
+    pieces = ["r" * 115 + "</thi", "nk>Answer"]
+    client = make_client(lambda request: sse_response(sse(*pieces)))
+
+    assert "".join(await collect(client)) == "Answer"
+    assert client.status == "ok"
+
+
 async def test_think_block_never_reaches_the_consumer() -> None:
     pieces = ["<thi", "nk>weigh the ", "options</th", "ink>Answer", " here."]
     client = make_client(lambda request: sse_response(sse(*pieces)))
@@ -512,6 +520,75 @@ def test_reasoning_longer_than_the_lead_hold_is_not_caught() -> None:
     output = run_filter([reasoning, "</think>Answer"])
 
     assert output == reasoning + "</think>Answer"
+
+
+# --- the decision is made on the first LEAD_HOLD_CHARS of the stream, not on how the server batches it (#55) ---
+
+LEAD = ThinkFilter.LEAD_HOLD_CHARS
+
+
+def test_close_tag_split_across_the_hold_limit_is_still_caught() -> None:
+    think_filter = ThinkFilter()
+
+    # 115 characters plus a partial "</thi" reach the hold limit, but the tag starts inside the hold.
+    assert think_filter.feed("r" * 115 + "</thi") == ""
+    assert think_filter.feed("nk>Answer") == "Answer"
+    assert think_filter.flush() == ""
+
+
+@pytest.mark.parametrize("partial", ["<", "</", "</t", "</thi", "</think", "<t", "<thin", "<think"])
+def test_a_partial_tag_that_starts_inside_the_hold_keeps_the_hold(partial: str) -> None:
+    think_filter = ThinkFilter()
+
+    assert think_filter.feed("r" * (LEAD - 2) + partial) == ""  # long enough to decide, but the tag may still complete
+
+
+def test_a_partial_tag_that_breaks_is_released_with_the_text() -> None:
+    think_filter = ThinkFilter()
+    assert think_filter.feed("r" * (LEAD - 2) + "</thi") == ""
+
+    assert think_filter.feed("s is plain.") == "r" * (LEAD - 2) + "</this is plain."
+
+
+def test_after_the_hold_a_lone_close_tag_is_ordinary_text_and_only_a_partial_open_tag_is_held() -> None:
+    think_filter = ThinkFilter()
+
+    assert think_filter.feed("r" * LEAD) == "r" * LEAD  # decided plain, nothing partial pending
+    assert think_filter.feed("more </thi") == "more </thi"  # not held: a close tag is not looked for any more
+    assert think_filter.feed("nk> and <thi") == "nk> and "  # a partial open tag is held, as in any plain reply
+    assert think_filter.feed("nk>hidden</think> shown") == " shown"  # and a block later in the reply is removed
+
+
+@pytest.mark.parametrize(
+    ("stream", "expected"),
+    [
+        ("r" * 113 + "</think>Answer", "Answer"),  # starts inside the hold
+        ("r" * (LEAD - 1) + "</think>Answer", "Answer"),  # the last start position inside the hold
+        ("r" * LEAD + "</think>Answer", "r" * LEAD + "</think>Answer"),  # the first one outside it
+        ("x" * 150 + "</think>Ans", "x" * 150 + "</think>Ans"),  # far outside: ordinary text, nothing dropped
+        ("x" * (LEAD - 1) + "x" * 31 + "</think>Ans", "x" * (LEAD + 30) + "</think>Ans"),
+        ("Hi. " + "p" * 200 + "<think>late block</think> end", "Hi. " + "p" * 200 + " end"),  # a normal block after the hold
+        ("<think>a</think>" + "p" * 200, "p" * 200),
+        ("short reply", "short reply"),
+        ("r" * 119 + "</think>", ""),  # nothing after the close tag
+    ],
+)
+@pytest.mark.parametrize("chunk_size", [1, 2, 3, 7, 11, 50, 119, 120, 121, 1000])
+def test_the_same_stream_filters_the_same_whatever_the_chunking(stream: str, expected: str, chunk_size: int) -> None:
+    chunks = [stream[start : start + chunk_size] for start in range(0, len(stream), chunk_size)]
+
+    assert run_filter(chunks) == expected
+
+
+def test_a_plain_reply_is_still_delayed_by_at_most_a_partial_tag_beyond_the_hold() -> None:
+    think_filter = ThinkFilter()
+    plain = "Right, the narrator is never named in these passages. " * 6
+    fed = emitted = 0
+    for start in range(0, len(plain), 5):
+        chunk = plain[start : start + 5]
+        fed += len(chunk)
+        emitted += len(think_filter.feed(chunk))
+        assert fed - emitted <= LEAD + len("</think>") - 1
 
 
 def test_unclosed_think_dropped() -> None:

@@ -448,9 +448,11 @@ class ThinkFilter:
     The second shape cannot be told from a plain reply until `</think>` shows up, so the start of the
     stream is held back. The choice is `LEAD_HOLD_CHARS` = 120 characters (about 30 tokens, under a second
     at local-model speeds):
-    - A stream with no think tag in its first 120 characters is a plain reply. It is released from there
-      on, never altered, and a reply shorter than that is released whole when the stream ends, so the
-      first words of a reply arrive at most about 120 characters late.
+    - A stream with no think tag STARTING in its first 120 characters is a plain reply. It is released from
+      there on, never altered, and a reply shorter than that is released whole when the stream ends, so
+      the first words of a reply arrive at most 120 characters late (127 when a tag has started inside the
+      hold and is still incomplete). A tag that starts after the hold is not looked for in the lead, so
+      the result does not depend on how the server batches chunks.
     - Reasoning that ends inside the hold is removed, together with the whitespace after its `</think>`.
       Reasoning longer than the hold (the usual case for a thinking model) is NOT caught: it has already
       been released, and a later lone `</think>` is ordinary text. Holding longer would only delay every
@@ -496,16 +498,27 @@ class ThinkFilter:
         emitted: list[str] = []
         while True:
             if self._undecided:
-                opened = self._pending.find(self._OPEN)
-                closed = self._pending.find(self._CLOSE)
+                # Decide on a tag that STARTS inside the first LEAD_HOLD_CHARS only. Searching the whole buffer
+                # would make the result depend on how the server batches its chunks.
+                window = self._pending[: self.LEAD_HOLD_CHARS + len(self._CLOSE) - 1]
+                opened = window.find(self._OPEN)
+                closed = window.find(self._CLOSE)
                 if closed >= 0 and (opened < 0 or closed < opened):
                     # The stream began inside a think block whose opening tag was in the prompt.
                     self._pending = self._pending[closed + len(self._CLOSE):]
                     self._undecided = False
                     self._trim = True
                     continue
-                if opened < 0 and len(self._pending) < self.LEAD_HOLD_CHARS:
-                    return ""
+                if opened < 0:
+                    if len(self._pending) < self.LEAD_HOLD_CHARS:
+                        return ""
+                    # A tag that has started inside the hold but is not complete yet may still arrive.
+                    partial = max(
+                        self._partial_tag_length(self._pending, self._OPEN),
+                        self._partial_tag_length(self._pending, self._CLOSE),
+                    )
+                    if len(self._pending) - partial < self.LEAD_HOLD_CHARS:
+                        return ""
                 self._undecided = False
             tag = self._CLOSE if self._inside else self._OPEN
             index = self._pending.find(tag)
