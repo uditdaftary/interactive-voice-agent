@@ -11,6 +11,7 @@ import logging
 import os
 import tempfile
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Protocol, TypedDict
 
@@ -155,16 +156,23 @@ class Pyttsx3Backend:
 
     name = "pyttsx3"
 
+    def __init__(self) -> None:
+        # pyttsx3 and SAPI are not thread-safe: creating the engine and every call on it run on this one thread.
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pyttsx3")
+
     async def synthesize(self, text: str, voice_id: str, cadence: float) -> SpeechAudio:
         clean_text = text.strip()
         if not clean_text:
             raise TtsError("pyttsx3: nothing to say")
-        data = await asyncio.to_thread(self._speak_to_wav, clean_text, voice_id, cadence)
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(self._executor, self._speak_to_wav, clean_text, voice_id, cadence)
         return _require_audio("pyttsx3", SpeechAudio(data, "audio/wav"))
 
     def _speak_to_wav(self, text: str, voice_id: str, cadence: float) -> bytes:
         import pyttsx3
 
+        # pyttsx3.init hands back a live engine rather than a new one, and a reused engine stalls on its second runAndWait
+        # (pyttsx3 2.99, SAPI5). The engine is local to this call, so it is released before the next utterance.
         engine = pyttsx3.init()
         engine.setProperty("rate", int(175 * cadence))
         voice = pick_voice(engine.getProperty("voices"), is_female_voice_id(voice_id))
@@ -181,11 +189,17 @@ class Pyttsx3Backend:
                     return handle.read()
             raise TtsError("pyttsx3: the engine wrote no audio")
         finally:
-            if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except Exception:  # noqa: BLE001, S110  # 3b logs this
-                    pass
+            _remove_temp_file(temp_path)
+
+
+def _remove_temp_file(path: str) -> None:
+    """A temp WAV that cannot be deleted is left behind; the warning names it so it can be cleared by hand."""
+    if not os.path.exists(path):
+        return
+    try:
+        os.remove(path)
+    except OSError as error:
+        logger.warning("could not delete temp audio file %s: %s", path, error)
 
 
 def _require_audio(name: str, audio: SpeechAudio) -> SpeechAudio:

@@ -1,13 +1,16 @@
 """TTS backends: the fallback chain, the edge-tts backend, and the synthesize_sentence adapter. No real edge-tts or SAPI call runs here."""
 
 import logging
+import os
+import threading
+import wave
 from typing import Any
 
 import pytest
 
 from voice_agent.settings import load_settings
 from voice_agent.tts import backends
-from voice_agent.tts.backends import ChainedTts, EdgeTtsBackend, SpeechAudio, TtsError, build_tts
+from voice_agent.tts.backends import ChainedTts, EdgeTtsBackend, Pyttsx3Backend, SpeechAudio, TtsError, build_tts
 
 AUDIO = b"x" * 200
 
@@ -132,3 +135,81 @@ async def test_edge_without_audio_raises(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_character_profiles_moved_intact() -> None:
     assert backends.CHARACTER_AUDIO_PROFILES["johnny-silverhand"]["voice"] == "en-US-RogerNeural"
     assert set(backends.CHARACTER_AUDIO_PROFILES) == {"johnny-silverhand", "lucy-kushinada", "david-martinez", "v-male", "v-female"}
+
+
+class WritingEngine:
+    """Stands in for a pyttsx3 engine: save_to_file writes a short WAV to the path it is given."""
+
+    def __init__(self) -> None:
+        self.properties: dict[str, object] = {}
+        self.saved_paths: list[str] = []
+
+    def setProperty(self, name: str, value: object) -> None:
+        self.properties[name] = value
+
+    def getProperty(self, name: str) -> list[object]:
+        return []
+
+    def save_to_file(self, text: str, path: str) -> None:
+        self.saved_paths.append(path)
+        with wave.open(path, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16000)
+            wav.writeframes(b"\x00\x00" * 4000)
+
+    def runAndWait(self) -> None:
+        pass
+
+
+@pytest.mark.windows
+async def test_pyttsx3_engine_calls_all_run_on_one_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real SAPI engine, with each runAndWait recorded: pyttsx3 is not thread-safe, so every call runs on one executor thread.
+
+    The wrapper is set on the class, not the instance: an instance-level closure would keep the engine alive, and pyttsx3.init
+    hands back a live engine rather than a new one.
+    """
+    from pyttsx3.engine import Engine
+
+    real_run = Engine.runAndWait
+    run_threads: list[str] = []
+
+    def recording_run(self: Engine) -> None:
+        run_threads.append(threading.current_thread().name)
+        real_run(self)
+
+    monkeypatch.setattr(Engine, "runAndWait", recording_run)
+    backend = Pyttsx3Backend()
+
+    first = await backend.synthesize("hello there", "v-male", 1.0)
+    second = await backend.synthesize("hello again", "v-male", 1.0)
+
+    assert first.mime == second.mime == "audio/wav"
+    assert len(run_threads) == 2
+    assert set(run_threads) == {run_threads[0]}
+    assert run_threads[0].startswith("pyttsx3")
+
+
+async def test_temp_delete_failure_warns_with_the_path(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import pyttsx3
+
+    engine = WritingEngine()
+    monkeypatch.setattr(pyttsx3, "init", lambda *args, **kwargs: engine)
+
+    def refuse(path: str) -> None:
+        raise PermissionError("file in use")
+
+    monkeypatch.setattr(os, "remove", refuse)
+    caplog.set_level(logging.WARNING, logger="voice_agent.tts.backends")
+
+    audio = await Pyttsx3Backend().synthesize("hello there", "v-male", 1.0)
+
+    assert audio.mime == "audio/wav"
+    leftover = engine.saved_paths[0]
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert leftover in warnings[0].getMessage()
+    monkeypatch.undo()
+    os.remove(leftover)
