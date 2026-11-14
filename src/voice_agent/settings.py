@@ -10,6 +10,8 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from voice_agent.tts.backends import TTS_BACKEND_NAMES
+
 _FALSE_SPELLINGS = frozenset({"0", "false", "no"})
 
 
@@ -58,6 +60,24 @@ class Settings:
             unrecognized_pause_s=0.0,
         )
 
+    # STT: Whisper's initial prompt, which biases decoding toward names the user cares about. Empty means none.
+    stt_initial_prompt: str = ""
+
+    # TTS: the backend tried first; the other one is the fallback. "edge" or "pyttsx3".
+    tts_primary: str = "edge"
+
+
+def _tts_primary(raw: str | None, default: str) -> str:
+    """Case-insensitive, stored lower case. Any other name fails here, at load, not at the first narrated sentence."""
+    if raw is None:
+        return default
+    name = raw.strip().lower()
+    if name not in TTS_BACKEND_NAMES:
+        raise ValueError(
+            f"VOICE_AGENT_TTS_PRIMARY must be one of {', '.join(TTS_BACKEND_NAMES)}; got {raw!r}"
+        )
+    return name
+
 
 def _env_bool(raw: str | None, default: bool) -> bool:
     if raw is None:
@@ -75,4 +95,6 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         llm_model=source.get("VOICE_AGENT_LLM_MODEL", defaults.llm_model),
         llm_api_key=source.get("VOICE_AGENT_LLM_API_KEY", defaults.llm_api_key),
         web_search_enabled=_env_bool(source.get("VOICE_AGENT_WEB_SEARCH"), defaults.web_search_enabled),
+        stt_initial_prompt=source.get("VOICE_AGENT_STT_INITIAL_PROMPT", defaults.stt_initial_prompt),
+        tts_primary=_tts_primary(source.get("VOICE_AGENT_TTS_PRIMARY"), defaults.tts_primary),
     )

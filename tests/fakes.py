@@ -8,6 +8,7 @@ the engine actually asked for.
 import asyncio
 import time
 from collections.abc import AsyncGenerator, Callable, Sequence
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -87,3 +88,41 @@ class FakeLLM:
         self.config.update({key: value for key, value in kwargs.items() if value is not None})
         if kwargs.get("web_search_enabled") is not None:
             self.web_search_enabled = bool(kwargs["web_search_enabled"])
+
+
+class FakeWhisper:
+    """Stands in for `faster_whisper.WhisperModel`: patch the class with an instance, and calling it builds the model.
+
+    Every `transcribe` returns `text` as one segment (nothing when `text` is ""). The first `fail_loads` constructions raise,
+    like a model missing from the Hugging Face cache. The fake is its own model.
+    """
+
+    def __init__(self, text: str = "", fail_loads: int = 0) -> None:
+        self.text = text
+        self.fail_loads = fail_loads
+        self.constructions: list[dict[str, Any]] = []
+        self.transcribe_kwargs: list[dict[str, Any]] = []
+        self.inputs: list[np.ndarray] = []
+
+    def __call__(self, model_size: str, **kwargs: Any) -> "FakeWhisper":
+        self.constructions.append({"model_size": model_size, **kwargs})
+        if len(self.constructions) <= self.fail_loads:
+            raise OSError("model not in the Hugging Face cache")
+        return self
+
+    def transcribe(self, audio: np.ndarray, **kwargs: Any) -> tuple[list[SimpleNamespace], None]:
+        self.inputs.append(audio)
+        self.transcribe_kwargs.append(kwargs)
+        return ([SimpleNamespace(text=self.text)] if self.text else []), None
+
+
+class FakeStt:
+    """Stands in for the STT engine: returns a fixed transcript and records the byte length of each input."""
+
+    def __init__(self, fixed_transcript: str = "") -> None:
+        self.fixed_transcript = fixed_transcript
+        self.calls: list[int] = []
+
+    def transcribe(self, audio_data: bytes | bytearray | np.ndarray, sample_rate: int = 16000) -> str:
+        self.calls.append(audio_data.nbytes if isinstance(audio_data, np.ndarray) else len(audio_data))
+        return self.fixed_transcript

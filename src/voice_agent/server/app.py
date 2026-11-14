@@ -33,7 +33,7 @@ from voice_agent.server.schemas import (
     TextDocumentRequest,
 )
 from voice_agent.server.websocket import router as websocket_router
-from voice_agent.settings import Settings
+from voice_agent.settings import Settings, load_settings
 import asyncio
 
 logger = logging.getLogger(__name__)
@@ -117,11 +117,23 @@ def _stored_stt_engine(app: FastAPI) -> Any:
     return engine
 
 
-async def _build_stt_engine(app: FastAPI) -> Any:
+def _construct_stt_engine(initial_prompt: str) -> Any:
+    """Runs in the build thread: constructs the engine and loads Whisper here, so no caller's thread pays for the model."""
     from voice_agent.stt.recognizer import STTEngine
 
+    engine = STTEngine(initial_prompt=initial_prompt)
+    # A failed load is logged by the backend and retried after its cooldown; the engine is stored either way.
+    engine.load()
+    return engine
+
+
+async def _build_stt_engine(app: FastAPI) -> Any:
+    settings: Settings | None = getattr(app.state, "settings", None)
+    if settings is None:
+        # An app built without create_app has no settings on its state; it takes the environment's, as create_app would.
+        settings = load_settings()
     try:
-        engine = await asyncio.to_thread(STTEngine, fallback_mock=False)
+        engine = await asyncio.to_thread(_construct_stt_engine, settings.stt_initial_prompt)
         app.state.stt_engine = engine
         return engine
     finally:
@@ -141,7 +153,7 @@ async def ensure_stt_engine(app: FastAPI) -> Any:
     if engine is not None:
         return engine
     build = getattr(app.state, "stt_build", None)
-    if build is None:
+    if build is None or build.done():
         # No await between the check and the set, so concurrent first callers share one task.
         build = app.state.stt_build = asyncio.create_task(_build_stt_engine(app))
     return await asyncio.shield(build)
@@ -179,7 +191,7 @@ def create_app(
         ui_dir: Path to static dashboard UI directory. Defaults to project `ui/`.
         connection_manager: Custom ConnectionManager instance. Defaults to default singleton.
         narration_engine: Custom NarrationEngine instance. Defaults to new instance.
-        stt_engine: Custom STTEngine or MockSTTEngine instance. Defaults to the connection manager's engine,
+        stt_engine: Custom STT engine (any object with a `transcribe` method). Defaults to the connection manager's engine,
             else one is built on first use.
         settings: Timing and endpoint settings for the default NarrationEngine. Defaults to `load_settings()`.
         llm_client: LLM client for the default NarrationEngine. Defaults to one built from `settings`.
@@ -203,13 +215,23 @@ def create_app(
     app.add_middleware(security.LoggingTrustedHostMiddleware, allowed_hosts=allowed_hosts or list(security.DEFAULT_ALLOWED_HOSTS))
 
     # Store connection manager and narration engine in app state
+    # Resolved once, so the narration engine and the STT build read the same settings.
+    resolved_settings = settings if settings is not None else load_settings()
+    app.state.settings = resolved_settings
+
     manager = connection_manager if connection_manager is not None else default_connection_manager
     app.state.connection_manager = manager
 
     engine = (
         narration_engine
         if narration_engine is not None
-        else NarrationEngine(connection_manager=manager, llm_client=llm_client, settings=settings, tts=tts, search=search)
+        else NarrationEngine(
+            connection_manager=manager,
+            llm_client=llm_client,
+            settings=resolved_settings,
+            tts=tts,
+            search=search,
+        )
     )
     app.state.narration_engine = engine
 
