@@ -4,13 +4,23 @@ import logging
 import os
 import threading
 import wave
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from voice_agent.settings import load_settings
 from voice_agent.tts import backends
-from voice_agent.tts.backends import ChainedTts, EdgeTtsBackend, Pyttsx3Backend, SpeechAudio, TtsError, build_tts
+from voice_agent.tts.backends import (
+    ChainedTts,
+    EdgeTtsBackend,
+    Pyttsx3Backend,
+    SpeechAudio,
+    TtsError,
+    build_tts,
+    is_female_voice_id,
+    pick_voice,
+)
 
 AUDIO = b"x" * 200
 
@@ -213,3 +223,19 @@ async def test_temp_delete_failure_warns_with_the_path(
     assert leftover in warnings[0].getMessage()
     monkeypatch.undo()
     os.remove(leftover)
+
+
+def test_pick_voice_male_skips_female() -> None:
+    voices = [
+        SimpleNamespace(id="zira", name="Microsoft Zira Desktop - English (United States) Female"),
+        SimpleNamespace(id="david", name="Microsoft David Desktop - English (United States) Male"),
+    ]
+
+    assert pick_voice(voices, female=False) == "david"
+    assert pick_voice(voices, female=True) == "zira"
+
+
+def test_voice_id_v_male_is_not_female() -> None:
+    assert is_female_voice_id("v-male") is False
+    assert is_female_voice_id("v-female") is True
+    assert is_female_voice_id("lucy") is True

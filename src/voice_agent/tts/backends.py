@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import tempfile
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -137,16 +138,21 @@ class SapiVoice(Protocol):
     name: str
 
 
+# Whole words only: "female" contains "male", so a substring test would give a male request the female voice.
+_FEMALE_VOICE_ID = re.compile(r"\bfemale\b|lucy")
+_FEMALE_VOICE_NAME = re.compile(r"\bfemale\b|\bzira\b|\bhazel\b")
+_MALE_VOICE_NAME = re.compile(r"\bmale\b|\bdavid\b")
+
+
 def is_female_voice_id(voice_id: str) -> bool:
-    return "female" in voice_id or "lucy" in voice_id
+    return _FEMALE_VOICE_ID.search(voice_id) is not None
 
 
 def pick_voice(voices: Sequence[SapiVoice], female: bool) -> str | None:
     """The id of the first installed SAPI voice of the wanted gender, or None."""
-    markers = ("zira", "hazel", "female") if female else ("david", "male")
+    pattern = _FEMALE_VOICE_NAME if female else _MALE_VOICE_NAME
     for voice in voices:
-        name = voice.name.lower()
-        if any(marker in name for marker in markers):
+        if pattern.search(voice.name.lower()) is not None:
             return voice.id
     return None
 
