@@ -191,6 +191,21 @@ async def test_unusable_base_url_is_error_and_never_raises(base_url: str) -> Non
     assert client.status == "error"
 
 
+@pytest.mark.parametrize("base_url", ["HTTPS://api.example.com/v1", "Http://127.0.0.1:11434/v1", "HTTP://localhost:11434"])
+async def test_url_scheme_is_case_insensitive(base_url: str) -> None:
+    seen: list[httpx.URL] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url)
+        return sse_response(sse("fine"))
+
+    client = LLMClient(base_url=base_url, provider="ollama", transport=httpx.MockTransport(handler))
+
+    assert "".join(await collect(client)) == "fine"
+    assert client.status == "ok"
+    assert seen[0].scheme in ("http", "https")
+
+
 async def test_non_ascii_api_key_is_error_and_never_raises(caplog: pytest.LogCaptureFixture) -> None:
     client = make_client(lambda request: sse_response(sse("never")), api_key="kéy")
 
@@ -541,6 +556,13 @@ def test_http_key_warns_once(caplog: pytest.LogCaptureFixture) -> None:
     (message,) = key_warnings(caplog)
     assert "models.example.com" in message
     assert SECRET not in caplog.text
+
+
+def test_http_key_warning_ignores_scheme_case(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING):
+        LLMClient(base_url="HTTP://models.example.com/v1", api_key=SECRET, provider="ollama")
+
+    assert len(key_warnings(caplog)) == 1
 
 
 def test_http_key_warns_per_url(caplog: pytest.LogCaptureFixture) -> None:

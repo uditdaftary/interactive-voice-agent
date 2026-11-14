@@ -648,7 +648,7 @@ class LLMClient:
         try:
             if self.provider in _NO_MODEL_PROVIDERS:
                 outcome, detail = "offline", f"provider {self.provider!r} has no model"
-            elif not self.base_url.startswith(("http://", "https://")):
+            elif not self.base_url.lower().startswith(("http://", "https://")):  # URL schemes are case-insensitive
                 outcome, detail = "error", "base URL must start with http:// or https://"
             else:
                 payload = {
