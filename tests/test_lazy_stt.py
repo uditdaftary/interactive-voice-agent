@@ -113,7 +113,7 @@ async def test_cancelled_caller_does_not_discard_the_build(gated_stt: type[Gated
     app = create_app(connection_manager=ConnectionManager())
 
     first = asyncio.create_task(ensure_stt_engine(app))
-    await asyncio.to_thread(gated_stt.started.wait, 5)  # the build is now running in its worker thread
+    assert await asyncio.to_thread(gated_stt.started.wait, 5), "the build never started"  # it is now running in its worker thread
     first.cancel()
     with pytest.raises(asyncio.CancelledError):
         await first
