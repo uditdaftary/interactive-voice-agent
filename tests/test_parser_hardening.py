@@ -500,8 +500,13 @@ def test_zip_bomb_epub_upload_is_rejected_in_bounded_memory(client: TestClient) 
 
 
 async def test_upload_parses_off_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A parse run on the loop stalls it for the full blocking_parse_s; run in a thread the loop only ever
+    # waits on the scheduler. The two sit far apart (1.0 s against a 0.5 s limit), so a slow runner cannot
+    # tip a correct implementation over the limit.
+    blocking_parse_s, stall_limit_s = 1.0, 0.5
+
     def slow_parse(data: bytes, filename: str = "document.txt") -> parser.DocumentContent:
-        time.sleep(0.3)
+        time.sleep(blocking_parse_s)
         return parser.parse_text_bytes(data, filename=filename)
 
     monkeypatch.setattr(DocumentParser, "parse_bytes", staticmethod(slow_parse))
@@ -524,4 +529,4 @@ async def test_upload_parses_off_loop(monkeypatch: pytest.MonkeyPatch) -> None:
         resp = await upload
 
     assert resp.status_code == 200
-    assert stall < 0.1
+    assert stall < stall_limit_s
