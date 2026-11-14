@@ -7,15 +7,20 @@ segmenting into sentences using token-shielded boundary detection.
 from dataclasses import dataclass, field
 import html
 import io
+import logging
 from pathlib import Path
+import posixpath
 import re
-from typing import List
+from typing import Dict, List, Optional
+from urllib.parse import unquote
 import zipfile
 
 import pypdf
 
 from voice_agent.cursor.splitter import split_sentences
 from voice_agent.document.bm25 import build_rolling_windows
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -118,33 +123,80 @@ def parse_pdf_bytes(data: bytes, filename: str = "document.pdf") -> DocumentCont
     return _build_document_content(raw_text, title=title, filename=filename)
 
 
+def _skip(skipped: List[str], filename: str, reason: str) -> None:
+    """Record a part of the file that was not read: logged, and returned to the caller."""
+    logger.warning("%r: skipped %s", filename, reason)
+    skipped.append(reason)
+
+
+def _attribute(tag_attributes: str, name: str) -> Optional[str]:
+    match = re.search(rf"(?<![\w:-]){name}\s*=\s*([\"'])(.*?)\1", tag_attributes, re.IGNORECASE | re.DOTALL)
+    return match.group(2) if match else None
+
+
+def _epub_opf_path(archive: zipfile.ZipFile) -> Optional[str]:
+    """The package document named by META-INF/container.xml, else any .opf in the archive."""
+    names = archive.namelist()
+    if "META-INF/container.xml" in names:
+        container = archive.read("META-INF/container.xml").decode("utf-8", errors="ignore")
+        rootfile = re.search(r"<rootfile\b([^<>]*)>", container, re.IGNORECASE)
+        full_path = _attribute(rootfile.group(1), "full-path") if rootfile else None
+        if full_path:
+            return full_path
+    return next((name for name in names if name.lower().endswith(".opf")), None)
+
+
+def _epub_spine(opf: str, opf_path: str) -> List[str]:
+    """Chapter paths in reading order: spine itemrefs resolved through the manifest, relative to the OPF."""
+    manifest: Dict[str, str] = {}
+    for item in re.finditer(r"<item\b([^<>]*)>", opf, re.IGNORECASE):
+        item_id, href = _attribute(item.group(1), "id"), _attribute(item.group(1), "href")
+        if item_id and href:
+            manifest[item_id] = href
+    spine_block = re.search(r"<spine\b[^<>]*>(.*?)</spine\s*>", opf, re.IGNORECASE | re.DOTALL)
+    if not spine_block:
+        return []
+    base = posixpath.dirname(opf_path)
+    chapters: List[str] = []
+    for itemref in re.finditer(r"<itemref\b([^<>]*)>", spine_block.group(1), re.IGNORECASE):
+        href = manifest.get(_attribute(itemref.group(1), "idref") or "")
+        if href is None:
+            continue
+        path = posixpath.normpath(posixpath.join(base, unquote(href.split("#", 1)[0])))
+        if path not in chapters:
+            chapters.append(path)
+    return chapters
+
+
 def parse_epub_bytes(data: bytes, filename: str = "document.epub") -> DocumentContent:
-    """Extract text from EPUB ebook bytes by parsing XHTML/HTML chapters."""
+    """Extract text from EPUB ebook bytes by parsing XHTML/HTML chapters in spine order."""
     raw_texts: List[str] = []
+    skipped: List[str] = []
     title = ""
 
     try:
         with zipfile.ZipFile(io.BytesIO(data), "r") as z:
             namelist = z.namelist()
+            chapters: List[str] = []
 
-            # Attempt to find title in metadata (content.opf)
-            for name in namelist:
-                if name.endswith(".opf"):
-                    try:
-                        opf_content = z.read(name).decode("utf-8", errors="ignore")
-                        match = re.search(r"<dc:title[^>]*>(.*?)</dc:title>", opf_content, re.IGNORECASE | re.DOTALL)
-                        if match:
-                            title = html.unescape(match.group(1).strip())
-                            break
-                    except Exception:  # noqa: BLE001, S110  # S3.3 RC4
-                        pass
+            opf_path = _epub_opf_path(z)
+            if opf_path in namelist:
+                opf_content = z.read(opf_path).decode("utf-8", errors="ignore")
+                match = re.search(r"<dc:title[^>]*>(.*?)</dc:title>", opf_content, re.IGNORECASE | re.DOTALL)
+                if match:
+                    title = html.unescape(match.group(1).strip())
+                chapters = _epub_spine(opf_content, opf_path)
 
-            # Read all xhtml / html documents in reading order
-            html_files = [n for n in namelist if n.lower().endswith((".xhtml", ".html", ".htm")) and not n.startswith("__MACOSX")]
-            # Sort files naturally
-            html_files.sort()
+            if not chapters:
+                _skip(skipped, filename, "no reading order found in the package document; chapters read in file-name order")
+                chapters = sorted(
+                    n for n in namelist if n.lower().endswith((".xhtml", ".html", ".htm")) and not n.startswith("__MACOSX")
+                )
 
-            for hfile in html_files:
+            for hfile in chapters:
+                if hfile not in namelist:
+                    _skip(skipped, filename, f"chapter {hfile}: not in the archive")
+                    continue
                 try:
                     content = z.read(hfile).decode("utf-8", errors="ignore")
                     # Strip script and style blocks
@@ -163,7 +215,9 @@ def parse_epub_bytes(data: bytes, filename: str = "document.epub") -> DocumentCo
         raw_texts.append(f"Failed to read EPUB: {e}")
 
     raw_text = "\n\n".join(raw_texts)
-    return _build_document_content(raw_text, title=title, filename=filename)
+    document = _build_document_content(raw_text, title=title, filename=filename)
+    document.skipped_parts = skipped
+    return document
 
 
 def parse_text_bytes(data: bytes, filename: str = "document.txt") -> DocumentContent:
