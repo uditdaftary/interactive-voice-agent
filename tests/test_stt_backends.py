@@ -100,3 +100,18 @@ def test_initial_prompt_env() -> None:
 
     assert load_settings({"VOICE_AGENT_STT_INITIAL_PROMPT": "Arasaka"}).stt_initial_prompt == "Arasaka"
     assert load_settings({}).stt_initial_prompt == ""
+
+
+def test_failed_whisper_load_is_retried_on_the_next_utterance(fake_whisper: FakeWhisper, caplog: pytest.LogCaptureFixture) -> None:
+    fake_whisper.text = "hello there"
+    fake_whisper.fail_loads = 1
+    caplog.set_level(logging.WARNING, logger="voice_agent.stt.backends")
+    backend = WhisperBackend()
+
+    first = backend.transcribe(speech_like_pcm(), SAMPLE_RATE)
+    second = backend.transcribe(speech_like_pcm(), SAMPLE_RATE)
+
+    assert first == Transcript("", STT_UNAVAILABLE)
+    assert second == Transcript("hello there", None)
+    assert len(fake_whisper.constructions) == 2
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
