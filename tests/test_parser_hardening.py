@@ -222,10 +222,52 @@ def test_epub_member_count_limit(monkeypatch: pytest.MonkeyPatch) -> None:
         DocumentParser.parse_bytes(two_chapter_epub(spine=["c1", "c2"]), "book.epub")
 
 
+def test_self_closing_script_and_style_do_not_swallow_the_chapter() -> None:
+    """In XHTML `<script src="x"/>` ends at the tag; only real script and style bodies are dropped."""
+    markup = (
+        '<html><head><script src="a.js"/><style/></head><body>'
+        "<p>Alpha one is here. Alpha two follows.</p>"
+        '<script type="text/javascript" src="b.js" /><p>Beta one is here. Beta two follows.</p>'
+        "<script>var hidden = 1;</script><p>Gamma one is here. Gamma two follows.</p>"
+        "<STYLE>p { color: hidden }</STYLE><p>Delta one is here. Delta two follows.</p>"
+        "<style /></body></html>"
+    )
+    data = make_epub({"OEBPS/ch1.xhtml": markup}, {"c1": "ch1.xhtml"}, ["c1"])
+
+    doc = DocumentParser.parse_bytes(data, "book.epub")
+
+    assert doc.sentences == [
+        "Alpha one is here.",
+        "Alpha two follows.",
+        "Beta one is here.",
+        "Beta two follows.",
+        "Gamma one is here.",
+        "Gamma two follows.",
+        "Delta one is here.",
+        "Delta two follows.",
+    ]
+
+
 @pytest.mark.parametrize(
     "markup",
-    ["<script>" * 150_000, "<p" * 500_000, "<style>x" * 100_000, "<" * 1_000_000],
-    ids=["unclosed-script", "unterminated-tag", "unclosed-style", "bare-brackets"],
+    [
+        "<script>" * 150_000,
+        "<p" * 500_000,
+        "<style>x" * 100_000,
+        "<" * 1_000_000,
+        "<script/>" * 200_000 + "<p>Tail one is here.</p>",
+        "<style />" * 200_000 + "<p>Tail one is here.</p>",
+        "<script/><script>" * 100_000,
+    ],
+    ids=[
+        "unclosed-script",
+        "unterminated-tag",
+        "unclosed-style",
+        "bare-brackets",
+        "self-closing-scripts",
+        "self-closing-styles",
+        "self-closing-then-unclosed",
+    ],
 )
 def test_epub_pathological_markup_parses_in_linear_time(markup: str) -> None:
     data = make_epub({"OEBPS/ch1.xhtml": markup}, {"c1": "ch1.xhtml"}, ["c1"])

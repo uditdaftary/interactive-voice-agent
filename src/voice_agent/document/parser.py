@@ -200,31 +200,36 @@ def _epub_spine(opf: str, opf_path: str) -> List[str]:
 
 
 # Every pattern below must stay linear on hostile input: `[^<>]` (not `[^>]`) stops a scan at the next tag
-# start, and script/style blocks are cut with two forward searches instead of a lazy `.*?` per opening tag.
+# start, and script/style bodies are cut with forward searches instead of a lazy `.*?` per opening tag.
 _LINE_BREAK_TAG = re.compile(r"<(?:h[1-6]|p|div|br)\b[^<>]*>", re.IGNORECASE)
 _ANY_TAG = re.compile(r"<[^<>]*>")
-_DROPPED_BLOCKS = [
-    (re.compile(rf"<{tag}\b", re.IGNORECASE), re.compile(rf"</{tag}\s*>", re.IGNORECASE)) for tag in ("script", "style")
-]
+_RAW_TEXT_OPENING = re.compile(r"<(script|style)\b[^<>]*>", re.IGNORECASE)
+_RAW_TEXT_CLOSING = {tag: re.compile(rf"</{tag}\s*>", re.IGNORECASE) for tag in ("script", "style")}
 
 
-def _drop_blocks(markup: str, opening: re.Pattern[str], closing: re.Pattern[str]) -> str:
-    """Remove every opening..closing block in one pass. An unclosed block swallows the rest, as in a browser."""
+def _drop_script_and_style(markup: str) -> str:
+    """Remove every script and style element, body included, in one pass.
+
+    A self-closing tag (`<script src="a.js"/>`, valid in XHTML) has no body, so the element ends at the tag.
+    An unclosed element swallows the rest of the chapter, as in a browser.
+    """
     pieces: List[str] = []
     position = 0
-    while (start := opening.search(markup, position)) is not None:
-        pieces.append(markup[position : start.start()])
-        end = closing.search(markup, start.end())
-        if end is None:
+    while (opening := _RAW_TEXT_OPENING.search(markup, position)) is not None:
+        pieces.append(markup[position : opening.start()])
+        if opening.group(0).endswith("/>"):
+            position = opening.end()
+            continue
+        closing = _RAW_TEXT_CLOSING[opening.group(1).lower()].search(markup, opening.end())
+        if closing is None:
             return "".join(pieces)
-        position = end.end()
+        position = closing.end()
     pieces.append(markup[position:])
     return "".join(pieces)
 
 
 def _chapter_text(markup: str) -> str:
-    for opening, closing in _DROPPED_BLOCKS:
-        markup = _drop_blocks(markup, opening, closing)
+    markup = _drop_script_and_style(markup)
     markup = _LINE_BREAK_TAG.sub("\n", markup)
     markup = _ANY_TAG.sub(" ", markup)
     return re.sub(r"\s+", " ", html.unescape(markup)).strip()
