@@ -81,7 +81,7 @@ def test_default_llm_is_built_from_settings() -> None:
     assert config["model"] == "custom-model"
     assert config["base_url"] == "http://example.invalid/v1"
     assert config["web_search_enabled"] is False
-    assert config["provider"] == "builtin"  # S3.1 changes the default provider, not S0.2
+    assert config["provider"] == "ollama"  # D2: the default provider is the local Ollama daemon
 
 
 def test_create_app_threads_seams() -> None:

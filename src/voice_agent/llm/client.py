@@ -1,9 +1,29 @@
+import json
 import re
 import asyncio
 import logging
-from typing import Any, AsyncGenerator, List, Dict, Optional
+from typing import Any, AsyncGenerator, List, Dict, Literal, Optional
+
+import httpx
+
+from voice_agent.settings import Settings
 
 logger = logging.getLogger(__name__)
+
+# Spoken whenever no model answer is available. The HUD shows the cause separately (`LLMClient.status`).
+OFFLINE_LINE = "My language model is offline. Check the model settings."
+
+# ok: reply streamed. offline: nothing listening. auth: 401/403. error: any other failure or an empty reply.
+# interrupted: the stream broke (or the consumer cancelled) after partial output.
+LlmOutcome = Literal["ok", "offline", "auth", "error", "interrupted"]
+
+# "builtin" is the documented no-model mode: no request is made and the offline line is spoken.
+_NO_MODEL_PROVIDERS = frozenset({"builtin", "local-builtin", "native", "none"})
+
+# A 30 s read covers a cold model load; only a refused or unroutable connect counts as offline.
+_TIMEOUT = httpx.Timeout(connect=2.0, read=30.0, write=10.0, pool=2.0)
+
+_DEFAULTS = Settings()  # one source of truth for the endpoint, model and key defaults
 
 # Sentinel used to shield periods in abbreviations, decimals, and ellipses
 _SENTINEL = "\uE000"
@@ -410,25 +430,47 @@ async def search_web(query: str, max_results: int = 8) -> str:
     return await asyncio.to_thread(search_web_sync, query, max_results)
 
 
+def _delta_content(data: str) -> str:
+    """Text carried by one SSE `data:` payload; "" for anything that carries none."""
+    try:
+        event = json.loads(data)
+    except json.JSONDecodeError:
+        # A garbled or non-JSON event carries no text and the stream goes on. Log the length only: it may echo user text.
+        logger.debug("Skipping a non-JSON SSE event (%d chars)", len(data))
+        return ""
+    if not isinstance(event, dict):
+        return ""
+    choices = event.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices else None
+    delta = choice.get("delta") if isinstance(choice, dict) else None
+    content = delta.get("content") if isinstance(delta, dict) else None
+    # Reasoning deltas carry their text under other keys and are ignored on purpose.
+    return content if isinstance(content, str) else ""
+
+
 class LLMClient:
-    """Multi-provider client supporting Built-in Zero-Setup extraction, Ollama,
-    OpenAI-compatible APIs (Groq, Together, DeepSeek), and live internet web search grounding.
+    """OpenAI-compatible streaming chat client (Ollama by default) with typed outcomes.
+
+    `stream_generate` never raises. When nothing usable came back it yields `OFFLINE_LINE` once, and
+    `status` says why, so the caller can show the cause while the user hears one neutral sentence.
     """
 
     def __init__(
         self,
-        base_url: str = "http://localhost:11434/v1",
-        api_key: str = "local",
-        provider: str = "builtin",
-        model: str = "builtin-assistant",
-        web_search_enabled: bool = True,
+        base_url: str = _DEFAULTS.llm_base_url,
+        api_key: str = _DEFAULTS.llm_api_key,
+        provider: str = "ollama",
+        model: str = _DEFAULTS.llm_model,
+        web_search_enabled: bool = _DEFAULTS.web_search_enabled,
+        transport: httpx.AsyncBaseTransport | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.provider = provider.lower().strip()
         self.model = model
         self.web_search_enabled = web_search_enabled
-        self._fallback_mock = MockLLMClient("Built-in model responding.")
+        self.status: LlmOutcome = "ok"
+        self._transport = transport  # tests only: lets them script the server
 
     def update_config(
         self,
@@ -460,110 +502,70 @@ class LLMClient:
             "has_api_key": bool(self.api_key and self.api_key != "local"),
         }
 
+    def _chat_url(self) -> str:
+        if self.base_url.endswith("/chat/completions"):
+            return self.base_url
+        if self.base_url.endswith("/v1"):
+            return f"{self.base_url}/chat/completions"
+        return f"{self.base_url}/v1/chat/completions"
+
     async def stream_generate(
         self,
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
-        max_tokens: int = 150,
-        character_id: Optional[str] = None,
+        max_tokens: int = 300,
+        character_id: Optional[str] = None,  # the persona is already in the system message; kept for callers
     ) -> AsyncGenerator[str, None]:
-        # Determine character context
-        chosen_char = character_id
-        if not chosen_char:
-            sys_content = " ".join([m.get("content", "") for m in messages if m.get("role") == "system"]).lower()
-            for c_id in ["johnny-silverhand", "lucy-kushinada", "david-martinez", "v-female", "v-male"]:
-                if c_id in sys_content or c_id.replace("-", " ") in sys_content:
-                    chosen_char = c_id
-                    break
-
-        # Fast path: built-in native zero-setup question extraction
-        if self.provider in ("builtin", "local-builtin", "native", "none"):
-            user_msg = ""
-            for m in reversed(messages):
-                if m.get("role") == "user":
-                    user_msg = m.get("content", "")
-                    break
-            fallback_text = self._synthesize_fallback_answer(user_msg, character_id=chosen_char)
-            for word in fallback_text.split():
-                await asyncio.sleep(0.015)
-                yield word + " "
-            return
-
-        import json
-        import urllib.request
-        import urllib.error
-
-        chosen_model = model or self.model
-
-        # Determine target endpoint
-        target_url = self.base_url
-        if not target_url.endswith("/chat/completions"):
-            if target_url.endswith("/v1"):
-                target_url = f"{target_url}/chat/completions"
-            elif ":11434" in target_url:
-                target_url = f"{target_url}/v1/chat/completions"
-            else:
-                target_url = f"{target_url}/v1/chat/completions"
-
-        payload = json.dumps({
-            "model": chosen_model,
-            "messages": messages,
-            "stream": True,
-            "max_tokens": max_tokens,
-        }).encode("utf-8")
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
-        }
-
-        req = urllib.request.Request(target_url, data=payload, headers=headers, method="POST")
-
-        yielded_any = False
+        # What a cancel or an early close leaves behind: the consumer cut the reply off.
+        outcome: LlmOutcome = "interrupted"
+        detail = ""
+        spoke = False  # any non-blank text reached the consumer
         try:
-            def _open_stream():
-                return urllib.request.urlopen(req, timeout=3.5)
+            if self.provider in _NO_MODEL_PROVIDERS:
+                outcome, detail = "offline", f"provider {self.provider!r} has no model"
+            elif not self.base_url.startswith(("http://", "https://")):
+                outcome, detail = "error", "base URL must start with http:// or https://"
+            else:
+                payload = {
+                    "model": model or self.model,
+                    "messages": messages,
+                    "stream": True,
+                    "max_tokens": max_tokens,
+                }
+                headers = {"Authorization": f"Bearer {self.api_key}"}
+                try:
+                    async with httpx.AsyncClient(transport=self._transport, timeout=_TIMEOUT) as client:
+                        async with client.stream("POST", self._chat_url(), json=payload, headers=headers) as response:
+                            if response.is_success:
+                                async for line in response.aiter_lines():
+                                    if not line.startswith("data:"):
+                                        continue
+                                    data = line[5:].strip()
+                                    if data == "[DONE]":
+                                        break
+                                    visible = _delta_content(data)
+                                    if visible:
+                                        spoke = spoke or bool(visible.strip())
+                                        yield visible
+                                outcome = "ok" if spoke else "error"
+                                detail = "" if spoke else f"HTTP {response.status_code}, no content"
+                            else:
+                                outcome = "auth" if response.status_code in (401, 403) else "error"
+                                detail = f"HTTP {response.status_code}"
+                except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                    outcome, detail = "offline", type(exc).__name__
+                except (httpx.InvalidURL, httpx.UnsupportedProtocol, UnicodeEncodeError) as exc:
+                    # UnicodeEncodeError: httpx cannot put a non-ASCII API key into a header.
+                    outcome, detail = "error", type(exc).__name__
+                except httpx.HTTPError as exc:
+                    outcome, detail = ("interrupted" if spoke else "error"), type(exc).__name__
 
-            response = await asyncio.to_thread(_open_stream)
-
-            loop = asyncio.get_running_loop()
-            while True:
-                line = await loop.run_in_executor(None, response.readline)
-                if not line:
-                    break
-                line_str = line.decode("utf-8").strip()
-                if not line_str or line_str.startswith(":"):
-                    continue
-                if line_str == "data: [DONE]":
-                    break
-                if line_str.startswith("data: "):
-                    data_json = line_str[6:]
-                    try:
-                        data = json.loads(data_json)
-                        choices = data.get("choices", [])
-                        if choices:
-                            delta = choices[0].get("delta", {})
-                            content = delta.get("content", "")
-                            if content:
-                                yielded_any = True
-                                yield content
-                    except json.JSONDecodeError:
-                        continue
-        except (urllib.error.URLError, ConnectionRefusedError, TimeoutError, OSError):
-            yielded_any = False
-
-        if not yielded_any:
-            # Intelligent fallback: formulate a concise answer based on user query and context
-            user_msg = ""
-            for m in reversed(messages):
-                if m.get("role") == "user":
-                    user_msg = m.get("content", "")
-                    break
-
-            fallback_text = self._synthesize_fallback_answer(user_msg, character_id=chosen_char)
-            for word in fallback_text.split():
-                await asyncio.sleep(0.015)
-                yield word + " "
+            if outcome != "ok":
+                logger.warning("LLM %s at %s: %s", outcome, self.base_url, detail)
+                if not spoke:
+                    yield OFFLINE_LINE
+        finally:
+            self.status = outcome
 
     def _synthesize_fallback_answer(self, user_msg: str, character_id: Optional[str] = None) -> str:
         """Construct a direct, context-aware spoken response in authentic Cyberpunk character voice

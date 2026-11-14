@@ -12,11 +12,13 @@ Validates:
 """
 
 import io
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 import pypdf
 
 from voice_agent.document.parser import DocumentParser
+from voice_agent.llm.client import LLMClient
 from voice_agent.server.app import create_app
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.narration import NarrationEngine
@@ -30,6 +32,7 @@ def test_client():
     manager = ConnectionManager()
     engine = NarrationEngine(
         connection_manager=manager,
+        llm_client=LLMClient(transport=httpx.MockTransport(lambda request: httpx.Response(503))),  # no real dial
         settings=Settings.fast(),
         tts=FakeTts(),
         search=FakeSearch(),
