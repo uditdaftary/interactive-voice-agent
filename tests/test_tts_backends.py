@@ -239,3 +239,27 @@ def test_voice_id_v_male_is_not_female() -> None:
     assert is_female_voice_id("v-male") is False
     assert is_female_voice_id("v-female") is True
     assert is_female_voice_id("lucy") is True
+
+
+async def test_synthesize_sentence_no_synthetic_tier(monkeypatch: pytest.MonkeyPatch) -> None:
+    from voice_agent.tts import synthesizer
+
+    failing_chain = ChainedTts([FakeBackend("edge", error=TtsError("offline")), FakeBackend("pyttsx3", error=OSError("no SAPI"))])
+    monkeypatch.setattr(synthesizer, "_chain", None)
+    monkeypatch.setattr(synthesizer, "build_tts", lambda primary="edge": failing_chain)
+
+    assert await synthesizer.synthesize_sentence("hello there") == (None, "")
+    assert not hasattr(synthesizer, "generate_synthetic_pcm_fallback")
+
+
+async def test_synthesize_sentence_reports_the_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    from voice_agent.tts import synthesizer
+
+    monkeypatch.setattr(synthesizer, "_chain", None)
+    monkeypatch.setattr(
+        synthesizer,
+        "build_tts",
+        lambda primary="edge": ChainedTts([FakeBackend("edge", audio=SpeechAudio(AUDIO, "audio/mpeg"))]),
+    )
+
+    assert await synthesizer.synthesize_sentence("hello there") == (AUDIO, "mp3")
