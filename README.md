@@ -103,7 +103,7 @@ C:\Projects\interactive-voice-agent/
 
 ## Language model setup (Ollama)
 
-Questions that interrupt the narration go to a local model served by [Ollama](https://ollama.com). Nothing is downloaded at runtime.
+Questions that interrupt the narration go to a language model served by [Ollama](https://ollama.com) on this machine. The model is read from a local file.
 
 1. Install Ollama.
 2. Put the GGUF in `models/` (it is git-ignored) and register it from the repository root:
@@ -120,7 +120,7 @@ Questions that interrupt the narration go to a local model served by [Ollama](ht
    |---|---|---|
    | `VOICE_AGENT_LLM_BASE_URL` | `http://127.0.0.1:11434/v1` | OpenAI-compatible endpoint |
    | `VOICE_AGENT_LLM_MODEL` | `voice-agent` | model name sent with each request |
-   | `VOICE_AGENT_LLM_API_KEY` | none | only for a hosted endpoint; use an `https://` URL, because the agent warns when a key would go over plain `http://` to another machine |
+   | `VOICE_AGENT_LLM_API_KEY` | `local` (no key) | only for a hosted endpoint; use an `https://` URL, because the agent warns when a key would go over plain `http://` to another machine |
    | `VOICE_AGENT_WEB_SEARCH` | on | `0`, `false` or `no` turns web grounding off |
 
 Without a reachable model the agent does not guess: it says "My language model is offline. Check the model settings." and logs a warning naming the cause (nothing listening, rejected key, server error, or an empty reply). The `builtin` provider is the same no-model mode on purpose. Changes made through `/api/config` last until the server restarts.
