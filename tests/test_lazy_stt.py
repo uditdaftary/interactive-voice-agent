@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -15,8 +16,10 @@ from fastapi.testclient import TestClient
 
 from voice_agent.server.app import create_app, ensure_stt_engine
 from voice_agent.server.connection_manager import ConnectionManager
+from voice_agent.settings import Settings
 from voice_agent.stt import recognizer
-from voice_agent.stt.recognizer import MockSTTEngine
+from fakes import FakeStt, FakeWhisper
+from speech_audio import speech_like_pcm
 
 SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 
@@ -37,6 +40,9 @@ class CountingSTT:
         CountingSTT.built.append(dict(kwargs))
         CountingSTT.build_threads.append(threading.get_ident())
 
+    def load(self) -> bool:
+        return True
+
     def transcribe(self, audio_data: bytes, sample_rate: int = 16000) -> str:
         return "lazily built transcript"
 
@@ -53,6 +59,9 @@ class GatedSTT:
         GatedSTT.started.set()
         if not GatedSTT.release.wait(timeout=10):
             raise AssertionError("test never released the build")
+
+    def load(self) -> bool:
+        return True
 
 
 @pytest.fixture
@@ -82,7 +91,7 @@ def test_connection_manager_stt_engine_never_constructs(monkeypatch: pytest.Monk
     monkeypatch.setattr(recognizer, "STTEngine", ExplodingSTT)
     manager = ConnectionManager()
     assert manager.stt_engine is None
-    mock = MockSTTEngine("x")
+    mock = FakeStt("x")
     manager.stt_engine = mock
     assert manager.stt_engine is mock
 
@@ -95,15 +104,23 @@ async def test_ensure_stt_engine_builds_once_off_the_event_loop(counting_stt: ty
     assert first is second
     assert app.state.stt_engine is first
     assert len(counting_stt.built) == 1
-    assert counting_stt.built[0] == {"fallback_mock": False}
+    assert counting_stt.built[0] == {"initial_prompt": ""}
     assert counting_stt.build_threads[0] != threading.get_ident()
+
+
+async def test_build_passes_the_configured_initial_prompt(counting_stt: type[CountingSTT]) -> None:
+    app = create_app(connection_manager=ConnectionManager(), settings=replace(Settings(), stt_initial_prompt="Arasaka"))
+
+    await ensure_stt_engine(app)
+
+    assert counting_stt.built == [{"initial_prompt": "Arasaka"}]
 
 
 async def test_cancelled_caller_does_not_discard_the_build(gated_stt: type[GatedSTT]) -> None:
     app = create_app(connection_manager=ConnectionManager())
 
     first = asyncio.create_task(ensure_stt_engine(app))
-    await asyncio.to_thread(gated_stt.started.wait, 5)  # the build is now running in its worker thread
+    assert await asyncio.to_thread(gated_stt.started.wait, 5), "the build never started"  # it is now running in its worker thread
     first.cancel()
     with pytest.raises(asyncio.CancelledError):
         await first
@@ -129,14 +146,14 @@ async def test_ensure_stt_engine_works_without_create_app(counting_stt: type[Cou
 
 
 async def test_ensure_stt_engine_prefers_existing_engines(counting_stt: type[CountingSTT]) -> None:
-    on_app = MockSTTEngine("on app")
+    on_app = FakeStt("on app")
     app = create_app(connection_manager=ConnectionManager(), stt_engine=on_app)
     assert await ensure_stt_engine(app) is on_app
 
     # An engine set on the manager after create_app is honoured and nothing is built.
     manager = ConnectionManager()
     app = create_app(connection_manager=manager)
-    on_manager = MockSTTEngine("on manager")
+    on_manager = FakeStt("on manager")
     manager.stt_engine = on_manager
     assert await ensure_stt_engine(app) is on_manager
     assert app.state.stt_engine is on_manager
@@ -196,3 +213,32 @@ def test_importing_the_app_module_does_not_load_whisper() -> None:
     )
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
+
+
+async def test_cancelled_build_task_is_replaced(counting_stt: type[CountingSTT]) -> None:
+    """A build cancelled before its first step never runs its finally, so it stays on app.state; the next caller must build anew."""
+    from voice_agent.server.app import _build_stt_engine
+
+    app = create_app(connection_manager=ConnectionManager())
+    stale = asyncio.create_task(_build_stt_engine(app))
+    stale.cancel()
+    await asyncio.sleep(0)
+    assert stale.cancelled()
+    app.state.stt_build = stale
+
+    engine = await ensure_stt_engine(app)
+
+    assert engine is app.state.stt_engine
+    assert len(counting_stt.built) == 1
+
+
+async def test_build_loads_whisper_before_the_first_transcribe(fake_whisper: FakeWhisper) -> None:
+    """The model loads in the STT build thread, so the first utterance never pays for it on the event loop."""
+    fake_whisper.text = "hello there"
+    app = create_app(connection_manager=ConnectionManager())
+
+    engine = await ensure_stt_engine(app)
+
+    assert len(fake_whisper.constructions) == 1
+    assert engine.transcribe(speech_like_pcm()) == "hello there"
+    assert len(fake_whisper.constructions) == 1

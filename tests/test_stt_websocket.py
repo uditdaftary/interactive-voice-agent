@@ -11,7 +11,7 @@ from voice_agent.server.schemas import (
     VoiceEndMessage,
     parse_client_message,
 )
-from voice_agent.stt.recognizer import MockSTTEngine
+from fakes import FakeStt
 from voice_agent.stt.accumulator import SpeechTurnAccumulator
 
 
@@ -74,7 +74,7 @@ def test_voice_end_message_parsing() -> None:
 def test_websocket_voice_end_triggers_stt_transcription_and_interruption() -> None:
     """Test streaming PCM chunks during LISTENING and sending voice_end broadcasts transcript."""
     manager = ConnectionManager()
-    mock_stt = MockSTTEngine("what is arasaka")
+    mock_stt = FakeStt("what is arasaka")
     manager.stt_engine = mock_stt
 
     mock_engine = MagicMock()
@@ -116,7 +116,7 @@ def test_websocket_voice_end_triggers_stt_transcription_and_interruption() -> No
 def test_websocket_turn_accumulator_automatic_speech_segmentation() -> None:
     """Test accumulator detecting conversational silence timeout and triggering STT automatically."""
     manager = ConnectionManager()
-    manager.stt_engine = MockSTTEngine("query via auto pause")
+    manager.stt_engine = FakeStt("query via auto pause")
     # Low silence timeout for fast test execution
     manager.accumulator = SpeechTurnAccumulator(
         sample_rate=16000,
@@ -160,7 +160,7 @@ def test_websocket_turn_accumulator_automatic_speech_segmentation() -> None:
 def test_websocket_binary_pcm_ignored_when_narrating() -> None:
     """Test audio frames received when state is NARRATING do not trigger transcription."""
     manager = ConnectionManager()
-    manager.stt_engine = MockSTTEngine("should not transcribe")
+    manager.stt_engine = FakeStt("should not transcribe")
 
     mock_engine = MagicMock()
     mock_engine.handle_user_interruption = AsyncMock()
