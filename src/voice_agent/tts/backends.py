@@ -7,14 +7,20 @@ first audio that succeeds; when none does, the caller gets None and the narratio
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import os
 import re
 import tempfile
+import threading
+import wave
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Protocol, TypedDict
+from pathlib import Path
+from typing import Any, Protocol, TypedDict
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +220,131 @@ def _require_audio(name: str, audio: SpeechAudio) -> SpeechAudio:
     return audio
 
 
+POCKET_LICENCE_MESSAGE = "pocket weights need the Hugging Face licence; see README"
+# A voice id names a file in the voices folder, so it must be a plain name that cannot step out of that folder.
+_SAFE_VOICE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+_INT16_SCALE = 32767.0
+
+
+class PocketTtsBackend:
+    """Kyutai's Pocket TTS on the CPU, in process (the `pocket` extra). Each voice is cloned from `voices_dir/<voice_id>.wav`.
+
+    The model loads on the first sentence and stays loaded. A failed load is kept for the session, so the weights are not
+    fetched again for every sentence; restart the app to retry. pocket-tts is not thread-safe, so every call into it runs on
+    one thread, which also means one generation at a time. A voice without a usable file speaks in `default_voice`, with one
+    WARNING per voice id. `cadence` is ignored: pocket-tts 4.0.1 has no speed control. Cancelling the awaiting task stops
+    generation after the chunk in progress.
+    """
+
+    name = "pocket"
+
+    def __init__(self, voices_dir: Path = Path("models/voices"), default_voice: str = "v-male") -> None:
+        self._voices_dir = voices_dir
+        self._default_voice = default_voice
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pocket")
+        self._model: Any = None
+        self._load_failure: str | None = None
+        self._voice_states: dict[str, Any] = {}
+        self._warned_voices: set[str] = set()
+
+    async def synthesize(self, text: str, voice_id: str, cadence: float) -> SpeechAudio:
+        clean_text = text.strip()
+        if not clean_text:
+            raise TtsError("pocket: nothing to say")
+        stop = threading.Event()
+        loop = asyncio.get_running_loop()
+        try:
+            data = await loop.run_in_executor(self._executor, self._speak_to_wav, clean_text, voice_id, stop)
+        except asyncio.CancelledError:
+            # A thread cannot be cancelled; the flag ends its generation after the chunk in progress.
+            stop.set()
+            raise
+        except TtsError:
+            raise
+        except Exception as error:  # noqa: BLE001  # re-raised as TtsError so the chain logs one clear reason
+            raise TtsError(f"pocket: {type(error).__name__}: {error}") from error
+        return _require_audio("pocket", SpeechAudio(data, "audio/wav"))
+
+    def _speak_to_wav(self, text: str, voice_id: str, stop: threading.Event) -> bytes:
+        model = self._loaded_model()
+        state = self._voice_state(model, voice_id)
+        chunks: list[np.ndarray] = []
+        stream = model.generate_audio_stream(state, text, stop=stop)
+        try:
+            while not stop.is_set():
+                chunk = next(stream, None)
+                if chunk is None:
+                    break
+                chunks.append(np.asarray(chunk, dtype=np.float32).reshape(-1))
+        finally:
+            stream.close()
+        samples = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
+        return _wav_bytes(samples, int(model.sample_rate))
+
+    def _loaded_model(self) -> Any:
+        if self._load_failure is not None:
+            raise TtsError(self._load_failure)
+        if self._model is None:
+            try:
+                self._model = self._load()
+            except TtsError as error:
+                self._load_failure = str(error)
+                raise
+        return self._model
+
+    def _load(self) -> Any:
+        try:
+            from pocket_tts import TTSModel
+        except ImportError as error:
+            raise TtsError(f"pocket: pocket-tts did not import ({error}); install the pocket extra") from error
+        try:
+            model = TTSModel.load_model()
+        except Exception as error:  # noqa: BLE001  # the weights download is the usual failure; logged, then raised as TtsError
+            logger.warning("pocket model did not load (%s: %s)", type(error).__name__, error)
+            raise TtsError(POCKET_LICENCE_MESSAGE) from error
+        if not model.has_voice_cloning:
+            # pocket-tts falls back to the open weights when the gated cloning weights are refused, and cloning then fails for every voice.
+            logger.warning("pocket loaded without voice cloning: the gated cloning weights are not available")
+            raise TtsError(POCKET_LICENCE_MESSAGE)
+        return model
+
+    def _voice_state(self, model: Any, voice_id: str) -> Any:
+        cached = self._voice_states.get(voice_id)
+        if cached is None:
+            path = self._voice_path(voice_id)
+            try:
+                cached = model.get_state_for_audio_prompt(path)
+            except Exception as error:  # noqa: BLE001  # an unreadable voice file is one backend failing; the chain moves on
+                raise TtsError(f"pocket: could not clone {path.name}: {type(error).__name__}: {error}") from error
+            self._voice_states[voice_id] = cached
+        return cached
+
+    def _voice_path(self, voice_id: str) -> Path:
+        if _SAFE_VOICE_ID.fullmatch(voice_id):
+            path = self._voices_dir / f"{voice_id}.wav"
+            if path.is_file():
+                return path
+        fallback = self._voices_dir / f"{self._default_voice}.wav"
+        if voice_id not in self._warned_voices:
+            self._warned_voices.add(voice_id)
+            logger.warning("no usable Pocket voice file for %r; speaking it in the %s voice", voice_id, self._default_voice)
+        if not fallback.is_file():
+            raise TtsError(f"pocket: no default voice file at {fallback}")
+        return fallback
+
+
+def _wav_bytes(samples: np.ndarray, sample_rate: int) -> bytes:
+    """Mono 16-bit WAV from float samples in [-1, 1]."""
+    pcm = np.clip(np.round(samples * _INT16_SCALE), -32768, 32767).astype("<i2")
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(pcm.tobytes())
+    return buffer.getvalue()
+
+
 class ChainedTts:
     """Tries each backend in order. `status` says how the last call ended: "ok", "fallback:<name>" or "unavailable"."""
 
@@ -243,14 +374,17 @@ class ChainedTts:
 _BACKEND_FACTORIES: dict[str, Callable[[], TtsBackend]] = {
     "edge": EdgeTtsBackend,
     "pyttsx3": Pyttsx3Backend,
+    "pocket": PocketTtsBackend,
 }
 # The names a setting may choose from; settings validates against this, so the two cannot drift apart.
 TTS_BACKEND_NAMES: tuple[str, ...] = tuple(_BACKEND_FACTORIES)
+# The default fallbacks. Pocket is only ever the primary: a fallback would load its model for every sentence edge-tts drops.
+_FALLBACK_ORDER: tuple[str, ...] = ("edge", "pyttsx3")
 
 
 def build_tts(primary: str = "edge") -> ChainedTts:
-    """The primary backend first, then the other one."""
+    """The primary backend first, then the default fallbacks in their own order."""
     if primary not in _BACKEND_FACTORIES:
         raise ValueError(f"unknown TTS backend {primary!r}; expected one of {sorted(_BACKEND_FACTORIES)}")
-    order = [primary, *(name for name in _BACKEND_FACTORIES if name != primary)]
+    order = [primary, *(name for name in _FALLBACK_ORDER if name != primary)]
     return ChainedTts([_BACKEND_FACTORIES[name]() for name in order])
