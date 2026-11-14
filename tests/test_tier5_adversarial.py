@@ -28,6 +28,7 @@ import contextlib
 import threading
 import time
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
 from voice_agent.audio.hybrid import HybridMicrophoneBridge
@@ -35,6 +36,7 @@ from voice_agent.audio.ring_buffer import AudioRingBuffer
 from voice_agent.server.app import create_app
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.schemas import (
+    InvalidClientMessage,
     parse_client_message,
 )
 
@@ -214,6 +216,7 @@ def test_fuzzing_malformed_non_json_strings() -> None:
 
             for payload in fuzz_payloads:
                 ws.send_text(payload)
+                assert ws.receive_json()["type"] == "error"
 
             # Valid command sent afterward must succeed, proving connection stayed alive
             ws.send_json({"type": "set_cadence", "cadence": 1.2})
@@ -240,8 +243,8 @@ def test_fuzzing_json_non_dict_primitives_graceful_rejection() -> None:
     ]
 
     for raw in non_dict_inputs:
-        msg = parse_client_message(raw)
-        assert msg is None
+        with pytest.raises(InvalidClientMessage, match="JSON object"):
+            parse_client_message(raw)
 
     # Test over live WebSocket
     manager = ConnectionManager()
@@ -252,6 +255,7 @@ def test_fuzzing_json_non_dict_primitives_graceful_rejection() -> None:
 
             for raw in non_dict_inputs:
                 ws.send_text(raw)
+                assert ws.receive_json()["type"] == "error"
 
             # Session remains healthy and responsive
             ws.send_json({"type": "set_cadence", "cadence": 1.15})
@@ -296,7 +300,7 @@ def test_fuzzing_missing_fields_in_actions() -> None:
     """Fuzzing BUG EXPOSURE: Actions with missing required fields are silently defaulted rather than rejected.
 
     Demonstrates that:
-    1. {"type": "select_voice"} without voice_id mutates active_voice to empty string "".
+    1. {"type": "select_voice"} without voice_id is now rejected (it used to blank the voice).
     2. {"type": "set_cadence"} without cadence resets cadence to 1.0.
     3. {"type": "set_mic_source"} without source resets mic_source to "browser".
     4. {"type": "playback_control"} without action defaults to "resume".
@@ -313,20 +317,20 @@ def test_fuzzing_missing_fields_in_actions() -> None:
             assert init_sync["active_voice"] == "lucy-kushinada"
             assert init_sync["cadence"] == 1.5
 
-            # 1. Send select_voice with missing voice_id -> sets voice to empty string ""
+            # 1. Send select_voice with missing voice_id -> rejected with an error reply, the voice is left alone
             ws.send_json({"type": "select_voice"})
-            sync1 = ws.receive_json()
-            assert sync1["type"] == "state_sync"
-            assert sync1["active_voice"] == ""
+            assert ws.receive_json()["type"] == "error"
 
             # 2. Send set_cadence with missing cadence -> resets cadence to default 1.0
             ws.send_json({"type": "set_cadence"})
             sync2 = ws.receive_json()
             assert sync2["type"] == "state_sync"
+            assert sync2["active_voice"] == "lucy-kushinada"
             assert sync2["cadence"] == 1.0
 
-            # 3. Send empty payload {} -> rejected as unrecognized, no broadcast sent
+            # 3. Send empty payload {} -> rejected as unrecognized, an error reply and no broadcast
             ws.send_json({})
+            assert ws.receive_json()["type"] == "error"
 
             # Channel remains operational for subsequent valid action
             ws.send_json({"type": "set_cadence", "cadence": 0.9})
@@ -357,6 +361,7 @@ def test_fuzzing_out_of_range_cadence_validation() -> None:
 
             for bad_cadence in invalid_cadences:
                 ws.send_json({"type": "set_cadence", "cadence": bad_cadence})
+                assert ws.receive_json()["type"] == "error"
 
             # Valid in-range cadence should still be accepted
             ws.send_json({"type": "set_cadence", "cadence": 1.2})
@@ -366,7 +371,7 @@ def test_fuzzing_out_of_range_cadence_validation() -> None:
 
 
 def test_fuzzing_unknown_voice_id_handling() -> None:
-    """Fuzzing: Test how system handles unknown voice IDs."""
+    """Fuzzing: a malformed voice id is rejected; a well-formed id is accepted (the registry arrives in S4.2)."""
     manager = ConnectionManager()
     app = create_app(connection_manager=manager)
 
@@ -374,11 +379,12 @@ def test_fuzzing_unknown_voice_id_handling() -> None:
         with client.websocket_connect("/ws") as ws:
             _ = ws.receive_json()
 
-            # Send non-existent voice ID
             ws.send_json({"type": "select_voice", "voice_id": "non_existent_cyborg_9000"})
+            assert ws.receive_json()["type"] == "error"
+            ws.send_json({"type": "select_voice", "voice_id": "non-existent-cyborg-9000"})
             resp = ws.receive_json()
             assert resp["type"] == "state_sync"
-            assert resp["active_voice"] == "non_existent_cyborg_9000"
+            assert resp["active_voice"] == "non-existent-cyborg-9000"
 
 
 def test_fuzzing_invalid_mic_source_desynchronization_bug() -> None:

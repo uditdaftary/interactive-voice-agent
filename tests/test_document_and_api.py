@@ -68,7 +68,9 @@ def test_document_parser_synthetic_pdf():
 
     doc = DocumentParser.parse_bytes(pdf_bytes, filename="test_manual.pdf")
     assert doc.filename == "test_manual.pdf"
-    assert doc.total_sentences >= 1
+    # A blank page has no text; the upload route turns zero sentences into a 422.
+    assert doc.total_sentences == 0
+    assert doc.sentences == []
 
 
 def test_api_config_get_and_post(test_client):

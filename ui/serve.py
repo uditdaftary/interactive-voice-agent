@@ -17,7 +17,7 @@ def run_server(port: int = 8000):
     print(f" WebSocket streaming at: ws://localhost:{port}/ws")
     print(" Press Ctrl+C to stop.")
     print("=======================================================\n")
-    uvicorn.run("voice_agent.server.app:app", host="0.0.0.0", port=port, reload=False)
+    uvicorn.run("voice_agent.server.app:app", host="127.0.0.1", port=port, reload=False)
 
 
 if __name__ == "__main__":

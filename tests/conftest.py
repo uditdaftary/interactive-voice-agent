@@ -138,6 +138,20 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip_windows)
 
 
+@pytest.fixture(autouse=True, scope="session")
+def allow_testserver_host() -> Iterator[None]:
+    """Let `TestClient` (Host: testserver) reach apps built with the default `allowed_hosts`.
+
+    Production defaults to loopback names only; tests/test_security.py restores that default to prove it.
+    Session scoped so module-scoped app fixtures, which pytest builds before any function-scoped one, see it.
+    """
+    from voice_agent.server import security
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(security, "DEFAULT_ALLOWED_HOSTS", (*security.DEFAULT_ALLOWED_HOSTS, "testserver"))
+        yield
+
+
 @pytest.fixture
 def offline_stt(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make a real `STTEngine` run with no Whisper model and no Google recognizer.

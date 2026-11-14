@@ -7,15 +7,32 @@ segmenting into sentences using token-shielded boundary detection.
 from dataclasses import dataclass, field
 import html
 import io
+import logging
 from pathlib import Path
+import posixpath
 import re
-from typing import List
+from typing import Callable, Dict, List, Optional
+from urllib.parse import unquote
 import zipfile
 
 import pypdf
 
 from voice_agent.cursor.splitter import split_sentences
 from voice_agent.document.bm25 import build_rolling_windows
+
+logger = logging.getLogger(__name__)
+
+DOCUMENT_EXTENSIONS = frozenset({".pdf", ".epub", ".txt", ".md"})
+
+# Bounds on what a small crafted file can expand to. Request size itself is deliberately not capped.
+MAX_EPUB_MEMBERS = 2000
+MAX_EPUB_MEMBER_BYTES = 10 * 1024 * 1024
+MAX_EPUB_TOTAL_BYTES = 100 * 1024 * 1024
+MAX_PDF_PAGES = 2000
+
+
+class DocumentParseError(ValueError):
+    """The file cannot be read at all: a corrupt archive or PDF, or too many archive members."""
 
 
 @dataclass
@@ -28,6 +45,8 @@ class DocumentContent:
     sentences: List[str] = field(default_factory=list)
     paragraphs: List[str] = field(default_factory=list)
     passages: List[str] = field(default_factory=list)
+    # Human-readable reasons for parts of the file that were not read (corrupt page, oversized chapter, ...).
+    skipped_parts: List[str] = field(default_factory=list)
 
     def to_dict(self):
         return {
@@ -38,6 +57,7 @@ class DocumentContent:
             "sentences": self.sentences,
             "paragraphs": self.paragraphs,
             "passages": self.passages,
+            "skipped_parts": self.skipped_parts,
         }
 
 
@@ -56,11 +76,9 @@ def _clean_extracted_text(text: str) -> str:
 def _build_document_content(raw_text: str, title: str, filename: str) -> DocumentContent:
     """Build DocumentContent by segmenting raw text into sentences and paragraphs."""
     cleaned = _clean_extracted_text(raw_text)
-    if not cleaned:
-        cleaned = "Empty document."
-
-    sentences = split_sentences(cleaned)
-    if not sentences:
+    # No placeholder text for an empty document: callers see zero sentences and reject it.
+    sentences = split_sentences(cleaned) if cleaned else []
+    if cleaned and not sentences:
         sentences = [cleaned]
 
     # Reconstruct readable paragraphs (grouping every 2-4 sentences or keeping headers intact)
@@ -97,72 +115,192 @@ def _build_document_content(raw_text: str, title: str, filename: str) -> Documen
     )
 
 
+def _skip(skipped: List[str], filename: str, reason: str) -> None:
+    """Record a part of the file that was not read: logged, and returned to the caller."""
+    # %r on the reason too: it can carry a member name from the archive, which is attacker-controlled text.
+    logger.warning("%r: skipped %r", filename, reason)
+    skipped.append(reason)
+
+
+def _format_bytes(size: int) -> str:
+    return f"{size / (1024 * 1024):g} MB" if size >= 1024 * 1024 else f"{size} bytes"
+
+
 def parse_pdf_bytes(data: bytes, filename: str = "document.pdf") -> DocumentContent:
-    """Extract text from PDF file bytes using pypdf."""
-    reader = pypdf.PdfReader(io.BytesIO(data))
-    title = ""
-    if reader.metadata and reader.metadata.title:
-        title = str(reader.metadata.title).strip()
+    """Extract text from PDF file bytes using pypdf.
 
+    Raises DocumentParseError when the file cannot be opened. Pages that fail to extract, and pages
+    beyond MAX_PDF_PAGES, are listed in `skipped_parts`.
+    """
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(data))
+        total_pages = len(reader.pages)
+        title = str(reader.metadata.title).strip() if reader.metadata and reader.metadata.title else ""
+    except Exception as exc:  # noqa: BLE001  # pypdf raises arbitrary types on hostile input; re-raised as one
+        raise DocumentParseError(f"not a readable PDF: {type(exc).__name__}: {exc}") from exc
+
+    skipped: List[str] = []
     page_texts: List[str] = []
-    for page in reader.pages:
+    for index in range(min(total_pages, MAX_PDF_PAGES)):
         try:
-            pt = page.extract_text()
-            if pt and pt.strip():
-                page_texts.append(pt.strip())
-        except Exception:  # noqa: BLE001  # S3.3 RC4
+            page_text = reader.pages[index].extract_text()
+        except Exception as exc:  # noqa: BLE001  # one hostile page must not lose the rest; recorded and logged
+            _skip(skipped, filename, f"page {index + 1}: extract failed: {type(exc).__name__}: {exc}")
             continue
+        if page_text and page_text.strip():
+            page_texts.append(page_text.strip())
+    if total_pages > MAX_PDF_PAGES:
+        _skip(skipped, filename, f"pages {MAX_PDF_PAGES + 1}-{total_pages}: not read, limit is {MAX_PDF_PAGES} pages")
 
-    raw_text = "\n\n".join(page_texts)
-    return _build_document_content(raw_text, title=title, filename=filename)
+    document = _build_document_content("\n\n".join(page_texts), title=title, filename=filename)
+    document.skipped_parts = skipped
+    return document
+
+
+def _attribute(tag_attributes: str, name: str) -> Optional[str]:
+    match = re.search(rf"(?<![\w:-]){name}\s*=\s*(?:\"([^\"]*)\"|'([^']*)')", tag_attributes, re.IGNORECASE)
+    if match is None:
+        return None
+    return match.group(1) if match.group(1) is not None else match.group(2)
+
+
+def _epub_opf_path(names: List[str], read_member: Callable[[str, str], Optional[bytes]]) -> Optional[str]:
+    """The package document named by META-INF/container.xml, else any .opf in the archive."""
+    if "META-INF/container.xml" in names:
+        container = read_member("META-INF/container.xml", "package file")
+        rootfile = re.search(r"<rootfile\b([^<>]*)>", container.decode("utf-8", errors="ignore"), re.IGNORECASE) if container else None
+        full_path = _attribute(rootfile.group(1), "full-path") if rootfile else None
+        if full_path:
+            return full_path
+    return next((name for name in names if name.lower().endswith(".opf")), None)
+
+
+def _epub_spine(opf: str, opf_path: str) -> List[str]:
+    """Chapter paths in reading order: spine itemrefs resolved through the manifest, relative to the OPF."""
+    manifest: Dict[str, str] = {}
+    for item in re.finditer(r"<item\b([^<>]*)>", opf, re.IGNORECASE):
+        item_id, href = _attribute(item.group(1), "id"), _attribute(item.group(1), "href")
+        if item_id and href:
+            manifest[item_id] = href
+    spine_open = re.compile(r"<spine\b[^<>]*>", re.IGNORECASE).search(opf)
+    if not spine_open:
+        return []
+    spine_close = re.compile(r"</spine\s*>", re.IGNORECASE).search(opf, spine_open.end())
+    spine_block = opf[spine_open.end() : spine_close.start() if spine_close else len(opf)]
+    base = posixpath.dirname(opf_path)
+    chapters: List[str] = []
+    for itemref in re.finditer(r"<itemref\b([^<>]*)>", spine_block, re.IGNORECASE):
+        href = manifest.get(_attribute(itemref.group(1), "idref") or "")
+        if href is None:
+            continue
+        path = posixpath.normpath(posixpath.join(base, unquote(href.split("#", 1)[0])))
+        if path not in chapters:
+            chapters.append(path)
+    return chapters
+
+
+# Every pattern below must stay linear on hostile input: `[^<>]` (not `[^>]`) stops a scan at the next tag
+# start, and script/style bodies are cut with forward searches instead of a lazy `.*?` per opening tag.
+_LINE_BREAK_TAG = re.compile(r"<(?:h[1-6]|p|div|br)\b[^<>]*>", re.IGNORECASE)
+_ANY_TAG = re.compile(r"<[^<>]*>")
+_RAW_TEXT_OPENING = re.compile(r"<(script|style)\b[^<>]*>", re.IGNORECASE)
+_RAW_TEXT_CLOSING = {tag: re.compile(rf"</{tag}\s*>", re.IGNORECASE) for tag in ("script", "style")}
+
+
+def _drop_script_and_style(markup: str) -> str:
+    """Remove every script and style element, body included, in one pass.
+
+    A self-closing tag (`<script src="a.js"/>`, valid in XHTML) has no body, so the element ends at the tag.
+    An unclosed element swallows the rest of the chapter, as in a browser.
+    """
+    pieces: List[str] = []
+    position = 0
+    while (opening := _RAW_TEXT_OPENING.search(markup, position)) is not None:
+        pieces.append(markup[position : opening.start()])
+        if opening.group(0).endswith("/>"):
+            position = opening.end()
+            continue
+        closing = _RAW_TEXT_CLOSING[opening.group(1).lower()].search(markup, opening.end())
+        if closing is None:
+            return "".join(pieces)
+        position = closing.end()
+    pieces.append(markup[position:])
+    return "".join(pieces)
+
+
+def _chapter_text(markup: str) -> str:
+    markup = _drop_script_and_style(markup)
+    markup = _LINE_BREAK_TAG.sub("\n", markup)
+    markup = _ANY_TAG.sub(" ", markup)
+    return re.sub(r"\s+", " ", html.unescape(markup)).strip()
 
 
 def parse_epub_bytes(data: bytes, filename: str = "document.epub") -> DocumentContent:
-    """Extract text from EPUB ebook bytes by parsing XHTML/HTML chapters."""
-    raw_texts: List[str] = []
-    title = ""
+    """Extract text from EPUB ebook bytes by parsing XHTML/HTML chapters in spine order.
 
+    Raises DocumentParseError for a file that is not a readable zip or has too many members. A chapter that
+    is missing, too large, or unreadable is skipped and listed in `skipped_parts`; the rest still load.
+    Sizes are checked against `ZipInfo.file_size` before reading, and `ZipFile.read` never returns more
+    than that declared size, so a zip bomb cannot expand past the limits.
+    """
     try:
-        with zipfile.ZipFile(io.BytesIO(data), "r") as z:
-            namelist = z.namelist()
+        archive = zipfile.ZipFile(io.BytesIO(data), "r")
+    except Exception as exc:  # noqa: BLE001  # crafted zips raise BadZipFile, NotImplementedError, UnicodeDecodeError and more; callers see one type
+        raise DocumentParseError(f"not a readable EPUB (zip) file: {type(exc).__name__}: {exc}") from exc
 
-            # Attempt to find title in metadata (content.opf)
-            for name in namelist:
-                if name.endswith(".opf"):
-                    try:
-                        opf_content = z.read(name).decode("utf-8", errors="ignore")
-                        match = re.search(r"<dc:title[^>]*>(.*?)</dc:title>", opf_content, re.IGNORECASE | re.DOTALL)
-                        if match:
-                            title = html.unescape(match.group(1).strip())
-                            break
-                    except Exception:  # noqa: BLE001, S110  # S3.3 RC4
-                        pass
+    skipped: List[str] = []
+    with archive:
+        infos = {info.filename: info for info in archive.infolist()}
+        if len(infos) > MAX_EPUB_MEMBERS:
+            raise DocumentParseError(f"EPUB has {len(infos)} members, the limit is {MAX_EPUB_MEMBERS}")
+        total_read = 0
 
-            # Read all xhtml / html documents in reading order
-            html_files = [n for n in namelist if n.lower().endswith((".xhtml", ".html", ".htm")) and not n.startswith("__MACOSX")]
-            # Sort files naturally
-            html_files.sort()
-
-            for hfile in html_files:
+        def read_member(name: str, label: str) -> Optional[bytes]:
+            nonlocal total_read
+            info = infos.get(name)
+            if info is None:
+                _skip(skipped, filename, f"{label} {name}: not in the archive")
+            elif info.file_size > MAX_EPUB_MEMBER_BYTES:
+                _skip(skipped, filename, f"{label} {name}: exceeds {_format_bytes(MAX_EPUB_MEMBER_BYTES)} uncompressed")
+            elif total_read + info.file_size > MAX_EPUB_TOTAL_BYTES:
+                _skip(skipped, filename, f"{label} {name}: total uncompressed size would exceed {_format_bytes(MAX_EPUB_TOTAL_BYTES)}")
+            else:
                 try:
-                    content = z.read(hfile).decode("utf-8", errors="ignore")
-                    # Strip script and style blocks
-                    content = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", content, flags=re.DOTALL | re.IGNORECASE)
-                    # Convert headers and paragraph tags to linebreaks
-                    content = re.sub(r"<(h[1-6]|p|div|br)[^>]*>", "\n", content, flags=re.IGNORECASE)
-                    # Strip remaining HTML tags
-                    content = re.sub(r"<[^>]+>", " ", content)
-                    content = html.unescape(content)
-                    cleaned_block = re.sub(r"\s+", " ", content).strip()
-                    if cleaned_block:
-                        raw_texts.append(cleaned_block)
-                except Exception:  # noqa: BLE001  # S3.3 RC4
-                    continue
-    except Exception as e:  # noqa: BLE001  # S3.3 RC4
-        raw_texts.append(f"Failed to read EPUB: {e}")
+                    content = archive.read(info)
+                except Exception as exc:  # noqa: BLE001  # the decompressors' exception set is open (BadZipFile, zlib.error, NotImplementedError, ValueError, ...); one bad member is skipped and listed
+                    _skip(skipped, filename, f"{label} {name}: read failed: {type(exc).__name__}: {exc}")
+                else:
+                    total_read += len(content)
+                    return content
+            return None
 
-    raw_text = "\n\n".join(raw_texts)
-    return _build_document_content(raw_text, title=title, filename=filename)
+        title = ""
+        chapters: List[str] = []
+        opf_path = _epub_opf_path(list(infos), read_member)
+        opf_bytes = read_member(opf_path, "package file") if opf_path else None
+        if opf_path and opf_bytes is not None:
+            opf = opf_bytes.decode("utf-8", errors="ignore")
+            match = re.search(r"<dc:title\b[^<>]*>([^<]*)</dc:title\s*>", opf, re.IGNORECASE)
+            if match:
+                title = html.unescape(match.group(1).strip())
+            chapters = _epub_spine(opf, opf_path)
+
+        if not chapters:
+            _skip(skipped, filename, "no reading order found in the package document; chapters read in file-name order")
+            chapters = sorted(
+                name for name in infos if name.lower().endswith((".xhtml", ".html", ".htm")) and not name.startswith("__MACOSX")
+            )
+
+        chapter_texts: List[str] = []
+        for chapter in chapters:
+            content = read_member(chapter, "chapter")
+            text = _chapter_text(content.decode("utf-8", errors="ignore")) if content is not None else ""
+            if text:
+                chapter_texts.append(text)
+
+    document = _build_document_content("\n\n".join(chapter_texts), title=title, filename=filename)
+    document.skipped_parts = skipped
+    return document
 
 
 def parse_text_bytes(data: bytes, filename: str = "document.txt") -> DocumentContent:
