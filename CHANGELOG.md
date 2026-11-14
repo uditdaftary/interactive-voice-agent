@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - Remediation master spec `docs/superpowers/specs/2026-11-12-remediation-design.md`. It comes out of a full audit and covers roughly 70 findings: gaps between the docs and the code, about 59% of the source being unreachable, scripted answers by default, a hardcoded barge-in latency, no trust boundary, and tests that make live network calls. It sets out five gated phases (P0 to P4) and a traceability matrix, and was reviewed in two Opus rounds. No code changes yet.
 - S0.1: declared real dependencies, added ruff/mypy configuration and CI lint/typecheck job (H8, M22, L1).
 - S0.2: network-free default test suite, injection seams, lazy STT (M2, M19, M20, M21, L15).
+- S1: same-origin and host checks, validated request bodies, bounded spine-ordered parsing, robust broadcast and WS error replies (H3, H4, H5, M5, M8, M9, M10, M14, N5, N7, L2, L3).
 
 ---
 

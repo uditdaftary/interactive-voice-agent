@@ -1,11 +1,22 @@
+from collections import deque
 import time
-from typing import List, Optional
+from typing import Deque, List, Optional
 import numpy as np
+
+# A single turn is cut here even if the user is still talking, and the quiet-mic session buffer
+# never holds more than this much audio, so a stuck-open mic cannot grow memory without bound.
+MAX_UTTERANCE_S = 30.0
+# ~1000 ms of audio kept ahead of speech onset so initial plosives are not clipped.
+PRE_ROLL_CHUNKS = 25
 
 
 class SpeechTurnAccumulator:
     """Buffers real-time microphone PCM chunks, identifies active speech turns
     via energy thresholding, and detects conversational pauses for transcription.
+
+    While disarmed (the agent is narrating or replying, not listening) it only keeps the rolling
+    pre-roll, so nothing else accumulates. `arm()` starts a listening turn. A new instance is armed,
+    so standalone use needs no setup.
     """
 
     def __init__(
@@ -20,18 +31,54 @@ class SpeechTurnAccumulator:
         self.silence_timeout_ms = silence_timeout_ms
         self.min_speech_duration_ms = min_speech_duration_ms
         self.is_speaking: bool = False
+        self._armed: bool = True
+        self._max_utterance_bytes = int(MAX_UTTERANCE_S * sample_rate) * 2
         self._speech_buffer: List[bytes] = []
+        self._speech_bytes: int = 0
         self._pre_roll_buffer: List[bytes] = []
-        self._session_buffer: List[bytes] = []
+        self._session_buffer: Deque[bytes] = deque()
+        self._session_bytes: int = 0
         self._speech_duration_ms: float = 0.0
-        self._silence_duration_ms: float = 0.0
         self._last_speech_time: float = 0.0
         self._speech_start_time: float = 0.0
 
+    def arm(self) -> None:
+        """Start capturing a listening turn. Anything already buffered is kept."""
+        self._armed = True
+
+    def disarm(self) -> None:
+        """Stop capturing: drop the half-built turn and the session audio, keep the pre-roll."""
+        if self._armed:
+            self._armed = False
+            self.reset(preserve_pre_roll=True)
+
+    def _keep_pre_roll(self, pcm_chunk: bytes) -> None:
+        self._pre_roll_buffer.append(pcm_chunk)
+        if len(self._pre_roll_buffer) > PRE_ROLL_CHUNKS:
+            self._pre_roll_buffer.pop(0)
+
+    def _append_to_session(self, pcm_chunk: bytes) -> None:
+        self._session_buffer.append(pcm_chunk)
+        self._session_bytes += len(pcm_chunk)
+        while self._session_bytes > self._max_utterance_bytes and len(self._session_buffer) > 1:
+            self._session_bytes -= len(self._session_buffer.popleft())
+
+    def _append_to_speech(self, pcm_chunk: bytes) -> None:
+        self._speech_buffer.append(pcm_chunk)
+        self._speech_bytes += len(pcm_chunk)
+
+    def _take_utterance(self) -> bytes:
+        utterance = b"".join(self._speech_buffer)
+        self.reset()
+        return utterance
 
     def feed(self, pcm_chunk: bytes) -> Optional[bytes]:
         """Feed a 16-bit PCM chunk. Returns full utterance bytes when user finishes speaking."""
         if not pcm_chunk or len(pcm_chunk) < 2:
+            return None
+
+        if not self._armed:
+            self._keep_pre_roll(pcm_chunk)
             return None
 
         # Truncate any partial sample (if odd number of bytes)
@@ -41,7 +88,7 @@ class SpeechTurnAccumulator:
             return None
 
         # Track all incoming audio chunks during active listening session for zero-loss manual flush
-        self._session_buffer.append(pcm_chunk)
+        self._append_to_session(pcm_chunk)
 
         float_samples = pcm16.astype(np.float32) / 32768.0
         rms = float(np.sqrt(np.mean(float_samples ** 2)))
@@ -55,21 +102,21 @@ class SpeechTurnAccumulator:
             if not self.is_speaking:
                 self.is_speaking = True
                 self._speech_buffer = list(self._pre_roll_buffer)
+                self._speech_bytes = sum(len(chunk) for chunk in self._speech_buffer)
                 self._pre_roll_buffer = []
                 self._speech_duration_ms = 0.0
-                self._silence_duration_ms = 0.0
                 self._speech_start_time = now
 
             self._last_speech_time = now
-            self._speech_buffer.append(pcm_chunk)
+            self._append_to_speech(pcm_chunk)
             self._speech_duration_ms += chunk_duration_ms
-            self._silence_duration_ms = 0.0
+            if self._speech_bytes >= self._max_utterance_bytes:
+                return self._take_utterance()
             return None
 
         # Silence chunk
         if self.is_speaking:
-            self._speech_buffer.append(pcm_chunk)
-            self._silence_duration_ms += chunk_duration_ms
+            self._append_to_speech(pcm_chunk)
             elapsed_silence_ms = (now - self._last_speech_time) * 1000.0 if self._last_speech_time > 0 else 0.0
 
             # Monotonic wall-clock elapsed silence governs active voice turns to prevent
@@ -84,15 +131,13 @@ class SpeechTurnAccumulator:
                     self._speech_duration_ms,
                     (self._last_speech_time - self._speech_start_time) * 1000.0,
                 )
-                utterance = b"".join(self._speech_buffer)
-                self.reset()
+                utterance = self._take_utterance()
                 if speech_duration >= self.min_speech_duration_ms:
                     return utterance
+            elif self._speech_bytes >= self._max_utterance_bytes:
+                return self._take_utterance()
         else:
-            # Maintain rolling pre-roll buffer of up to 25 chunks (~1000ms) to capture initial plosives/words
-            self._pre_roll_buffer.append(pcm_chunk)
-            if len(self._pre_roll_buffer) > 25:
-                self._pre_roll_buffer.pop(0)
+            self._keep_pre_roll(pcm_chunk)
 
         return None
 
@@ -117,10 +162,11 @@ class SpeechTurnAccumulator:
         """Reset internal accumulator state."""
         self.is_speaking = False
         self._speech_buffer = []
+        self._speech_bytes = 0
         if not preserve_pre_roll:
             self._pre_roll_buffer = []
-        self._session_buffer = []
+        self._session_buffer = deque()
+        self._session_bytes = 0
         self._speech_duration_ms = 0.0
-        self._silence_duration_ms = 0.0
         self._last_speech_time = 0.0
         self._speech_start_time = 0.0
