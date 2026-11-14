@@ -436,9 +436,11 @@ async def search_web(query: str, max_results: int = 8) -> str:
 class ThinkFilter:
     """Strips `<think>...</think>` blocks from a token stream, whatever the chunk boundaries.
 
-    Thinking is switched off at the source (Modelfile / request), so this is a guard: a model that
-    reasons anyway must not have its reasoning spoken. Only a suffix that could still grow into a
-    tag is held back, so text without a think block streams with no added latency.
+    Thinking is NOT disabled at the source yet: neither `models/Modelfile` nor the request turns it off
+    (how to is unverified, see the Modelfile). This filter is therefore the only defence against the
+    model's reasoning being spoken, and reasoning still spends the reply's token budget.
+    Only a suffix that could still grow into a tag is held back, so text without a think block streams
+    with no added latency.
     """
 
     _OPEN = "<think>"
