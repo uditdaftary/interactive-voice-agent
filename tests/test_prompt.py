@@ -207,3 +207,33 @@ def test_sanitize_chatml_removes_fence_tags_to_a_fixed_point(hostile: str, expec
 
 def test_sanitize_chatml_leaves_ordinary_markup_alone() -> None:
     assert sanitize_chatml("a < b and <b>bold</b> and 3 > 2") == "a < b and <b>bold</b> and 3 > 2"
+
+
+@pytest.mark.parametrize("field", ["web_results", "current_sentence", "passages", "question", "history"])
+def test_text_without_spaces_stays_within_the_budget(field: str) -> None:
+    # CJK text, a long URL or base64 is one word to str.split(), so a word cut alone cannot bound it.
+    unbroken = "一" * 12_000
+    arguments: dict[str, Any] = {"authoritative": True}
+    if field == "passages":
+        arguments["passages"] = [unbroken]
+    elif field == "history":
+        arguments["history"] = [{"role": "assistant", "content": unbroken}]
+    else:
+        arguments[field] = unbroken
+
+    messages = build(**arguments)
+
+    assert estimate_tokens("\n".join(m["content"] for m in messages)) <= 2048 - 256
+    assert "一" * 50 in "\n".join(m["content"] for m in messages)  # a prefix survives, not "- -" or nothing
+    content = messages[-1]["content"]
+    for name in FENCE_NAMES:
+        opened, closed = tag_counts(content, name)
+        assert opened == closed, name
+
+
+def test_every_fenced_block_with_unbroken_text_at_once_stays_within_the_budget() -> None:
+    unbroken = "一" * 12_000
+
+    messages = build(web_results=unbroken, current_sentence=unbroken, passages=[unbroken, unbroken], authoritative=True)
+
+    assert estimate_tokens("\n".join(m["content"] for m in messages)) <= 2048 - 256

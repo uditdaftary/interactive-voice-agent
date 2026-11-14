@@ -15,6 +15,7 @@ _HISTORY_TURNS = 6
 _TURN_MAX_TOKENS = 256  # one history turn, and the question itself
 _ENVELOPE_ALLOWANCE = 30  # role markers and message framing around the system prompt
 _BLOCK_SEPARATOR_TOKENS = 2  # the blank line between blocks
+_CHARS_PER_TOKEN = 3.8  # what orchestrator.context.estimate_tokens charges per character
 
 
 def _one_line(text: str) -> str:
@@ -23,11 +24,17 @@ def _one_line(text: str) -> str:
 
 
 def _clip(text: str, max_tokens: int) -> str:
-    """`truncate_to_tokens` after a cheap pre-cut: every word costs at least one token, so later words can never fit.
+    """`truncate_to_tokens` after two cheap pre-cuts.
 
-    The pre-cut keeps the quadratic word-by-word search in `truncate_to_tokens` away from a book-sized string.
+    - At most `max_tokens` words: every word costs at least one token, so later words can never fit. This keeps
+      the quadratic word-by-word search in `truncate_to_tokens` away from a book-sized string.
+    - At most `max_word` characters per word. `truncate_to_tokens` returns a single over-long word whole, so
+      text with no spaces (CJK, a URL, base64) would blow the budget. Capping each word keeps a prefix of it
+      instead; the 8 characters of slack leave room for the short words around it.
     """
-    return truncate_to_tokens(" ".join(text.split()[: max(max_tokens, 0)]), max_tokens)
+    max_word = max(1, int(max_tokens * _CHARS_PER_TOKEN) - 8)
+    words = [word[:max_word] for word in text.split()[: max(max_tokens, 0)]]
+    return truncate_to_tokens(" ".join(words), max_tokens)
 
 
 def _fit_lines(lines: Sequence[str], max_tokens: int) -> list[str]:
