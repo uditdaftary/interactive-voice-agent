@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from typing import List, Dict
 
 SYSTEM_PROMPT = (
@@ -27,18 +28,33 @@ _FENCE_TAGS = re.compile(
     re.IGNORECASE,
 )
 
-# Control and invisible characters (preserves newline, carriage return, and tab). The zero-width and
-# bidi-control ranges matter because str.split() does not treat them as blanks, so they could hide inside a tag.
-_CONTROL_CHAR_REGEX = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]')
+# Characters that show nothing but can sit inside a tag name, so "</book_\u00adpassages>" is not a tag to the
+# regexes yet reads as one to a model whose tokenizer drops or merges them. str.split() does not treat them as
+# blanks either. Control characters (preserves newline, carriage return, and tab) plus the invisible marks that
+# are not category Cf: the combining grapheme joiner and the variation selectors, which are category Mn.
+_HIDDEN_CHARS = re.compile('[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\u034f\ufe00-\ufe0f\U000e0100-\U000e01ef]')
+
+
+def _strip_hidden(text: str) -> str:
+    """Drop control characters and every Unicode format character (category Cf), instead of listing ranges.
+
+    Cf covers soft hyphen, zero-width and bidi controls, invisible math operators and the tag characters, and new
+    ones arrive with each Unicode version. The cost is that a zero-width joiner or non-joiner (also Cf) no longer
+    joins emoji sequences or shapes some Persian and Indic words; that does not matter in a prompt.
+    """
+    text = _HIDDEN_CHARS.sub("", text)
+    if text.isascii():  # no format characters in ASCII: skip the per-character pass for the common case
+        return text
+    return "".join(char for char in text if unicodedata.category(char) != "Cf")
 
 
 def sanitize_chatml(text: str) -> str:
-    """Strip ChatML / instruction delimiters, fence tags and control characters to prevent prompt injection."""
+    """Strip ChatML / instruction delimiters, fence tags and hidden characters to prevent prompt injection."""
     if not text:
         return ""
-    # Control characters go first so one cannot hide inside a tag name. Then repeat until nothing changes:
+    # Hidden characters go first so none can sit inside a tag name. Then repeat until nothing changes:
     # removing an inner tag can join its neighbours into a new one ("</book_pas<web_results>sages>").
-    cleaned = _CONTROL_CHAR_REGEX.sub("", text)
+    cleaned = _strip_hidden(text)
     while True:
         stripped = _FENCE_TAGS.sub("", _CHATML_CONTROL_TOKENS.sub("", cleaned))
         if stripped == cleaned:
