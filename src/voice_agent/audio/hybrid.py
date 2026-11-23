@@ -230,7 +230,7 @@ class HybridMicrophoneBridge:
             sr = sample_rate if sample_rate is not None else self.input_sample_rate
             return self._ingest_audio_data(data, sr)
 
-    # Architectural aliases for cross-subagent compatibility
+    # Architectural aliases for compatibility with earlier method names
     switch_source = set_source
     ingest_browser_audio = feed_browser_pcm
 
