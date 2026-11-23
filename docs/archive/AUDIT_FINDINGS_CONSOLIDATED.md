@@ -3,7 +3,7 @@
 Date: 2026-11-09
 Scope: C:\Projects\interactive-voice-agent
 
-## 1. Audio Streaming & Concurrency Defects (Auditor 1)
+## 1. Audio Streaming & Concurrency Defects
 - **BUG-A01 (Critical): Destructive Truncation of Floating-Point Audio** (`ring_buffer.py:19-20`): `data.astype(np.int16)` truncates all float in `[-1.0, 1.0]` to `0` (silence). Must scale by 32767.0 and clip.
 - **BUG-A02 (Critical): 2D Audio Array Broadcast Crash** (`ring_buffer.py:31,34`): `sounddevice` delivers `(N, 1)` or `(N, 2)` arrays; 1D slice assignment raises `ValueError`. Must downmix/flatten to 1D.
 - **BUG-A03 (Critical): Negative samples_requested Crash** (`ring_buffer.py:42-46`): Negative values trigger `ValueError: negative dimensions are not allowed`. Must guard `samples_requested <= 0`.
@@ -15,7 +15,7 @@ Scope: C:\Projects\interactive-voice-agent
 - **BUG-A09 (Intermediate): Raw Byte Stream Crash** (`ring_buffer.py:19`): `bytes` object has no `dtype`. Support buffer protocol.
 - **BUG-A10 (Intermediate): Missing Playhead Tracking** (`ring_buffer.py:9-16`): No sample counter to map elapsed playback to words for cursor tracking.
 
-## 2. Voice Activity Detection (VAD) & Acoustic Ingestion Defects (Auditor 2)
+## 2. Voice Activity Detection (VAD) & Acoustic Ingestion Defects
 - **BUG-V01 (Critical): Absence of Real Microphone Ingestion** (`run_agent.py`, `pipeline.py`): No `sounddevice.InputStream`, completely disconnected mock timers.
 - **BUG-V02 (Critical): Acoustic Echo Cancellation Missing** (`energy_vad.py`, `pipeline.py`): Speaker output enters microphone, agent interrupts itself on its own speech in an infinite loop.
 - **BUG-V03 (Critical): Fixed Energy Threshold Without Adaptive Noise Floor** (`energy_vad.py:4,9,25`): Static 300.0 threshold fails in noisy environments (permanent lockup) or quiet rooms (deafness).
@@ -26,7 +26,7 @@ Scope: C:\Projects\interactive-voice-agent
 - **BUG-V08 (Intermediate): Trailing Hangover Latency Penalty** (`energy_vad.py:10,28-30`): Fixed 240ms hangover delays turn completion. Decouple pause bridging from finalization.
 - **BUG-V09 (Intermediate): Input Validation Missing** (`energy_vad.py:18-24`): `None`, `NaN`, `Inf` crashes detector.
 
-## 3. Orchestrator, Cursor Tracker & Sentence Splitter Defects (Auditor 3)
+## 3. Orchestrator, Cursor Tracker & Sentence Splitter Defects
 - **BUG-O01 (Critical): Inability to Barge-In During REPLYING State** (`state_machine.py:16-23`): Only checks `if state == NARRATING`. Cannot interrupt agent while answering.
 - **BUG-O02 (Critical): Deadlock on Barge-In Callback Exception** (`state_machine.py:18-22`): If callback raises, state remains in `BARGE_IN_TRIGGERED` forever. Wrap in `try...finally`.
 - **BUG-O03 (Critical): Lack of Thread Safety on State Transitions** (`state_machine.py`, `pipeline.py`): Unsynchronized mutations across async event loop and audio threads.
@@ -38,7 +38,7 @@ Scope: C:\Projects\interactive-voice-agent
 - **BUG-O09 (Intermediate): Unbounded Word Offset Causes Silent Resumption** (`tracker.py:32-43`): Offset past end returns empty string. Clamp offset to word count.
 - **BUG-O10 (Intermediate): Markdown Headers Coalesced** (`splitter.py:6-8`): Double newlines and headers squashed into single run-on sentences.
 
-## 4. LLM Client, Context Packaging & Hardware Budget Defects (Auditor 4)
+## 4. LLM Client, Context Packaging & Hardware Budget Defects
 - **BUG-L01 (Critical): PunctuationStreamParser Infinite Loop on Abbreviations** (`client.py:18-24`): `find(".")` continually returns first abbreviation index without advancing buffer, freezing stream.
 - **BUG-L02 (Critical): Multi-Dot Abbreviations Split Mid-Word** (`client.py:18-24`): Splitting `e.g.` yields `"For e."`.
 - **BUG-L03 (Critical): Floating Point Decimals Split Mid-Number** (`client.py:18-24`): `1.5` splits into `"1."` and `"5"`.
