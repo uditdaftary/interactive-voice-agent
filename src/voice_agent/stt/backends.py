@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
 
+from voice_agent.retry import RETRY_COOLDOWN_S
 from voice_agent.stt.speech_judge import SAMPLE_RATE, acoustic, evidence, judge
 
 if TYPE_CHECKING:
@@ -36,8 +37,6 @@ STT_UNAVAILABLE = "stt-unavailable"
 QUIET = "quiet"
 # The names a setting may choose from; settings validates against this, so the two cannot drift apart.
 STT_BACKEND_NAMES: tuple[str, ...] = ("whisper", "moonshine")
-# After a failed load or a dead worker, the next attempt waits this long. One value for every backend that restarts.
-RETRY_COOLDOWN_S = 30.0
 WORKER_PATH = Path(__file__).resolve().parent / "local_stt_worker.py"
 # A reply must arrive within this many seconds; the same bound caps the writes, so a hung worker cannot hold the lock forever.
 READ_TIMEOUT_S = 30.0

@@ -30,7 +30,7 @@ class FakePocket:
     def __init__(self) -> None:
         self.loads = 0
         self.loads_on_main_thread: list[bool] = []
-        self.fail_load = False
+        self.load_error: BaseException | None = None
         self.has_voice_cloning = True
         self.prompts: list[str] = []
         self.prompts_were_paths = True
@@ -54,8 +54,8 @@ class FakePocket:
             def load_model(cls) -> "TTSModel":
                 fake.loads += 1
                 fake.loads_on_main_thread.append(threading.current_thread() is threading.main_thread())
-                if fake.fail_load:
-                    raise OSError("repository is gated")
+                if fake.load_error is not None:
+                    raise fake.load_error
                 return cls(fake.has_voice_cloning)
 
             def get_state_for_audio_prompt(self, audio_conditioning: Any, truncate: bool = False) -> dict[str, str]:
@@ -226,18 +226,93 @@ async def test_gated_weights_raise_the_licence_error_once(fake_pocket: FakePocke
     assert fake_pocket.loads == 1
 
 
-async def test_load_exception_is_tts_error(fake_pocket: FakePocket, voices: Path) -> None:
-    fake_pocket.fail_load = True
+class FakeClock:
+    """A monotonic clock the test moves by hand, so the cooldown is exact without sleeping."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _broken_pocket_module() -> types.ModuleType:
+    """A pocket_tts whose import fails with OSError, as a torch DLL does on Windows (not ImportError)."""
+    module = types.ModuleType("pocket_tts")
+
+    def failing_attribute(name: str) -> Any:
+        raise OSError("[WinError 126] The specified module could not be found")
+
+    module.__getattr__ = failing_attribute  # type: ignore[attr-defined]
+    return module
+
+
+async def test_licence_refusal_is_kept_for_the_session(fake_pocket: FakePocket, voices: Path) -> None:
+    fake_pocket.has_voice_cloning = False
+    clock = FakeClock()
+    backend = PocketTtsBackend(voices_dir=voices, clock=clock)
 
     with pytest.raises(TtsError, match="Hugging Face licence"):
-        await PocketTtsBackend(voices_dir=voices).synthesize("hi", "lucy", 1.0)
+        await backend.synthesize("hi", "lucy", 1.0)
+    clock.now += 300
+    with pytest.raises(TtsError, match="Hugging Face licence"):
+        await backend.synthesize("hi", "lucy", 1.0)
+
+    assert fake_pocket.loads == 1
 
 
-async def test_import_failure_is_tts_error(monkeypatch: pytest.MonkeyPatch, voices: Path) -> None:
+async def test_transient_load_failure_is_retried_after_cooldown(fake_pocket: FakePocket, voices: Path) -> None:
+    fake_pocket.load_error = OSError("network unreachable")
+    clock = FakeClock()
+    backend = PocketTtsBackend(voices_dir=voices, clock=clock)
+
+    with pytest.raises(TtsError, match="did not load"):
+        await backend.synthesize("hi", "lucy", 1.0)
+    clock.now += 10
+    with pytest.raises(TtsError, match="next attempt"):
+        await backend.synthesize("hi", "lucy", 1.0)
+    assert fake_pocket.loads == 1  # inside the 30 s cooldown: no second load
+
+    fake_pocket.load_error = None
+    clock.now += 21
+    audio = await backend.synthesize("hi", "lucy", 1.0)
+
+    assert audio.mime == "audio/wav"
+    assert fake_pocket.loads == 2
+
+
+async def test_os_error_on_import_is_tts_error_and_retried(
+    monkeypatch: pytest.MonkeyPatch, fake_pocket: FakePocket, voices: Path
+) -> None:
+    monkeypatch.setitem(sys.modules, "pocket_tts", _broken_pocket_module())
+    clock = FakeClock()
+    backend = PocketTtsBackend(voices_dir=voices, clock=clock)
+
+    with pytest.raises(TtsError, match="did not import"):
+        await backend.synthesize("hi", "lucy", 1.0)
+
+    monkeypatch.setitem(sys.modules, "pocket_tts", fake_pocket.module())
+    clock.now += 31
+    audio = await backend.synthesize("hi", "lucy", 1.0)
+
+    assert audio.mime == "audio/wav"
+
+
+async def test_missing_package_is_retried_after_cooldown(
+    monkeypatch: pytest.MonkeyPatch, fake_pocket: FakePocket, voices: Path
+) -> None:
     monkeypatch.setitem(sys.modules, "pocket_tts", None)
+    clock = FakeClock()
+    backend = PocketTtsBackend(voices_dir=voices, clock=clock)
 
     with pytest.raises(TtsError, match="pocket-tts did not import"):
-        await PocketTtsBackend(voices_dir=voices).synthesize("hi", "lucy", 1.0)
+        await backend.synthesize("hi", "lucy", 1.0)
+
+    monkeypatch.setitem(sys.modules, "pocket_tts", fake_pocket.module())
+    clock.now += 31
+    audio = await backend.synthesize("hi", "lucy", 1.0)
+
+    assert audio.mime == "audio/wav"
 
 
 async def test_chain_falls_back_from_pocket(monkeypatch: pytest.MonkeyPatch, voices: Path) -> None:

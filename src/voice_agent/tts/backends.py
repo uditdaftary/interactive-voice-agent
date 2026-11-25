@@ -13,6 +13,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 import wave
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -21,6 +22,8 @@ from pathlib import Path
 from typing import Any, Protocol, TypedDict
 
 import numpy as np
+
+from voice_agent.retry import RETRY_COOLDOWN_S
 
 logger = logging.getLogger(__name__)
 
@@ -229,21 +232,29 @@ _INT16_SCALE = 32767.0
 class PocketTtsBackend:
     """Kyutai's Pocket TTS on the CPU, in process (the `pocket` extra). Each voice is cloned from `voices_dir/<voice_id>.wav`.
 
-    The model loads on the first sentence and stays loaded. A failed load is kept for the session, so the weights are not
-    fetched again for every sentence; restart the app to retry. pocket-tts is not thread-safe, so every call into it runs on
-    one thread, which also means one generation at a time. A voice without a usable file speaks in `default_voice`, with one
-    WARNING per voice id. `cadence` is ignored: pocket-tts 4.0.1 has no speed control. Cancelling the awaiting task stops
-    generation after the chunk in progress.
+    The model loads on the first sentence and stays loaded. A refused licence (only the open weights could be loaded, so voices
+    cannot be cloned) is kept for the session: a retry would reload those weights for every sentence. Any other load failure
+    is retried after RETRY_COOLDOWN_S. pocket-tts is not thread-safe, so every call into it runs on one thread, which also
+    means one generation at a time. A voice without a usable file speaks in `default_voice`, with one WARNING per voice id.
+    `cadence` is ignored: pocket-tts 4.0.1 has no speed control. Cancelling the awaiting task stops generation after the chunk
+    in progress, and the next sentence waits until that generation has ended.
     """
 
     name = "pocket"
 
-    def __init__(self, voices_dir: Path = Path("models/voices"), default_voice: str = "v-male") -> None:
+    def __init__(
+        self,
+        voices_dir: Path = Path("models/voices"),
+        default_voice: str = "v-male",
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._voices_dir = voices_dir
         self._default_voice = default_voice
+        self._clock = clock
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pocket")
         self._model: Any = None
-        self._load_failure: str | None = None
+        self._licence_refused = False
+        self._failed_at: float | None = None
         self._voice_states: dict[str, Any] = {}
         self._warned_voices: set[str] = set()
 
@@ -278,29 +289,36 @@ class PocketTtsBackend:
         return _wav_bytes(samples, int(model.sample_rate))
 
     def _loaded_model(self) -> Any:
-        if self._load_failure is not None:
-            raise TtsError(self._load_failure)
-        if self._model is None:
-            try:
-                self._model = self._load()
-            except TtsError as error:
-                self._load_failure = str(error)
-                raise
+        if self._model is not None:
+            return self._model
+        if self._licence_refused:
+            raise TtsError(POCKET_LICENCE_MESSAGE)
+        if self._failed_at is not None and self._clock() - self._failed_at < RETRY_COOLDOWN_S:
+            raise TtsError(f"pocket: the model did not load; the next attempt is after {RETRY_COOLDOWN_S:g} s")
+        try:
+            self._model = self._load()
+        except TtsError:
+            if not self._licence_refused:
+                self._failed_at = self._clock()
+            raise
+        self._failed_at = None
         return self._model
 
     def _load(self) -> Any:
         try:
             from pocket_tts import TTSModel
-        except ImportError as error:
-            raise TtsError(f"pocket: pocket-tts did not import ({error}); install the pocket extra") from error
+        except Exception as error:  # noqa: BLE001  # a broken install can fail with any error (a torch DLL raises OSError); it is one backend failing
+            logger.warning("pocket-tts did not import (%s: %s)", type(error).__name__, error)
+            raise TtsError(f"pocket: pocket-tts did not import ({type(error).__name__}: {error}); install the pocket extra") from error
         try:
             model = TTSModel.load_model()
-        except Exception as error:  # noqa: BLE001  # the weights download is the usual failure; logged, then raised as TtsError
+        except Exception as error:  # noqa: BLE001  # logged, then raised as TtsError so the chain falls back and the load is retried later
             logger.warning("pocket model did not load (%s: %s)", type(error).__name__, error)
-            raise TtsError(POCKET_LICENCE_MESSAGE) from error
+            raise TtsError(f"pocket: the model did not load ({type(error).__name__}: {error})") from error
         if not model.has_voice_cloning:
             # pocket-tts falls back to the open weights when the gated cloning weights are refused, and cloning then fails for every voice.
             logger.warning("pocket loaded without voice cloning: the gated cloning weights are not available")
+            self._licence_refused = True
             raise TtsError(POCKET_LICENCE_MESSAGE)
         return model
 
