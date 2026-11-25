@@ -1,0 +1,18 @@
+# Ollama Modelfile for the local "voice-agent" model.
+#
+# Build it from the repository root:
+#     ollama create voice-agent -f models/Modelfile
+# The GGUF is not in git (see .gitignore); keep it in this folder.
+#
+# No TEMPLATE override: Ollama reads the chat template embedded in the GGUF.
+# UNVERIFIED on this project's machine (Ollama is not installed there): that the installed Ollama loads this
+# architecture, that it picks up the embedded template, and how to switch thinking off for this model.
+# Check with `ollama run voice-agent "Say hello in one sentence."` before relying on it: if the reply starts with
+# reasoning, thinking is on.
+#
+# Thinking is NOT disabled by this file or by the request. The client's ThinkFilter (llm/client.py) is the only
+# defence, and it is partial: it removes a complete <think>...</think> block, and reasoning that ends with a
+# </think> inside the first 120 characters of a reply (ThinkFilter.LEAD_HOLD_CHARS). Longer reasoning is spoken.
+# Reasoning also spends the 300-token reply budget. Turning thinking off here is the real fix once it is verified.
+FROM ./Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf
+PARAMETER num_ctx 2048

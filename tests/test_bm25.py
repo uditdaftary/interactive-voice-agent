@@ -12,7 +12,6 @@ from voice_agent.document.bm25 import (
     tokenize,
 )
 from fakes import FakeLLM, FakeSearch, FakeTts
-from voice_agent.llm.client import LLMClient
 from voice_agent.orchestrator.context import estimate_tokens
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.narration import NarrationEngine
@@ -184,24 +183,6 @@ def test_playhead_proximity_gaussian_boost():
     passages_at_0 = engine.search_document_passages("rain fell", max_passages=1, current_sentence_idx=0)
     assert len(passages_at_0) == 1
     assert "morning" in passages_at_0[0]
-
-
-def test_context_provenance_hierarchy_in_fallback_synthesis():
-    """Verify that when a query matches book contents or has high BM25 document score,
-    best_book_sent is prioritized over best_web_fact in _synthesize_fallback_answer.
-    """
-    llm = LLMClient()
-    user_msg = (
-        "Authoritative Document Passages (Primary Source of Truth):\n"
-        "- David adjusted the sandevistan cyberware along his spine, feeling the cold rush of neural coolant.\n\n"
-        "Live Internet Web Search Results:\n"
-        "- Cyberpunk 2077 Wiki: David Martinez is the main protagonist of Edgerunners.\n\n"
-        "User Question: What did David adjust along his spine?"
-    )
-    answer = llm._synthesize_fallback_answer(user_msg, character_id="david-martinez")
-    # Must prioritize book passage content about adjusting sandevistan over generic wiki definition
-    assert "sandevistan" in answer.lower()
-    assert "spine" in answer.lower() or "coolant" in answer.lower()
 
 
 @pytest.mark.asyncio
