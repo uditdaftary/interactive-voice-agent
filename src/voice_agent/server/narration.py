@@ -134,7 +134,7 @@ class NarrationEngine:
 
     def _go_to(self, sentence_idx: int) -> None:
         """Put the cursor at the start of a sentence. Narration, if that is what the session is doing, goes on from
-        there; in any other state the cursor only moves.
+        there; in any other state the cursor only moves, and the clients are told.
 
         The old narration task may be in the middle of a sentence. It is cancelled, so it can never reach its own
         step to the next sentence and skip one.
@@ -143,15 +143,20 @@ class NarrationEngine:
         self.current_sentence_idx = sentence_idx
         self.current_word_idx = 0
         self.manager.update_cursor(sentence_idx=sentence_idx, word_offset=0)
-        if self.manager.state == "NARRATING":
+        state = self.manager.state
+        if state == "NARRATING":
             self._ensure_narration()  # the new loop announces the sentence itself
-        else:
+        elif state == "PAUSED":
             self.manager.broadcast_json_sync(CursorUpdateMessage(
                 sentence_idx=sentence_idx,
                 word_offset=0,
                 sentence_text=self.sentences[sentence_idx] if self.sentences else "",
                 total_sentences=len(self.sentences),
             ))
+        else:
+            # LISTENING or REPLYING: the HUD takes a cursor_update to mean narration is running, so it is told
+            # through the state snapshot (which carries the cursor) and keeps showing what the session is doing.
+            self.manager.broadcast_json_sync(self.manager.get_state_sync_message())
 
     def next_sentence(self) -> None:
         """Move to the start of the next sentence, wrapping at the end."""

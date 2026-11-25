@@ -131,7 +131,7 @@ async def test_moving_while_not_narrating_moves_the_cursor_without_starting_narr
     socket = await connected(manager)
     await reach(engine, manager, state)
     engine.current_sentence_idx = 2
-    before = socket.seen().count(("cursor_update", ""))
+    cursors_before = len(socket.messages("cursor_update"))
 
     if direction == "next":
         engine.next_sentence()
@@ -143,9 +143,16 @@ async def test_moving_while_not_narrating_moves_the_cursor_without_starting_narr
     assert engine.current_word_idx == 0
     assert manager.state == state
     assert manager.tasks.get("narration") is None
-    await socket.wait_until(lambda: socket.seen().count(("cursor_update", "")) == before + 1)
-    assert socket.messages("cursor_update")[-1]["sentence_idx"] == expected
     assert manager.get_state_sync_message().sentence_idx == expected
+    if state == "PAUSED":
+        await socket.wait_until(lambda: len(socket.messages("cursor_update")) == cursors_before + 1)
+        assert socket.messages("cursor_update")[-1]["sentence_idx"] == expected
+    else:
+        # The HUD reads a cursor_update as "narration is running": in LISTENING and REPLYING it gets the snapshot.
+        await socket.wait_until(lambda: any(m["sentence_idx"] == expected for m in socket.messages("state_sync")))
+        moved = [m for m in socket.messages("state_sync") if m["sentence_idx"] == expected]
+        assert [m["state"] for m in moved] == [state]
+        assert len(socket.messages("cursor_update")) == cursors_before
     await manager.tasks.cancel_all()
 
 

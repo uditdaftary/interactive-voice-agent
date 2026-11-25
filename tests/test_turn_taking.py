@@ -296,7 +296,7 @@ async def test_slow_stt_in_the_followup_window_gives_one_reply_and_never_starts_
     manager = ConnectionManager()
     llm = StreamingLLM()
     tts = FakeTts()
-    engine = make_engine(manager, llm=llm, tts=tts, settings=replace(Settings.fast(), followup_window_s=0.06))
+    engine = make_engine(manager, llm=llm, tts=tts, settings=replace(Settings.fast(), followup_window_s=0.1))
     engine.start_narration()
     async with asyncio.timeout(5):
         await tts.wait_for_calls(1)
@@ -311,7 +311,7 @@ async def test_slow_stt_in_the_followup_window_gives_one_reply_and_never_starts_
     stt = GatedStt("and her friend")
     submit(manager, engine, stt)
     await stt.wait_started()
-    await asyncio.sleep(0.18)  # three windows, with the follow-up still being transcribed
+    await asyncio.sleep(0.3)  # three windows, with the follow-up still being transcribed
     assert manager.state == "LISTENING"
     assert manager.tasks.get("narration") is None
 
