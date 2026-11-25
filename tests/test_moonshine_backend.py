@@ -206,7 +206,7 @@ def test_read_timeout_kills_worker_and_logs_the_timeout(make_worker, caplog: pyt
 
 def test_slow_start_is_within_the_ready_bound(make_worker) -> None:
     # The model load takes longer than one exchange may take; the ready wait has its own, longer bound.
-    backend = make_worker(timeout_s=0.2, ready_timeout_s=5.0, ready_delay_s=0.6, text="hello there")
+    backend = make_worker(timeout_s=0.2, ready_timeout_s=5.0, ready_delay_s=0.4, text="hello there")
 
     assert backend.transcribe(one_second_of_speech(), SAMPLE_RATE) == Transcript("hello there", None)
 
