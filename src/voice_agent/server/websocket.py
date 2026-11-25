@@ -73,7 +73,7 @@ async def process_stt_utterance(
             )
             await manager.broadcast_json(msg)
             if engine is not None and hasattr(engine, "handle_user_interruption"):
-                asyncio.create_task(engine.handle_user_interruption(clean_text))  # noqa: RUF006  # S2.1
+                manager.tasks.spawn(engine.handle_user_interruption(clean_text), "reply", replace=True)
             return clean_text
         return None
 
@@ -102,7 +102,7 @@ async def process_stt_utterance(
             latency_ms=latency_ms,
         )
         if engine is not None and hasattr(engine, "handle_user_interruption"):
-            asyncio.create_task(engine.handle_user_interruption(clean_text))  # noqa: RUF006  # S2.1
+            manager.tasks.spawn(engine.handle_user_interruption(clean_text), "reply", replace=True)
         await manager.broadcast_json(msg)
         return clean_text
     else:
@@ -118,7 +118,7 @@ async def process_stt_utterance(
         )
         await manager.broadcast_json(msg)
         if engine is not None and hasattr(engine, "handle_unrecognized_interruption"):
-            asyncio.create_task(engine.handle_unrecognized_interruption())  # noqa: RUF006  # S2.1
+            manager.tasks.spawn(engine.handle_unrecognized_interruption(), "reply", replace=True)
         elif manager.state in LISTENING_STATES:
             manager.session.resume("stt_rejected")
 
@@ -189,7 +189,7 @@ async def handle_client_text_message(
 
     elif isinstance(msg, QueryInterruptionMessage):
         if engine is not None:
-            asyncio.create_task(engine.handle_user_interruption(msg.query))  # noqa: RUF006  # S2.1
+            manager.tasks.spawn(engine.handle_user_interruption(msg.query), "reply", replace=True)
         else:
             manager.trigger_barge_in()
             manager.session.transition("REPLYING", "question")
@@ -226,7 +226,7 @@ async def handle_client_text_message(
                 )
                 await manager.broadcast_json(out_msg)
                 if engine is not None and hasattr(engine, "handle_user_interruption"):
-                    asyncio.create_task(engine.handle_user_interruption(clean_fb))  # noqa: RUF006  # S2.1
+                    manager.tasks.spawn(engine.handle_user_interruption(clean_fb), "reply", replace=True)
 
 
 async def _handle_frame(

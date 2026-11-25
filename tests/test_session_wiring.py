@@ -406,3 +406,33 @@ async def test_unrecognized_utterance_returns_to_where_the_session_was() -> None
     await engine.handle_unrecognized_interruption()
 
     assert manager.state == "PAUSED"
+
+
+async def test_transcript_is_routed_through_a_tracked_reply_task() -> None:
+    manager = ConnectionManager()
+    engine = make_engine(manager, settings=Settings.fast())
+    manager.session.enter_listening("push_to_talk")
+
+    await process_stt_utterance(b"\x01\x00" * 1600, manager, FakeStt("what is arasaka"), engine)
+    reply = manager.tasks.get("reply")
+
+    assert reply is not None
+    await reply
+    assert manager.state == "PAUSED"
+
+
+async def test_shutdown_leaves_no_tasks() -> None:
+    manager = ConnectionManager()
+    app = create_app(connection_manager=manager, llm_client=FakeLLM(), tts=FakeTts(), search=FakeSearch())
+    engine: NarrationEngine = app.state.narration_engine
+
+    async with app.router.lifespan_context(app):
+        engine.start_narration()
+        reply = manager.tasks.spawn(asyncio.sleep(3600), "reply")
+        await wait_for(lambda: manager.tasks.get("narration") is not None)
+        narration = manager.tasks.get("narration")
+        assert narration is not None
+
+    assert len(manager.tasks) == 0
+    assert narration.done()
+    assert reply.done()

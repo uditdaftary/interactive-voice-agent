@@ -170,6 +170,7 @@ async def lifespan(app: FastAPI):
         engine.pause_narration()
     manager: Optional[ConnectionManager] = getattr(app.state, "connection_manager", None)
     if manager is not None:
+        await manager.tasks.cancel_all()
         await manager.disconnect_all()
 
 
@@ -365,7 +366,8 @@ def create_app(
     async def ask_question(body: AskRequest):
         """Trigger an ad-hoc voice question interruption with live web search grounding."""
         eng: NarrationEngine = app.state.narration_engine
-        asyncio.create_task(eng.handle_user_interruption(body.query))  # noqa: RUF006  # S2.1
+        mgr: ConnectionManager = app.state.connection_manager
+        mgr.tasks.spawn(eng.handle_user_interruption(body.query), "reply", replace=True)
         return {"status": "ok", "query": body.query}
 
     @app.post("/api/narration/control", dependencies=[Depends(security.require_json_content_type)])
