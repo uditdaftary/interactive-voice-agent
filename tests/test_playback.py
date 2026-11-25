@@ -1,6 +1,7 @@
 """Clips go to the owner alone, each announced before it, and the server learns a clip has played from the browser (N19)."""
 
 import asyncio
+import dataclasses
 import json
 import logging
 from typing import Any
@@ -24,11 +25,11 @@ async def listeners(manager: ConnectionManager, count: int, *, auto_ack: bool = 
     return sockets
 
 
-def make_engine(manager: ConnectionManager, *, tts: Any = None) -> NarrationEngine:
+def make_engine(manager: ConnectionManager, *, tts: Any = None, settings: Settings | None = None) -> NarrationEngine:
     return NarrationEngine(
         manager,
         llm_client=FakeLLM(),
-        settings=Settings.fast(),
+        settings=settings if settings is not None else Settings.fast(),
         tts=tts if tts is not None else FakeTts(),
         search=FakeSearch(),
         initial_sentences=["One two three.", "Four five six.", "Seven eight nine."],
@@ -396,3 +397,118 @@ async def test_audio_messages_are_valid_protocol_messages() -> None:
     ):
         with pytest.raises(InvalidClientMessage):
             parse_client_message(json.dumps(bad))
+
+
+# --- a reply waits for the browser, not for a guess -------------------------------------------------------------------
+
+
+class SilentTts(FakeTts):
+    """Every synthesizer failed: no audio at all."""
+
+    async def __call__(self, text: str, voice_id: str, cadence: float) -> tuple[bytes | None, str]:  # type: ignore[override]
+        self.calls.append((text, voice_id, cadence))
+        return None, "none"
+
+
+async def test_a_reply_ends_when_the_browser_says_it_has_played_the_answer() -> None:
+    manager = ConnectionManager()
+    (owner,) = await listeners(manager, 1)
+    engine = make_engine(manager)
+
+    engine.ask("who is lucy")
+    reply = manager.tasks.get("reply")
+    assert reply is not None
+    await owner.wait_for_clips(1)
+    await asyncio.sleep(0.05)  # plenty of time for a reply that did not wait
+
+    assert not reply.done()  # still speaking: the browser has not said it is finished
+    assert manager.state == "REPLYING"
+
+    await owner.ack()
+    await asyncio.wait([reply], timeout=5)
+    assert reply.done() and reply.exception() is None
+    assert manager.state != "REPLYING"  # the follow-up window, then back to what it was doing
+    await manager.tasks.cancel_all()
+
+
+async def test_a_reply_goes_on_after_the_timeout_when_the_report_never_comes(caplog: pytest.LogCaptureFixture) -> None:
+    manager = ConnectionManager()
+    await listeners(manager, 1)  # a tab that never reports
+    engine = make_engine(manager, settings=dataclasses.replace(Settings.fast(), playback_ack_timeout_s=0.05))
+
+    with caplog.at_level(logging.WARNING, logger="voice_agent.server.playback"):
+        engine.ask("who is lucy")
+        reply = manager.tasks.get("reply")
+        assert reply is not None
+        await asyncio.wait([reply], timeout=5)
+
+    assert reply.done() and reply.exception() is None
+    assert manager.state != "REPLYING"
+    assert [record.levelname for record in caplog.records] == ["WARNING"]
+    await manager.tasks.cancel_all()
+
+
+async def test_a_reply_with_nobody_connected_is_paced_by_the_estimate() -> None:
+    manager = ConnectionManager()
+    settings = dataclasses.replace(Settings.fast(), min_sentence_s=30.0)  # an estimate that is not about to pass
+    engine = make_engine(manager, settings=settings)
+
+    engine.ask("who is lucy")
+    reply = manager.tasks.get("reply")
+    assert reply is not None
+    await asyncio.sleep(0.05)
+
+    assert not reply.done() and manager.state == "REPLYING"  # nobody can say it is finished: it waits the estimate
+    await manager.tasks.cancel_all()
+
+
+async def test_a_reply_whose_audio_could_not_be_made_is_paced_by_the_estimate() -> None:
+    manager = ConnectionManager()
+    (owner,) = await listeners(manager, 1)
+    engine = make_engine(manager, tts=SilentTts(), settings=dataclasses.replace(Settings.fast(), min_sentence_s=30.0))
+
+    engine.ask("who is lucy")
+    reply = manager.tasks.get("reply")
+    assert reply is not None
+    await asyncio.sleep(0.05)
+
+    assert not reply.done() and owner.clips == []  # no clip, so no report: it waits the estimate, not an ack
+    await manager.tasks.cancel_all()
+
+
+async def test_the_line_for_speech_that_was_not_understood_waits_for_the_browser_too() -> None:
+    manager = ConnectionManager()
+    (owner,) = await listeners(manager, 1)
+    engine = make_engine(manager)
+    manager.trigger_barge_in()  # a turn that recognized nothing
+
+    engine.report_unrecognized()
+    reply = manager.tasks.get("reply")
+    assert reply is not None
+    await owner.wait_for_clips(1)
+    await asyncio.sleep(0.05)
+    assert not reply.done()
+
+    await owner.ack()
+    await asyncio.wait([reply], timeout=5)
+    assert reply.done() and reply.exception() is None
+    await manager.tasks.cancel_all()
+
+
+async def test_a_reply_whose_clip_went_to_the_old_owner_goes_on_when_the_owner_changes() -> None:
+    manager = ConnectionManager()
+    old, new = await listeners(manager, 2)
+    engine = make_engine(manager)
+
+    engine.ask("who is lucy")
+    reply = manager.tasks.get("reply")
+    assert reply is not None
+    await old.wait_for_clips(1)
+    await asyncio.sleep(0.05)
+    assert not reply.done()
+
+    manager.claim_ownership(new, explicit=True)  # type: ignore[arg-type]
+
+    await asyncio.wait([reply], timeout=5)  # no 30 s wait for a tab that is no longer playing the answer
+    assert reply.done() and reply.exception() is None
+    await manager.tasks.cancel_all()

@@ -19,7 +19,7 @@ from fakes import (
     FakeSearch,
     FakeStt,
     FakeTts,
-    RecordingSocket,
+    PlayerSocket,
     wait_for_state,
     wait_until,
 )
@@ -53,8 +53,9 @@ def make_engine(manager: ConnectionManager, **overrides: Any) -> NarrationEngine
     )
 
 
-async def connected(manager: ConnectionManager) -> RecordingSocket:
-    socket = RecordingSocket()
+async def connected(manager: ConnectionManager) -> PlayerSocket:
+    """A tab that plays every clip it is sent and says so at once, as a browser does."""
+    socket = PlayerSocket(manager, auto_ack=True)
     await manager.connect(socket)  # type: ignore[arg-type]
     return socket
 

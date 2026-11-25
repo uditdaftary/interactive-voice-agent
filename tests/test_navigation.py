@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from fakes import BlockingLLM, FakeLLM, FakeSearch, FakeTts, RecordingSocket, StreamingLLM, wait_for_state, wait_until
+from fakes import BlockingLLM, FakeLLM, FakeSearch, FakeTts, PlayerSocket, StreamingLLM, wait_for_state, wait_until
 from voice_agent.document.parser import DocumentContent
 from voice_agent.server.app import create_app
 from voice_agent.server.connection_manager import ConnectionManager
@@ -43,8 +43,9 @@ def make_engine(manager: ConnectionManager, *, llm: Any = None, tts: Any = None)
     )
 
 
-async def connected(manager: ConnectionManager) -> RecordingSocket:
-    socket = RecordingSocket()
+async def connected(manager: ConnectionManager) -> PlayerSocket:
+    """A tab that plays every clip it is sent and says so at once, as a browser does."""
+    socket = PlayerSocket(manager, auto_ack=True)
     await manager.connect(socket)  # type: ignore[arg-type]
     return socket
 

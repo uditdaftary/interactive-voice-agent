@@ -16,10 +16,7 @@ def test_defaults_match_legacy_literals() -> None:
     assert s.web_search_enabled is True
     assert s.idle_poll_s == 0.5
     assert s.inter_sentence_pause_s == 0.35
-    assert s.min_reply_playback_s == 2.0
-    assert s.reply_words_per_s == 2.2
     assert s.followup_window_s == 2.5
-    assert s.unrecognized_pause_s == 2.0
     assert s.words_per_s == 2.5
     assert s.min_sentence_s == 1.2
 
@@ -63,18 +60,20 @@ def test_fast_zeroes_timings() -> None:
     for name in (
         "idle_poll_s",
         "inter_sentence_pause_s",
-        "min_reply_playback_s",
         "followup_window_s",
-        "unrecognized_pause_s",
         "min_sentence_s",
     ):
         assert getattr(s, name) == 0.0, name
     # Rates are divisors, so "fast" means infinite rate: every derived duration is exactly 0.
     assert 7 / (s.words_per_s * 1.0) == 0.0
-    assert 7 / (s.reply_words_per_s * 1.0) == 0.0
     # Non-timing fields are untouched.
     assert s.llm_model == Settings().llm_model
     assert s.web_search_enabled == Settings().web_search_enabled
+
+
+def test_the_playback_ack_timeout_is_thirty_seconds_and_fast_leaves_it_alone() -> None:
+    assert Settings().playback_ack_timeout_s == 30.0
+    assert Settings.fast().playback_ack_timeout_s == 30.0  # a missing report must stall a test, not be waved through
 
 
 def test_barge_in_listen_default_and_env_override() -> None:

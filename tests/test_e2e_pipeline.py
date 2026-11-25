@@ -327,10 +327,21 @@ def test_e2e_voice_barge_in_stt_transcription(e2e_system) -> None:
 
             states_seen: list[str] = []  # every state_sync, in order, including those skipped over
 
+            announced: list[dict] = []
+
+            def play(frame: dict) -> None:
+                """Report every clip played the moment it arrives, as a browser would."""
+                if frame.get("bytes") is not None and announced:
+                    clip = announced.pop()
+                    ws.send_json({"type": "playback_done", "segment_id": clip["segment_id"], "generation": clip["generation"]})
+                elif frame.get("text") is not None and json.loads(frame["text"]).get("type") == "audio_segment":
+                    announced.append(json.loads(frame["text"]))
+
             def next_message(message_type: str, **expected) -> dict:
                 """The next JSON message of `message_type` (with the given fields); narration traffic is skipped."""
                 for _ in range(2000):
                     frame = ws.receive()
+                    play(frame)
                     if frame.get("text") is None:
                         continue
                     payload = json.loads(frame["text"])
@@ -378,6 +389,7 @@ def test_e2e_voice_barge_in_stt_transcription(e2e_system) -> None:
 
             for _ in range(2000):
                 frame = ws.receive()
+                play(frame)
                 if frame.get("text") is not None:
                     payload = json.loads(frame["text"])
                     p_type = payload.get("type")

@@ -287,8 +287,7 @@ class NarrationEngine:
                 # 4. Stream word cursor highlighting across sentence duration
                 words = sentence_text.split()
                 num_words = max(1, len(words))
-                # Estimated duration based on cadence (words_per_s at 1.0x)
-                duration_sec = max(self.settings.min_sentence_s, num_words / (self.settings.words_per_s * cadence))
+                duration_sec = self._estimated_duration_s(sentence_text, cadence)
                 step_interval = duration_sec / num_words
 
                 for w_idx in range(num_words):
@@ -426,21 +425,25 @@ class NarrationEngine:
             logger.exception("Could not speak the reply-error line")
         self.manager.session.resume("reply_error")
 
-    async def _speak(self, text: str, *, settle_s: float | None = None) -> None:
-        """Synthesize `text`, send it, and wait for it to play. The wait is an estimate, not an acknowledgement."""
+    def _estimated_duration_s(self, text: str, cadence: float) -> float:
+        """How long `text` takes to speak, as far as the server can tell. The one estimate: it paces a sentence that has
+        no clip to wait for, steps the word cursor, and is the length a missing report is waited for beyond."""
+        words = max(1, len(text.split()))
+        return max(self.settings.min_sentence_s, words / (self.settings.words_per_s * cadence))
+
+    async def _speak(self, text: str) -> None:
+        """Synthesize `text`, send it to the owner and wait until the browser says it has played. With nobody to say so
+        (no owner, or no audio could be made) the wait is the estimate; if the report never comes the wait ends after
+        `playback_ack_timeout_s` past the estimate, with a WARNING, and the reply goes on."""
         voice_id = self.manager.active_voice or "david-martinez"
         cadence = self.manager.cadence or 1.0
         audio_bytes, _fmt = await self.tts(text, voice_id, cadence)
-        if audio_bytes:
-            segment_id = await self.manager.send_audio(audio_bytes)
-            if segment_id is not None:
-                self.manager.playback.forget(segment_id)  # waited for by the estimate below
-        if settle_s is None:
-            settle_s = max(
-                self.settings.min_reply_playback_s,
-                len(text.split()) / (self.settings.reply_words_per_s * cadence),
-            )
-        await asyncio.sleep(settle_s)
+        estimate_s = self._estimated_duration_s(text, cadence)
+        segment_id = await self.manager.send_audio(audio_bytes) if audio_bytes else None
+        if segment_id is None:
+            await asyncio.sleep(estimate_s)
+        else:
+            await self.manager.playback.wait_done(segment_id, estimate_s + self.settings.playback_ack_timeout_s)
 
     async def _say_unrecognized(self) -> None:
         current_context = self.sentences[self.current_sentence_idx] if self.sentences else ""
@@ -450,7 +453,7 @@ class NarrationEngine:
             query="",
             reply=UNRECOGNIZED_LINE,
         ))
-        await self._speak(UNRECOGNIZED_LINE, settle_s=self.settings.unrecognized_pause_s)
+        await self._speak(UNRECOGNIZED_LINE)
         # Back to what the session was doing; its state listener restarts narration if that was narrating.
         self.manager.session.resume("reply_done")
 
