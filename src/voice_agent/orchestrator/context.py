@@ -23,6 +23,12 @@ _CHATML_CONTROL_TOKENS = re.compile(
 # and "<web_resultsx" lose their start too, so no text that begins like a fence tag survives.
 _FENCE_TAG_START = re.compile(r'<\s*/?\s*(?:book_passages|current_sentence|web_results)', re.IGNORECASE)
 
+# Stands in for every match of the two patterns above, instead of deleting it. Deleting joins the text either side of
+# the match, and the joined text can be a new match ("<" + "<web_results" + "web_results"), so a nested input needed
+# one pass per layer, which is quadratic. The placeholder is not "<", "/", a blank or a letter, so no match can form
+# around it and one pass settles a nested input. It also shows the model that something was cut.
+_REMOVED = "\ufffd"
+
 # Characters that show nothing but can sit inside a tag name, so "</book_\u00adpassages>" is not a tag to the
 # regexes yet reads as one to a model whose tokenizer drops or merges them. str.split() does not treat them as
 # blanks either. Control characters (preserves newline, carriage return, and tab) plus the invisible marks that
@@ -44,14 +50,15 @@ def _strip_hidden(text: str) -> str:
 
 
 def sanitize_chatml(text: str) -> str:
-    """Strip ChatML / instruction delimiters, fence tag starts and hidden characters to prevent prompt injection."""
+    """Replace ChatML / instruction delimiters and fence tag starts with a placeholder, drop hidden characters."""
     if not text:
         return ""
-    # Hidden characters go first so none can sit inside a tag name. Then repeat until nothing changes: removing a
-    # ChatML token or a tag start can join its neighbours into a new one ("<<web_results/book_passages>").
+    # Hidden characters go first so none can sit inside a tag name. The loop is a guard, not the mechanism: a
+    # placeholder cannot join its neighbours, so it ends after a pass or two. It runs more than once only because
+    # the broad <|...|> pattern can still match across a placeholder, and such a match is not a real token.
     cleaned = _strip_hidden(text)
     while True:
-        stripped = _FENCE_TAG_START.sub("", _CHATML_CONTROL_TOKENS.sub("", cleaned))
+        stripped = _FENCE_TAG_START.sub(_REMOVED, _CHATML_CONTROL_TOKENS.sub(_REMOVED, cleaned))
         if stripped == cleaned:
             return cleaned.strip()
         cleaned = stripped
