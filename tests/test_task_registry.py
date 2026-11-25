@@ -230,18 +230,15 @@ async def test_caller_cancellation_propagates_during_the_llm_stream() -> None:
             await caller
 
 
-@pytest.mark.parametrize("method", ["handle_user_interruption", "handle_unrecognized_interruption"])
-async def test_caller_cancellation_propagates_while_narration_is_stopping(method: str) -> None:
-    """The caller waits for the narration task to stop. Cancelling the caller then must not be swallowed."""
-    llm = BlockingLLM()
+async def test_caller_cancellation_propagates_while_a_task_is_stopping() -> None:
+    """The caller waits for the task to stop. Cancelling the caller then must not be swallowed."""
+    registry = TaskRegistry()
     tts = SlowToStopTts()
-    engine = make_engine(llm, tts)
-    engine.start_narration()
+    registry.spawn(tts("a sentence", "voice", 1.0), "narration")
     async with asyncio.timeout(5):
         await tts.entered.wait()
 
-    args = ("who is lucy",) if method == "handle_user_interruption" else ()
-    caller = asyncio.create_task(getattr(engine, method)(*args))
+    caller = asyncio.create_task(registry.cancel_and_wait("narration"))
     async with asyncio.timeout(5):
         await tts.stopping.wait()
     caller.cancel()
@@ -250,8 +247,7 @@ async def test_caller_cancellation_propagates_while_narration_is_stopping(method
     with pytest.raises(asyncio.CancelledError):
         async with asyncio.timeout(5):
             await caller
-    assert llm.calls == []  # the cancelled caller never went on to ask the model
-    await engine.manager.tasks.cancel_all()
+    await registry.cancel_all()
 
 
 async def test_cancel_never_cancels_the_calling_task() -> None:

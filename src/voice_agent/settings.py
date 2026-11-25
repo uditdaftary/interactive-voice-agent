@@ -35,7 +35,6 @@ class Settings:
     min_reply_playback_s: float = 2.0
     reply_words_per_s: float = 2.2  # divisor, like words_per_s
     followup_window_s: float = 2.5
-    preroll_pause_s: float = 0.8
     unrecognized_pause_s: float = 2.0
 
     @classmethod
@@ -49,7 +48,6 @@ class Settings:
             min_reply_playback_s=0.0,
             reply_words_per_s=float("inf"),
             followup_window_s=0.0,
-            preroll_pause_s=0.0,
             unrecognized_pause_s=0.0,
         )
 

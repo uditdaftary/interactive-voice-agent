@@ -368,8 +368,7 @@ def create_app(
     async def ask_question(body: AskRequest):
         """Trigger an ad-hoc voice question interruption with live web search grounding."""
         eng: NarrationEngine = app.state.narration_engine
-        mgr: ConnectionManager = app.state.connection_manager
-        mgr.tasks.spawn(eng.handle_user_interruption(body.query), "reply", replace=True)
+        eng.ask(body.query)
         return {"status": "ok", "query": body.query}
 
     @app.post("/api/narration/control", dependencies=[Depends(security.require_json_content_type)])
@@ -385,13 +384,9 @@ def create_app(
         elif action in ("pause", "stop"):
             eng.pause_narration()
         elif action == "next":
-            eng.current_sentence_idx = (eng.current_sentence_idx + 1) % max(1, len(eng.sentences))
-            eng.current_word_idx = 0
-            mgr.update_cursor(eng.current_sentence_idx, 0)
+            eng.next_sentence()
         elif action == "prev":
-            eng.current_sentence_idx = (eng.current_sentence_idx - 1 + len(eng.sentences)) % max(1, len(eng.sentences))
-            eng.current_word_idx = 0
-            mgr.update_cursor(eng.current_sentence_idx, 0)
+            eng.previous_sentence()
 
         if mgr.state == state_before:
             # No transition happened, so the state listener announced nothing; still answer the request.

@@ -223,16 +223,15 @@ class ConnectionManager:
             if latency_ms > 0:
                 self._latency_ms = latency_ms
 
-    def trigger_barge_in(
+    def announce_barge_in(
         self,
         flushed_samples: int = 0,
         latency_ms: float = 0.04,
     ) -> BargeInEventMessage:
-        """Trigger an instantaneous barge-in interruption.
-
-        Increments the generation counter, announces the barge-in to the clients, switches to LISTENING
-        (which arms its deadline) and invokes the registered pipeline callback. The barge-in event is queued
-        before the state change so clients see it first. Call it on the event loop.
+        """Tell everyone the user has cut in: bump the generation, drop the half-recorded turn (the pre-roll stays,
+        because the speech that triggered this has already begun), queue the `barge_in` event for the clients and
+        invoke the registered pipeline callback. The state does not change here; a caller that moves the session
+        makes the move after this, so clients see the event first. Call it on the event loop.
         """
         cb = None
         with self._lock:
@@ -250,7 +249,6 @@ class ConnectionManager:
         )
         if self.connection_count:
             self.broadcast_json_sync(event)
-        self.session.enter_listening("barge_in")
 
         if cb is not None:
             try:
@@ -259,6 +257,27 @@ class ConnectionManager:
                 logger.error(f"Error executing barge_in_callback: {e}")
 
         return event
+
+    def trigger_barge_in(
+        self,
+        flushed_samples: int = 0,
+        latency_ms: float = 0.04,
+    ) -> BargeInEventMessage:
+        """Trigger an instantaneous barge-in: announce it, drop a transcription that is still pending (the user is
+        starting a newer turn, and the newest turn wins), and switch to LISTENING, which arms its deadline and stops
+        narration and any reply. Call it on the event loop.
+        """
+        event = self.announce_barge_in(flushed_samples, latency_ms)
+        self.tasks.cancel("stt")
+        self.session.enter_listening("barge_in")
+        return event
+
+    def clear_audio_turn(self) -> None:
+        """Empty the accumulator, pre-roll included. For the start of the follow-up window: what the microphone
+        heard while the answer played is the answer's own echo, not the next question."""
+        with self._lock:
+            if self._accumulator is not None:
+                self._accumulator.reset()
 
     def get_state_sync_message(self) -> StateSyncMessage:
         """Generate a StateSyncMessage snapshot from current session state."""

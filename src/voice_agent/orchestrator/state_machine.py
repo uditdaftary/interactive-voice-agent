@@ -104,6 +104,10 @@ class SessionState:
     extended while the user speaks and suspended while an utterance is being transcribed; it resumes
     to `resume_to` when it runs out. Leaving LISTENING always cancels it, so a stale timer never fires.
     A client that records until it says it is done (push-to-talk) can hold the clock for a bounded time.
+
+    Every entry into LISTENING is a numbered turn. The first finished utterance for the current turn claims it
+    (`claim_turn`), so a second turn-end for the same entry (silence detection and the client's own stop) is
+    dropped, and work that belongs to an older turn cannot touch the newer turn's clock.
     """
 
     def __init__(self, *, listen_deadline_s: float, followup_window_s: float) -> None:
@@ -118,6 +122,8 @@ class SessionState:
         self._deadline_held = False
         self._hold_timer: asyncio.TimerHandle | None = None
         self._resuming = False
+        self._turn_id = 0
+        self._turn_claimed = False
 
     @property
     def state(self) -> SessionStateName:
@@ -126,6 +132,21 @@ class SessionState:
     @property
     def resume_to(self) -> Literal["NARRATING", "PAUSED"]:
         return self._resume_to
+
+    @property
+    def turn_id(self) -> int:
+        """The current listening turn: 0 until the first entry into LISTENING, then +1 on every entry."""
+        return self._turn_id
+
+    @property
+    def turn_claimed(self) -> bool:
+        """True once the current turn's first end was taken (see `claim_turn`): its audio is already being answered."""
+        return self._turn_claimed
+
+    @property
+    def deadline_held(self) -> bool:
+        """True while a client that records until it is done holds the LISTENING clock (see `hold_deadline`)."""
+        return self._deadline_held
 
     @property
     def resuming(self) -> bool:
@@ -152,6 +173,8 @@ class SessionState:
         if old == "LISTENING" and to != "LISTENING":
             self._clear_deadline()
         self._state = to
+        if to == "LISTENING":
+            self._begin_turn()  # always an entry from another state: the early return above caught LISTENING to LISTENING
         for listener in list(self._listeners):
             try:
                 listener(old, to, reason)
@@ -180,12 +203,28 @@ class SessionState:
         leaving a session in LISTENING that nothing will ever end.
         """
         loop = asyncio.get_running_loop()
+        reentry = self._state == "LISTENING"
         if not self.transition("LISTENING", reason):
             return False
+        if reentry:
+            self._begin_turn()  # the user spoke again while listening: a new turn, not a continuation of the old one
         self._armed_for_s = self.followup_window_s if followup else self.listen_deadline_s
         self._deadline_suspended = False
         self._release_hold()
         self._arm_deadline(loop)
+        return True
+
+    def _begin_turn(self) -> None:
+        self._turn_id += 1
+        self._turn_claimed = False
+
+    def claim_turn(self, turn_id: int) -> bool:
+        """Take the right to answer turn `turn_id`. True once, and only while that turn is the current one and the
+        session is still listening; every other caller (an older turn, a second turn-end, a session that moved on)
+        gets False and must drop its work."""
+        if self._state != "LISTENING" or turn_id != self._turn_id or self._turn_claimed:
+            return False
+        self._turn_claimed = True
         return True
 
     def extend_deadline(self) -> None:
@@ -193,15 +232,17 @@ class SessionState:
         if self._can_rearm():
             self._arm_deadline(asyncio.get_running_loop())
 
-    def suspend_deadline(self) -> None:
-        """Stop the clock while an utterance is with the recognizer, so a slow transcript cannot expire the turn."""
-        if self._state == "LISTENING" and self._armed_for_s is not None:
+    def suspend_deadline(self, turn_id: int) -> None:
+        """Stop the clock while an utterance is with the recognizer, so a slow transcript cannot expire the turn.
+        Ignored unless `turn_id` is the current turn."""
+        if turn_id == self._turn_id and self._state == "LISTENING" and self._armed_for_s is not None:
             self._deadline_suspended = True
             self._cancel_timer()
 
-    def resume_deadline(self) -> None:
-        """Start the clock again with the full duration."""
-        if self._deadline_suspended:
+    def resume_deadline(self, turn_id: int) -> None:
+        """Start the clock again with the full duration. Ignored unless `turn_id` is the current turn, so an
+        abandoned transcription cleaning up cannot lift the suspension a newer turn put on."""
+        if turn_id == self._turn_id and self._deadline_suspended:
             self._deadline_suspended = False
             if self._can_rearm():
                 self._arm_deadline(asyncio.get_running_loop())

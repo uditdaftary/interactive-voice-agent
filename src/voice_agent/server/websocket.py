@@ -43,92 +43,90 @@ async def _ensure_stt_engine(app: Any) -> Any:
     return await ensure_stt_engine(app)
 
 
-async def _active_stt_engine(websocket: WebSocket, manager: ConnectionManager, stt_engine: Optional[Any]) -> Any:
-    """The STT engine to use. The first utterance builds it, which loads a model for seconds, so the LISTENING
-    deadline is held until it is ready."""
-    if stt_engine:
-        return stt_engine
-    manager.session.suspend_deadline()
-    try:
-        return await _ensure_stt_engine(websocket.app)
-    finally:
-        manager.session.resume_deadline()
-
-
-async def process_stt_utterance(
-    utterance: bytes,
+def submit_turn(
+    websocket: WebSocket,
     manager: ConnectionManager,
-    stt_engine: Any,
-    engine: Optional[Any] = None,
-    fallback_query: Optional[str] = None,
-) -> Optional[str]:
-    """Transcribe accumulated utterance audio, broadcast transcript, and trigger interruption."""
+    engine: Optional[Any],
+    stt_engine: Optional[Any],
+    utterance: Optional[bytes],
+    fallback_query: Optional[str],
+) -> None:
+    """A turn has ended: answer it, once, without holding up the receive loop.
+
+    Only the first end of the current turn is taken (a silence-detected utterance and the client's own
+    `voice_end` can both arrive for one LISTENING entry); every later one is dropped. The recording goes to
+    the single `stt` task. A turn with no recording is answered from its fallback text, or, with neither,
+    given back to the session at once rather than at the deadline.
+    """
+    session = manager.session
+    turn = session.turn_id
+    if not session.claim_turn(turn):
+        logger.debug("Dropping a turn end: turn %d is already answered or the session is %s", turn, session.state)
+        return
+    fallback = (fallback_query or "").strip()
     if not utterance:
-        if fallback_query and fallback_query.strip():
-            clean_text = fallback_query.strip()
-            logger.info("Empty utterance audio; routing fallback query: %s", clean_text)
-            msg = UserSpeechTranscriptMessage(
-                transcript=clean_text,
-                is_final=True,
-                latency_ms=0.0,
-            )
-            await manager.broadcast_json(msg)
-            if engine is not None and hasattr(engine, "handle_user_interruption"):
-                manager.tasks.spawn(engine.handle_user_interruption(clean_text), "reply", replace=True)
-            return clean_text
-        return None
+        if fallback:
+            logger.info("No audio for this turn; answering its fallback text: %s", fallback)
+            _deliver(manager, engine, turn, fallback, 0.0)
+        else:
+            session.resume("empty_turn")
+        return
+    # Suspended here, in the same step as the claim, so the clock cannot run out before the task starts.
+    session.suspend_deadline(turn)
+    manager.tasks.spawn(
+        _transcribe(websocket, manager, engine, stt_engine, turn, utterance, fallback), "stt", replace=True
+    )
 
-    start_t = time.perf_counter()
-    # The LISTENING deadline must not run out while the utterance is with the recognizer.
-    manager.session.suspend_deadline()
+
+async def _transcribe(
+    websocket: WebSocket,
+    manager: ConnectionManager,
+    engine: Optional[Any],
+    stt_engine: Optional[Any],
+    turn: int,
+    utterance: bytes,
+    fallback: str,
+) -> None:
+    """The `stt` task: transcribe one claimed turn, then hand the transcript on. Building the recognizer on the first
+    utterance can take seconds, and the LISTENING deadline stays suspended for all of it."""
+    started = time.perf_counter()
     try:
-        transcript = await asyncio.to_thread(stt_engine.transcribe, utterance)
-    except Exception as exc:  # noqa: BLE001  # S3.3 RC4
-        logger.warning(f"STT transcription failed: {exc}")
-        transcript = ""
+        try:
+            active = stt_engine if stt_engine else await _ensure_stt_engine(websocket.app)
+            transcript = await asyncio.to_thread(active.transcribe, utterance)
+        except Exception:  # noqa: BLE001  # logged with its traceback; the user hears "I didn't catch that"
+            logger.exception("STT transcription failed; treating the utterance as unrecognized")
+            transcript = ""
+        latency_ms = round((time.perf_counter() - started) * 1000.0, 2)
+        text = (transcript or "").strip()
+        if not text and fallback:
+            logger.info("Using fallback query following empty STT transcript: %s", fallback)
+            text = fallback
+        _deliver(manager, engine, turn, text, latency_ms)
     finally:
-        manager.session.resume_deadline()
+        # Scoped to this turn: if the task was cancelled because a newer turn began, that turn's own clock stays as it is.
+        manager.session.resume_deadline(turn)
 
-    latency_ms = round((time.perf_counter() - start_t) * 1000.0, 2)
-    if manager.state not in LISTENING_STATES:
-        # The user paused, or typed a question, while the recognizer worked. Answering now would speak to
-        # someone who has moved on, and would start a reply from a session that is not listening.
-        logger.debug("Dropping a transcript: the session left LISTENING during transcription (now %s)", manager.state)
-        return None
-    clean_text = transcript.strip() if transcript else ""
 
-    if not clean_text and fallback_query and fallback_query.strip():
-        clean_text = fallback_query.strip()
-        logger.info("Using fallback query following empty STT transcript: %s", clean_text)
+def _deliver(manager: ConnectionManager, engine: Optional[Any], turn: int, text: str, latency_ms: float) -> None:
+    """Show and answer a transcript ("" means nothing was understood), if its turn is still the one being listened to.
 
-    if clean_text:
-        msg = UserSpeechTranscriptMessage(
-            transcript=clean_text,
-            is_final=True,
-            latency_ms=latency_ms,
-        )
-        if engine is not None and hasattr(engine, "handle_user_interruption"):
-            manager.tasks.spawn(engine.handle_user_interruption(clean_text), "reply", replace=True)
-        await manager.broadcast_json(msg)
-        return clean_text
+    There is no await between the check and the state change, so nothing can slip in between, and the transcript
+    is queued before the answer's own messages so the HUD shows the question first. Whoever moved the session while
+    the recognizer worked (a pause, a typed question, a newer barge-in) owns it now: the late transcript is dropped.
+    """
+    session = manager.session
+    if session.state not in LISTENING_STATES or session.turn_id != turn:
+        logger.debug("Dropping a transcript: turn %d is over (session is %s, turn %d)", turn, session.state, session.turn_id)
+        return
+    manager.broadcast_json_sync(UserSpeechTranscriptMessage(transcript=text, is_final=True, latency_ms=latency_ms))
+    if engine is None:
+        if not text:
+            session.resume("stt_rejected")
+    elif text:
+        engine.ask(text)
     else:
-        logger.debug(
-            "STT returned empty transcript for utterance (%d bytes, %.2f ms latency)",
-            len(utterance),
-            latency_ms,
-        )
-        msg = UserSpeechTranscriptMessage(
-            transcript="",
-            is_final=True,
-            latency_ms=latency_ms,
-        )
-        await manager.broadcast_json(msg)
-        if engine is not None and hasattr(engine, "handle_unrecognized_interruption"):
-            manager.tasks.spawn(engine.handle_unrecognized_interruption(), "reply", replace=True)
-        elif manager.state in LISTENING_STATES:
-            manager.session.resume("stt_rejected")
-
-    return None
+        engine.report_unrecognized()
 
 
 async def handle_client_text_message(
@@ -181,15 +179,11 @@ async def handle_client_text_message(
             else:
                 manager.session.transition("NARRATING", "resume")
         elif msg.action == "next":
-            if engine is not None and getattr(engine, "sentences", None):
-                engine.current_sentence_idx = (engine.current_sentence_idx + 1) % max(1, len(engine.sentences))
-                engine.current_word_idx = 0
-                manager.update_cursor(engine.current_sentence_idx, 0)
+            if engine is not None:
+                engine.next_sentence()
         elif msg.action == "prev":
-            if engine is not None and getattr(engine, "sentences", None):
-                engine.current_sentence_idx = (engine.current_sentence_idx - 1 + len(engine.sentences)) % max(1, len(engine.sentences))
-                engine.current_word_idx = 0
-                manager.update_cursor(engine.current_sentence_idx, 0)
+            if engine is not None:
+                engine.previous_sentence()
 
         if manager.state == state_before:
             # No transition happened, so the state listener announced nothing; still answer the request.
@@ -197,7 +191,7 @@ async def handle_client_text_message(
 
     elif isinstance(msg, QueryInterruptionMessage):
         if engine is not None:
-            manager.tasks.spawn(engine.handle_user_interruption(msg.query), "reply", replace=True)
+            engine.ask(msg.query)
         else:
             manager.trigger_barge_in()
             manager.session.transition("REPLYING", "question")
@@ -215,27 +209,17 @@ async def handle_client_text_message(
         await manager.broadcast_json(sync_msg)
 
     elif isinstance(msg, VoiceEndMessage):
-        if manager.state in LISTENING_STATES:
-            manager.session.release_deadline_hold()
+        # The client is done recording, so the hold ends. The turn ends here, on Stop; the normal deadline only runs
+        # if Stop never comes and the hold's cap passes.
+        manager.session.release_deadline_hold()
+        if manager.state not in LISTENING_STATES:
+            # The turn ended before the client's Stop (silence, a typed question, a navigation). The client is waiting
+            # on a state change that already happened, so tell it where the session is now.
+            await manager.send_state_sync(websocket)
+        elif not manager.session.turn_claimed:
             acc = getattr(manager, "accumulator", None)
             utterance = acc.flush() if acc is not None else None
-            fb = getattr(msg, "fallback_query", None)
-            if utterance:
-                active_stt = await _active_stt_engine(websocket, manager, stt_engine)
-                await process_stt_utterance(
-                    utterance, manager, active_stt, engine, fallback_query=fb
-                )
-            elif fb and fb.strip():
-                clean_fb = fb.strip()
-                logger.info(f"Direct fallback query routing (no accumulated utterance): {clean_fb}")
-                out_msg = UserSpeechTranscriptMessage(
-                    transcript=clean_fb,
-                    is_final=True,
-                    latency_ms=0.0,
-                )
-                await manager.broadcast_json(out_msg)
-                if engine is not None and hasattr(engine, "handle_user_interruption"):
-                    manager.tasks.spawn(engine.handle_user_interruption(clean_fb), "reply", replace=True)
+            submit_turn(websocket, manager, engine, stt_engine, utterance, getattr(msg, "fallback_query", None))
 
 
 async def _handle_frame(
@@ -256,19 +240,20 @@ async def _handle_frame(
         manager.on_audio_frame(pcm_data)
         acc = getattr(manager, "accumulator", None)
         if acc is not None:
-            if manager.state in LISTENING_STATES:
+            session = manager.session
+            if manager.state in LISTENING_STATES and not session.turn_claimed:
                 acc.arm()
-                utterance = acc.feed(pcm_data)
+                # A held turn (push-to-talk) ends on the client's voice_end, not on a pause in the speech.
+                utterance = acc.feed(pcm_data, end_on_silence=not session.deadline_held)
                 if acc.is_speaking:
-                    manager.session.extend_deadline()  # the user is talking: the wait must not end on them
+                    session.extend_deadline()  # the user is talking: the wait must not end on them
                 if utterance:
-                    active_stt = await _active_stt_engine(websocket, manager, stt_engine)
-                    await process_stt_utterance(utterance, manager, active_stt, engine)
+                    submit_turn(websocket, manager, engine, stt_engine, utterance, None)
             else:
                 # Disarmed, the accumulator only refreshes its pre-roll (so initial consonants are never lost):
-                # an hour of narration must not buffer an hour of microphone. the session's state listener already dropped any
-                # half-built turn when LISTENING ended; disarming here also covers an accumulator that was
-                # created (armed) while the session was not listening.
+                # an hour of narration must not buffer an hour of microphone. The session's state listener already
+                # dropped any half-built turn when LISTENING ended; disarming here also covers an accumulator that
+                # was created (armed) while the session was not listening, and a turn already handed to the recognizer.
                 acc.disarm()
                 acc.feed(pcm_data)
 

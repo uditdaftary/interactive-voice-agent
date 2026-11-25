@@ -7,7 +7,7 @@ import threading
 import time
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -177,7 +177,6 @@ def test_transcribe_endpoint_builds_stt_on_first_use(counting_stt: type[Counting
 
 def test_websocket_voice_end_builds_stt_on_first_use(counting_stt: type[CountingSTT]) -> None:
     narration = MagicMock()
-    narration.handle_user_interruption = AsyncMock()
     app = create_app(connection_manager=ConnectionManager(), narration_engine=narration)
     pcm = (np.sin(np.linspace(0, 200, 8000)) * 12000).astype(np.int16).tobytes()
 
@@ -196,7 +195,7 @@ def test_websocket_voice_end_builds_stt_on_first_use(counting_stt: type[Counting
         assert transcript["transcript"] == "lazily built transcript"
 
     assert len(counting_stt.built) == 1
-    narration.handle_user_interruption.assert_called_once_with("lazily built transcript")
+    narration.ask.assert_called_once_with("lazily built transcript")
 
 
 def test_importing_the_app_module_does_not_load_whisper() -> None:

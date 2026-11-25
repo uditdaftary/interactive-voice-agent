@@ -11,7 +11,7 @@ from voice_agent.document.bm25 import (
     compute_gaussian_proximity_boost,
     tokenize,
 )
-from fakes import FakeLLM, FakeSearch, FakeTts
+from fakes import FakeLLM, FakeSearch, FakeTts, wait_for_state
 from voice_agent.orchestrator.context import estimate_tokens
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.narration import NarrationEngine
@@ -224,5 +224,5 @@ async def test_chatml_sanitization_and_token_budget_in_interruption():
     # The 1,500-word flood is cut to fit the 2048-token context budget.
     assert estimate_tokens(prompt) <= 2048
     assert "overflow_word_1499" not in prompt
-    # Narration cleanly returns to NARRATING.
-    assert manager.state == "NARRATING"
+    # Narration cleanly returns to NARRATING once the follow-up window closes.
+    await wait_for_state(manager.session, "NARRATING")

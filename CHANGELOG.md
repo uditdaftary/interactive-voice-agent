@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - S1: same-origin and host checks, validated request bodies, bounded spine-ordered parsing, robust broadcast and WS error replies (H3, H4, H5, M5, M8, M9, M10, M14, N5, N7, L2, L3).
 - S2.1: one SessionState with legal transitions, resume_to and a LISTENING deadline; tracked tasks cancelled at shutdown; pause on narration error and on last disconnect; initial state PAUSED (M4, M6, M11 part, L5, L6 part).
 - S4.2: optional Pocket TTS and Moonshine STT backends behind `pocket` and `moonshine` extras; deleted the vendored game-mod TTS workers (H9).
+- S2.2: one reply per user turn (numbered turns; transcription runs as its own task, off the receive loop); a failed reply is reported, spoken as one neutral line, and the session resumes; next, prev and load go through the engine so no sentence is skipped (H1, H2, M3, M7, N6, N17, N18, N20).
 - Default test suite: the slowest tests run on shorter inputs and waits, with no assertion or test removed; about 3 s faster (#82).
 
 ---
