@@ -3,10 +3,12 @@ a LISTENING deadline, and a pause when narration fails or the last client leaves
 
 import asyncio
 import json
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
@@ -436,3 +438,56 @@ async def test_shutdown_leaves_no_tasks() -> None:
     assert len(manager.tasks) == 0
     assert narration.done()
     assert reply.done()
+
+
+class GatedStt:
+    """An STT engine that blocks inside `transcribe` until the test lets it finish."""
+
+    def __init__(self, transcript: str) -> None:
+        self.transcript = transcript
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def transcribe(self, audio: bytes) -> str:
+        self.started.set()
+        assert self.release.wait(5), "the test never released the recognizer"
+        return self.transcript
+
+
+@pytest.mark.parametrize("transcript", ["what is arasaka", ""])
+@pytest.mark.parametrize("left_for", ["PAUSED", "REPLYING"])
+async def test_transcript_is_dropped_when_the_session_left_listening(transcript: str, left_for: str) -> None:
+    """A pause (or a typed question) while Whisper works must not be answered by the late transcript."""
+    manager = ConnectionManager()
+    engine = MagicMock()
+    engine.handle_user_interruption = AsyncMock()
+    engine.handle_unrecognized_interruption = AsyncMock()
+    stt = GatedStt(transcript)
+    manager.session.enter_listening("barge_in")
+
+    work = asyncio.create_task(process_stt_utterance(b"\x01\x00" * 1600, manager, stt, engine))
+    await asyncio.to_thread(stt.started.wait, 5)
+    manager.session.transition(left_for, "meanwhile")
+    stt.release.set()
+
+    assert await work is None
+    engine.handle_user_interruption.assert_not_called()
+    engine.handle_unrecognized_interruption.assert_not_called()
+    assert manager.tasks.get("reply") is None
+    assert manager.state == left_for
+
+
+async def test_transcript_is_routed_when_the_session_is_still_listening() -> None:
+    manager = ConnectionManager()
+    engine = MagicMock()
+    engine.handle_user_interruption = AsyncMock()
+    stt = GatedStt("what is arasaka")
+    manager.session.enter_listening("barge_in")
+
+    work = asyncio.create_task(process_stt_utterance(b"\x01\x00" * 1600, manager, stt, engine))
+    await asyncio.to_thread(stt.started.wait, 5)
+    stt.release.set()
+
+    assert await work == "what is arasaka"
+    engine.handle_user_interruption.assert_called_once_with("what is arasaka")
+    await manager.tasks.cancel_all()

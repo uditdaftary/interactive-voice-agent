@@ -89,6 +89,11 @@ async def process_stt_utterance(
         manager.session.resume_deadline()
 
     latency_ms = round((time.perf_counter() - start_t) * 1000.0, 2)
+    if manager.state not in LISTENING_STATES:
+        # The user paused, or typed a question, while the recognizer worked. Answering now would speak to
+        # someone who has moved on, and would start a reply from a session that is not listening.
+        logger.debug("Dropping a transcript: the session left LISTENING during transcription (now %s)", manager.state)
+        return None
     clean_text = transcript.strip() if transcript else ""
 
     if not clean_text and fallback_query and fallback_query.strip():
