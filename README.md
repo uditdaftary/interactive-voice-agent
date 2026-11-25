@@ -16,7 +16,7 @@ Audiobook-style readers are one-way. If you want to ask "who is that character?"
 - **Narration with a word cursor**: a sentence splitter that protects abbreviations, initials and decimals, a cursor (sentence and word), and cadence control from 0.1x to 3.0x.
 - **Voice interruption**: the browser streams 16 kHz PCM over WebSocket. An energy-based turn accumulator keeps about one second of pre-roll so the first consonant is not clipped, ends a turn after a silence timeout, and caps a turn at 30 seconds. A barge-in bumps a generation counter, moves the session to `LISTENING`, resets the partial turn and tells the browser to stop playback.
 - **Speech recognition**: faster-whisper on CPU behind a backend protocol, with a speech judge that withholds output for audio that is too quiet or does not look like speech.
-- **Question answering**: BM25 passage retrieval over the loaded document with a boost for passages near the cursor, optional DuckDuckGo search grounding, and prompt sanitising. Answers come from a built-in rule-based answerer by default, or from any OpenAI-compatible endpoint (for example Ollama) if you configure one.
+- **Question answering**: BM25 passage retrieval over the loaded document with a boost for passages near the cursor, optional DuckDuckGo search grounding, and prompt sanitising. Answers come from a model behind an OpenAI-compatible endpoint, Ollama by default. If none is reachable the app says so instead of guessing.
 - **Speech synthesis**: Edge neural voices with per-character pitch and rate profiles, with `pyttsx3` as fallback.
 - **Local web UI**: a single-page dashboard served by the same FastAPI process, with live transcript, cursor, voice roster and telemetry over one WebSocket.
 - **Local-server safety**: loopback Host allowlist, same-origin checks on HTTP and WebSocket, JSON content-type enforcement, and validated request bodies.
@@ -68,6 +68,23 @@ Open `http://localhost:8000/`. The built-in sample story is loaded; use the play
 
 Network needs on first use: Edge TTS and web search call out to the internet, and faster-whisper downloads its `tiny.en` model the first time it transcribes. To stay offline, set `VOICE_AGENT_TTS_PRIMARY=pyttsx3` and `VOICE_AGENT_WEB_SEARCH=false`, and use a pre-downloaded Whisper model. On Linux, `sounddevice` needs PortAudio (`libportaudio2`) and `pyttsx3` needs eSpeak.
 
+## Language model setup
+
+Questions that interrupt the narration go to a model served on this machine by [Ollama](https://ollama.com).
+
+1. Install Ollama.
+2. Put the GGUF file in `models/` (it is git-ignored) and register it from the repository root:
+
+   ```bash
+   ollama create voice-agent -f models/Modelfile
+   ollama run voice-agent "Say hello in one sentence."
+   ```
+
+   The Modelfile sets `num_ctx 2048` and leaves the chat template to the one embedded in the GGUF. Check that the reply is a plain sentence and not a reasoning transcript.
+3. Start the app. The defaults in the configuration table already point at `http://127.0.0.1:11434/v1` and the model name `voice-agent`.
+
+Without a reachable model the app says "My language model is offline. Check the model settings." and logs the cause (nothing listening, rejected key, server error, or an empty reply). The `builtin` provider is that same no-model mode on purpose. Greetings and the pause, resume and repeat commands are handled locally either way. Changes made through `/api/config` last until the server restarts.
+
 ## Project layout
 
 ```
@@ -76,7 +93,7 @@ src/voice_agent/
   vad/            Energy-based voice activity detector
   stt/            Whisper backend, speech judge, utterance accumulator
   tts/            Edge and pyttsx3 backends, fallback chain
-  llm/            Streaming sentence parser, answerer, web search grounding
+  llm/            Streaming model client, prompt builder, local intents, web search grounding
   document/       PDF, EPUB and text parsing, BM25 index
   cursor/         Sentence splitter and reading cursor
   orchestrator/   State machine, prompt assembly and sanitising
@@ -94,10 +111,10 @@ Settings are read from environment variables (see `.env.example`; the app does n
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `VOICE_AGENT_LLM_BASE_URL` | `http://localhost:11434/v1` | OpenAI-compatible chat endpoint used when a non-builtin provider is selected |
-| `VOICE_AGENT_LLM_MODEL` | `builtin-assistant` | Model name sent to that endpoint |
-| `VOICE_AGENT_LLM_API_KEY` | `local` | Bearer token for hosted providers; kept out of logged settings |
-| `VOICE_AGENT_WEB_SEARCH` | `true` | Ground answers with DuckDuckGo results |
+| `VOICE_AGENT_LLM_BASE_URL` | `http://127.0.0.1:11434/v1` | OpenAI-compatible chat endpoint (Ollama's default shown) |
+| `VOICE_AGENT_LLM_MODEL` | `voice-agent` | Model name sent to that endpoint |
+| `VOICE_AGENT_LLM_API_KEY` | `local` | Bearer token for hosted providers; kept out of logged settings. Use an `https://` URL: the app warns when a key would go over plain `http://` to another machine |
+| `VOICE_AGENT_WEB_SEARCH` | `true` | Ground answers with DuckDuckGo results; `0`, `false` or `no` turns it off |
 | `VOICE_AGENT_STT_INITIAL_PROMPT` | empty | Names or terms that bias Whisper decoding |
 | `VOICE_AGENT_TTS_PRIMARY` | `edge` | `edge` or `pyttsx3`; the other is the fallback |
 
@@ -106,7 +123,7 @@ The provider, model, voice, cadence and microphone source can also be changed at
 ## Limitations and roadmap
 
 - **Not offline by default.** See the network note in the quickstart.
-- **The default answerer is not a language model.** The built-in provider extracts and templates answers from retrieved passages and search snippets. For generative answers, point the app at an OpenAI-compatible endpoint.
+- **Answers need a local model.** Without a reachable Ollama model the app only answers a few local commands and otherwise says its model is offline. The Modelfile has not been run against a real Ollama install yet, so check the model's reply before relying on it.
 - **The ring buffer, voice activity detector, state machine and host microphone bridge are not wired into the web server.** The server detects speech with a simple energy threshold, and the `host` microphone option is stored as a setting but only browser audio is used. Wiring these in is the main open engineering item.
 - **The barge-in latency shown in the UI is not a measurement.** The server reports a fixed default (0.04 ms) and the UI shows a placeholder before the first event. The tests assert the ring buffer drain stays under 1 ms, which covers the buffer only, not microphone to silence.
 - **The word cursor is timed, not aligned.** Highlighting advances on an estimated words-per-second rate rather than from audio timestamps.

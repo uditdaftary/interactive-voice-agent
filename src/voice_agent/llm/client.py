@@ -1,9 +1,32 @@
+import json
 import re
 import asyncio
 import logging
-from typing import Any, AsyncGenerator, List, Dict, Optional
+from urllib.parse import urlsplit
+from typing import Any, AsyncGenerator, List, Dict, Literal, Optional
+
+import httpx
+
+from voice_agent.settings import Settings
 
 logger = logging.getLogger(__name__)
+
+# Spoken whenever no model answer is available. The HUD shows the cause separately (`LLMClient.status`).
+OFFLINE_LINE = "My language model is offline. Check the model settings."
+
+# ok: reply streamed. offline: nothing listening. auth: 401/403. error: any other failure or an empty reply.
+# interrupted: the stream broke (or the consumer cancelled) after partial output.
+LlmOutcome = Literal["ok", "offline", "auth", "error", "interrupted"]
+
+# "builtin" is the documented no-model mode: no request is made and the offline line is spoken.
+_NO_MODEL_PROVIDERS = frozenset({"builtin", "local-builtin", "native", "none"})
+
+# A 30 s read covers a cold model load; only a refused or unroutable connect counts as offline.
+_TIMEOUT = httpx.Timeout(connect=2.0, read=30.0, write=10.0, pool=2.0)
+
+_DEFAULTS = Settings()  # one source of truth for the endpoint, model and key defaults
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 # Sentinel used to shield periods in abbreviations, decimals, and ellipses
 _SENTINEL = "\uE000"
@@ -410,25 +433,159 @@ async def search_web(query: str, max_results: int = 8) -> str:
     return await asyncio.to_thread(search_web_sync, query, max_results)
 
 
+class ThinkFilter:
+    """Strips `<think>...</think>` blocks from a token stream, whatever the chunk boundaries.
+
+    Thinking is NOT disabled at the source yet: neither `models/Modelfile` nor the request turns it off
+    (how to is unverified, see the Modelfile). This filter is therefore the only defence against the
+    model's reasoning being spoken, and reasoning still spends the reply's token budget.
+
+    Two stream shapes are handled:
+    - `<think>reasoning</think>Answer`: the block is removed.
+    - `reasoning</think>Answer`, which is what a chat template that prefills `<think>` makes the model
+      stream: everything before a `</think>` that has no `<think>` before it is reasoning.
+
+    The second shape cannot be told from a plain reply until `</think>` shows up, so the start of the
+    stream is held back. The choice is `LEAD_HOLD_CHARS` = 120 characters (about 30 tokens, under a second
+    at local-model speeds):
+    - A stream with no think tag STARTING in its first 120 characters is a plain reply. It is released from
+      there on, never altered, and a reply shorter than that is released whole when the stream ends, so
+      the first words of a reply arrive at most 120 characters late (127 when a tag has started inside the
+      hold and is still incomplete). A tag that starts after the hold is not looked for in the lead, so
+      the result does not depend on how the server batches chunks.
+    - Reasoning that ends inside the hold is removed, together with the whitespace after its `</think>`.
+      Reasoning longer than the hold (the usual case for a thinking model) is NOT caught: it has already
+      been released, and a later lone `</think>` is ordinary text. Holding longer would only delay every
+      plain reply while still missing most reasoning, because reasoning tends to outrun the 300-token
+      reply budget. Disabling thinking at the source is the real fix.
+    After the hold, only a suffix that could still grow into `<think>` is held back.
+    """
+
+    _OPEN = "<think>"
+    _CLOSE = "</think>"
+    LEAD_HOLD_CHARS = 120
+
+    def __init__(self) -> None:
+        self._reset()
+
+    def _reset(self) -> None:
+        self._pending = ""  # text not yet decided: the held start of the stream or a possible partial tag
+        self._inside = False
+        self._undecided = True  # the start of the stream has not been classified yet
+        self._spoken = False  # some text has been released
+        self._trim = False  # drop the whitespace after a think block that opened the reply
+
+    @staticmethod
+    def _partial_tag_length(text: str, tag: str) -> int:
+        """Length of the longest suffix of `text` that is a proper prefix of `tag`."""
+        for length in range(min(len(text), len(tag) - 1), 0, -1):
+            if text.endswith(tag[:length]):
+                return length
+        return 0
+
+    def _release(self, emitted: list[str]) -> str:
+        text = "".join(emitted)
+        if self._trim:
+            text = text.lstrip()
+        if text:
+            self._spoken = True
+            self._trim = False
+        return text
+
+    def feed(self, chunk: str) -> str:
+        """Return the part of `chunk` that is safe to emit now."""
+        self._pending += chunk
+        emitted: list[str] = []
+        while True:
+            if self._undecided:
+                # Decide on a tag that STARTS inside the first LEAD_HOLD_CHARS only. Searching the whole buffer
+                # would make the result depend on how the server batches its chunks.
+                window = self._pending[: self.LEAD_HOLD_CHARS + len(self._CLOSE) - 1]
+                opened = window.find(self._OPEN)
+                closed = window.find(self._CLOSE)
+                if closed >= 0 and (opened < 0 or closed < opened):
+                    # The stream began inside a think block whose opening tag was in the prompt.
+                    self._pending = self._pending[closed + len(self._CLOSE):]
+                    self._undecided = False
+                    self._trim = True
+                    continue
+                if opened < 0:
+                    if len(self._pending) < self.LEAD_HOLD_CHARS:
+                        return ""
+                    # A tag that has started inside the hold but is not complete yet may still arrive.
+                    partial = max(
+                        self._partial_tag_length(self._pending, self._OPEN),
+                        self._partial_tag_length(self._pending, self._CLOSE),
+                    )
+                    if len(self._pending) - partial < self.LEAD_HOLD_CHARS:
+                        return ""
+                self._undecided = False
+            tag = self._CLOSE if self._inside else self._OPEN
+            index = self._pending.find(tag)
+            if index >= 0:
+                if not self._inside:
+                    emitted.append(self._pending[:index])
+                elif not self._spoken and not "".join(emitted).strip():
+                    self._trim = True  # a block that opens the reply: the whitespace after it is not the answer
+                self._pending = self._pending[index + len(tag):]
+                self._inside = not self._inside
+                continue
+            settled = len(self._pending) - self._partial_tag_length(self._pending, tag)
+            if not self._inside:
+                emitted.append(self._pending[:settled])
+            self._pending = self._pending[settled:]
+            return self._release(emitted)
+
+    def flush(self) -> str:
+        """End of stream: release whatever is held, or drop it with an unclosed think block. Resets the filter."""
+        tail = "" if self._inside else self._release([self._pending])
+        self._reset()
+        return tail
+
+
+def _delta_content(data: str) -> str:
+    """Text carried by one SSE `data:` payload; "" for anything that carries none."""
+    try:
+        event = json.loads(data)
+    except json.JSONDecodeError:
+        # A garbled or non-JSON event carries no text and the stream goes on. Log the length only: it may echo user text.
+        logger.debug("Skipping a non-JSON SSE event (%d chars)", len(data))
+        return ""
+    if not isinstance(event, dict):
+        return ""
+    choices = event.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices else None
+    delta = choice.get("delta") if isinstance(choice, dict) else None
+    content = delta.get("content") if isinstance(delta, dict) else None
+    # Reasoning deltas carry their text under other keys and are ignored on purpose.
+    return content if isinstance(content, str) else ""
+
+
 class LLMClient:
-    """Multi-provider client supporting Built-in Zero-Setup extraction, Ollama,
-    OpenAI-compatible APIs (Groq, Together, DeepSeek), and live internet web search grounding.
+    """OpenAI-compatible streaming chat client (Ollama by default) with typed outcomes.
+
+    `stream_generate` never raises. When nothing usable came back it yields `OFFLINE_LINE` once, and
+    `status` says why, so the caller can show the cause while the user hears one neutral sentence.
     """
 
     def __init__(
         self,
-        base_url: str = "http://localhost:11434/v1",
-        api_key: str = "local",
-        provider: str = "builtin",
-        model: str = "builtin-assistant",
-        web_search_enabled: bool = True,
+        base_url: str = _DEFAULTS.llm_base_url,
+        api_key: str = _DEFAULTS.llm_api_key,
+        provider: str = "ollama",
+        model: str = _DEFAULTS.llm_model,
+        web_search_enabled: bool = _DEFAULTS.web_search_enabled,
+        transport: httpx.AsyncBaseTransport | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.provider = provider.lower().strip()
         self.model = model
         self.web_search_enabled = web_search_enabled
-        self._fallback_mock = MockLLMClient("Built-in model responding.")
+        self.status: LlmOutcome = "ok"
+        self._transport = transport  # tests only: lets them script the server
+        self._warned_key_urls: set[str] = set()
+        self._warn_if_key_would_travel_in_clear()
 
     def update_config(
         self,
@@ -449,6 +606,28 @@ class LLMClient:
             self.model = model
         if web_search_enabled is not None:
             self.web_search_enabled = bool(web_search_enabled)
+        self._warn_if_key_would_travel_in_clear()
+
+    def _warn_if_key_would_travel_in_clear(self) -> None:
+        """One WARNING per base URL when a real API key is set and the endpoint is remote plain http (M13)."""
+        if not self.api_key or self.api_key == "local" or self.provider in _NO_MODEL_PROVIDERS:
+            return
+        if self.base_url in self._warned_key_urls:
+            return
+        try:
+            parts = urlsplit(self.base_url)
+        except ValueError:
+            # Unparseable: the request itself reports it as an "error" outcome, with the same URL.
+            logger.debug("Not checking the API key transport: %s is not a parseable URL", self.base_url)
+            return
+        host = (parts.hostname or "").lower()
+        if parts.scheme == "http" and host and host not in _LOOPBACK_HOSTS:
+            self._warned_key_urls.add(self.base_url)
+            logger.warning(
+                "An API key is set but %s is a remote http:// endpoint, so the key would cross the network unencrypted. "
+                "Use an https:// URL.",
+                host,
+            )
 
     def get_config(self) -> Dict[str, Any]:
         """Return current provider configuration."""
@@ -460,539 +639,80 @@ class LLMClient:
             "has_api_key": bool(self.api_key and self.api_key != "local"),
         }
 
+    def _chat_url(self) -> str:
+        if self.base_url.endswith("/chat/completions"):
+            return self.base_url
+        if self.base_url.endswith("/v1"):
+            return f"{self.base_url}/chat/completions"
+        return f"{self.base_url}/v1/chat/completions"
+
     async def stream_generate(
         self,
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
-        max_tokens: int = 150,
-        character_id: Optional[str] = None,
+        max_tokens: int = 300,
+        character_id: Optional[str] = None,  # the persona is already in the system message; kept for callers
     ) -> AsyncGenerator[str, None]:
-        # Determine character context
-        chosen_char = character_id
-        if not chosen_char:
-            sys_content = " ".join([m.get("content", "") for m in messages if m.get("role") == "system"]).lower()
-            for c_id in ["johnny-silverhand", "lucy-kushinada", "david-martinez", "v-female", "v-male"]:
-                if c_id in sys_content or c_id.replace("-", " ") in sys_content:
-                    chosen_char = c_id
-                    break
-
-        # Fast path: built-in native zero-setup question extraction
-        if self.provider in ("builtin", "local-builtin", "native", "none"):
-            user_msg = ""
-            for m in reversed(messages):
-                if m.get("role") == "user":
-                    user_msg = m.get("content", "")
-                    break
-            fallback_text = self._synthesize_fallback_answer(user_msg, character_id=chosen_char)
-            for word in fallback_text.split():
-                await asyncio.sleep(0.015)
-                yield word + " "
-            return
-
-        import json
-        import urllib.request
-        import urllib.error
-
-        chosen_model = model or self.model
-
-        # Determine target endpoint
-        target_url = self.base_url
-        if not target_url.endswith("/chat/completions"):
-            if target_url.endswith("/v1"):
-                target_url = f"{target_url}/chat/completions"
-            elif ":11434" in target_url:
-                target_url = f"{target_url}/v1/chat/completions"
-            else:
-                target_url = f"{target_url}/v1/chat/completions"
-
-        payload = json.dumps({
-            "model": chosen_model,
-            "messages": messages,
-            "stream": True,
-            "max_tokens": max_tokens,
-        }).encode("utf-8")
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
-        }
-
-        req = urllib.request.Request(target_url, data=payload, headers=headers, method="POST")
-
-        yielded_any = False
+        # What a cancel or an early close leaves behind: the consumer cut the reply off.
+        outcome: LlmOutcome = "interrupted"
+        detail = ""
+        spoke = False  # any non-blank text reached the consumer
+        think_filter = ThinkFilter()
         try:
-            def _open_stream():
-                return urllib.request.urlopen(req, timeout=3.5)
-
-            response = await asyncio.to_thread(_open_stream)
-
-            loop = asyncio.get_running_loop()
-            while True:
-                line = await loop.run_in_executor(None, response.readline)
-                if not line:
-                    break
-                line_str = line.decode("utf-8").strip()
-                if not line_str or line_str.startswith(":"):
-                    continue
-                if line_str == "data: [DONE]":
-                    break
-                if line_str.startswith("data: "):
-                    data_json = line_str[6:]
-                    try:
-                        data = json.loads(data_json)
-                        choices = data.get("choices", [])
-                        if choices:
-                            delta = choices[0].get("delta", {})
-                            content = delta.get("content", "")
-                            if content:
-                                yielded_any = True
-                                yield content
-                    except json.JSONDecodeError:
-                        continue
-        except (urllib.error.URLError, ConnectionRefusedError, TimeoutError, OSError):
-            yielded_any = False
-
-        if not yielded_any:
-            # Intelligent fallback: formulate a concise answer based on user query and context
-            user_msg = ""
-            for m in reversed(messages):
-                if m.get("role") == "user":
-                    user_msg = m.get("content", "")
-                    break
-
-            fallback_text = self._synthesize_fallback_answer(user_msg, character_id=chosen_char)
-            for word in fallback_text.split():
-                await asyncio.sleep(0.015)
-                yield word + " "
-
-    def _synthesize_fallback_answer(self, user_msg: str, character_id: Optional[str] = None) -> str:
-        """Construct a direct, context-aware spoken response in authentic Cyberpunk character voice
-        from book text or web search grounding without requiring Ollama or external LLM setup.
-        """
-        char = (character_id or "david-martinez").lower()
-
-        # 1. Extract query
-        query = ""
-        if "interrupted your narration with this question: '" in user_msg:
-            query = user_msg.split("interrupted your narration with this question: '")[1].split("'")[0].strip()
-        elif "User Question:" in user_msg:
-            after = user_msg.split("User Question:")[-1]
-            lines = [line.strip() for line in after.split("\n") if line.strip()]
-            query = lines[0] if lines else ""
-        elif "Query:" in user_msg:
-            after = user_msg.split("Query:")[-1]
-            lines = [line.strip() for line in after.split("\n") if line.strip()]
-            query = lines[0] if lines else ""
-        else:
-            lines = [line.strip() for line in user_msg.split("\n") if line.strip()]
-            query = lines[0] if lines else ""
-
-        clean = query.lower().strip()
-        clean_words = set(re.findall(r'\b[a-z0-9_-]+\b', clean))
-
-        # Extract current reading sentence if present in context block
-        current_sentence = ""
-        for tag in ['Currently Reading Sentence: "', "Currently Reading Sentence: '", 'Currently Spoken Line: "']:
-            if tag in user_msg:
+            if self.provider in _NO_MODEL_PROVIDERS:
+                outcome, detail = "offline", f"provider {self.provider!r} has no model"
+            elif not self.base_url.lower().startswith(("http://", "https://")):  # URL schemes are case-insensitive
+                outcome, detail = "error", "base URL must start with http:// or https://"
+            else:
+                payload = {
+                    "model": model or self.model,
+                    "messages": messages,
+                    "stream": True,
+                    "max_tokens": max_tokens,
+                }
+                headers = {"Authorization": f"Bearer {self.api_key}"}
+                failure: tuple[LlmOutcome, str] | None = None
+                status_code = 0
                 try:
-                    current_sentence = user_msg.split(tag)[1].split('"')[0].split("'")[0].strip()
-                except Exception:  # noqa: BLE001, S110  # S3.3 RC4
-                    pass
-                break
+                    async with httpx.AsyncClient(transport=self._transport, timeout=_TIMEOUT) as client:
+                        async with client.stream("POST", self._chat_url(), json=payload, headers=headers) as response:
+                            status_code = response.status_code
+                            if response.is_success:
+                                async for line in response.aiter_lines():
+                                    if not line.startswith("data:"):
+                                        continue
+                                    data = line[5:].strip()
+                                    if data == "[DONE]":
+                                        break
+                                    visible = think_filter.feed(_delta_content(data))
+                                    if visible:
+                                        spoke = spoke or bool(visible.strip())
+                                        yield visible
+                            else:
+                                failure = ("auth" if status_code in (401, 403) else "error", f"HTTP {status_code}")
+                except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                    failure = ("offline", type(exc).__name__)
+                except (httpx.InvalidURL, httpx.UnsupportedProtocol, UnicodeEncodeError) as exc:
+                    # UnicodeEncodeError: httpx cannot put a non-ASCII API key into a header.
+                    failure = ("error", type(exc).__name__)
+                except httpx.HTTPError as exc:
+                    failure = ("interrupted", type(exc).__name__)
 
-        # Fast-Path Conversational Intent 1: Greetings & Social Check-in
-        is_greeting = (
-            any(clean.startswith(g) or g in clean_words for g in ["hey", "hello", "hi", "yo", "sup", "howdy"])
-            or any(p in clean for p in ["what's up", "whats up", "how are you", "are you there", "can you hear me", "you listening"])
-        )
-        if is_greeting:
-            if "johnny" in char:
-                return "I hear you loud and clear, samurai. What, you thought I zeroed out? Spit it out, then let's burn through the rest of this story."
-            elif "lucy" in char:
-                return "I'm here. My interface is linked right to your feed. What is it, David, or should we keep reading?"
-            elif "v-female" in char:
-                return "Reading you loud and clear. What's the intel, or should we resume our pace?"
-            elif "v-male" in char or char == "v":
-                return "Hey choom. Comms are open and I'm listening. What's the call—got a question or ready to jump back in?"
-            else:
-                return "Yo choomba! Still running with you right here in Santo Domingo. Got a question about the run, or ready to keep rolling?"
-
-        # Fast-Path Conversational Intent 2: Self-Identity & Character Backstory
-        is_identity = any(p in clean for p in ["who are you", "what's your name", "whats your name", "tell me about yourself", "who am i talking to", "what is your name"])
-        if is_identity:
-            if "johnny" in char:
-                return "Name's Johnny Silverhand. Rockerboy, rebel, and the guy who put a bullet through Arasaka's ego back in twenty-twenty-three. Keep your head on a swivel, samurai."
-            elif "lucy" in char:
-                return "I'm Lucy. Netrunner. Grew up in Arasaka's deep research facility, survived the ICE, and carved my own path in Night City. Eyes open, David."
-            elif "v-female" in char:
-                return "V, mercenary solo. I take contracts across Night City and always deliver on the objective. Weapons hot, let's keep moving."
-            elif "v-male" in char or char == "v":
-                return "I'm V. Solo mercenary out of Night City. Survived scav dens, corporate hit squads, and the Afterlife legends. Let's finish what we started, choom."
-            else:
-                return "I'm David Martinez, Santo Domingo kid turned edgerunner. Got a military Sandevistan bolted along my spine and a crew that never backs down. What about you, choom—ready for the run?"
-
-        # Fast-Path Conversational Intent 3: Repeat / Rewind Request
-        is_repeat = any(p in clean for p in ["repeat", "read that again", "say that again", "one more time", "what was that", "can you repeat"])
-        if is_repeat:
-            target_line = current_sentence or "the last sentence"
-            if "johnny" in char:
-                return f"Didn't catch it, samurai? Here's the playback: \"{target_line}\" Listen close this time, back to the run."
-            elif "lucy" in char:
-                return f"Replaying the data packet: \"{target_line}\" Focus on the details, David. Resuming now."
-            elif "v-female" in char or "v-male" in char or char == "v":
-                return f"Playing back the last log: \"{target_line}\" Ready when you are, choom."
-            else:
-                return f"Gotcha, choom! Rewinding the track for you: \"{target_line}\" Sound preem? Let's run it."
-
-        # Fast-Path Conversational Intent 4: Pause / Hold / Wait Request
-        is_pause = any(p in clean for p in ["pause", "hold on", "wait a minute", "wait a sec", "hold up", "give me a sec", "stop for a sec"])
-        if is_pause:
-            if "johnny" in char:
-                return "Pumping the brakes, samurai. Take a breath, grab a smoke, and holler when you're ready to get back to the action."
-            elif "lucy" in char:
-                return "Paused the data flow. The subnets are quiet for now. Take your time, David."
-            elif "v-female" in char or "v-male" in char or char == "v":
-                return "Holding in place. Comms are open and weapons on safe until you give the green light, choom."
-            else:
-                return "No problem choomba, holding the line right here. Take your time, Sandevistan's on standby whenever you're ready."
-
-        # Fast-Path Conversational Intent 5: Agreement, Confirmation & Casual Chat
-        is_ack = (
-            any(w in clean_words for w in ["ok", "okay", "alright", "gotcha", "understood", "yep", "yeah", "sure", "nice"])
-            or any(p in clean for p in ["got it", "i see", "makes sense", "sounds good", "right on", "fair enough"])
-        )
-        if is_ack and len(clean_words) <= 4:
-            if "johnny" in char:
-                return "Preem. Keep your optics peeled and that chrome spooled. Ready whenever you give the word, samurai."
-            elif "lucy" in char:
-                return "Good. The subnet is stable. Let me know when you want to dive back in, David."
-            elif "v-female" in char or "v-male" in char or char == "v":
-                return "Understood. Standing by on secure comms until your signal, choom."
-            else:
-                return "Nova! Sandevistan is on standby. Ready to run the next part whenever you are, choom!"
-
-        # Fast-Path Conversational Intent 6: Emotional Feedback & Excitement
-        is_reaction = any(w in clean_words for w in ["whoa", "wow", "crazy", "intense", "damn", "awesome", "cool", "preem", "nova", "wild"])
-        if is_reaction:
-            if "johnny" in char:
-                return "Damn right, samurai. Night City doesn't do boring. Keep that fire in your gut, we're just getting to the good part."
-            elif "lucy" in char:
-                return "It's intense, I know. But we have to stay calm under pressure. Breathe easy, David, and let's dive back into the stream."
-            elif "v-female" in char:
-                return "Situations evolve rapidly under fire. Good instincts. Let's maintain operational tempo and push forward."
-            elif "v-male" in char or char == "v":
-                return "Things get wild fast out on these streets. Stay sharp, choom—let's see what happens next."
-            else:
-                return "Hell yeah, choom! Adrenaline's pumping and the heat's rising. That's how we roll in Santo Domingo—let's keep this momentum going!"
-
-        # Fast-Path Conversational Intent 7: Gratitude & Appreciation
-        is_gratitude = any(w in clean_words for w in ["thanks", "thank", "thx", "appreciate", "grateful"]) or any(p in clean for p in ["thank you", "good job", "nice job"])
-        if is_gratitude:
-            if "johnny" in char:
-                return "Don't mention it, samurai. We watch each other's backs out here. Ready for more, or taking a breather?"
-            elif "lucy" in char:
-                return "Anytime, David. Just keep your focus sharp. What's on your mind next, or should we continue?"
-            elif "v-female" in char or "v-male" in char or char == "v":
-                return "All part of the contract, choom. Glad to have you on the feed. Holler when you're ready to proceed."
-            else:
-                return "Anytime choombatta! That's what a crew is for. Ready to keep rolling with the story?"
-
-        # Fast-Path Conversational Intent 8: Continuation / Resume Commands
-        is_continue = any(p in clean for p in ["continue", "keep reading", "go on", "keep going", "read on", "resume reading", "next sentence", "next chapter", "carry on", "start reading"])
-        if is_continue:
-            if "johnny" in char:
-                return "Picking right back up where we left off, samurai. Eyes on the prize."
-            elif "lucy" in char:
-                return "Re-linking to the story feed now, David. Resuming narrative."
-            elif "v-female" in char or "v-male" in char or char == "v":
-                return "Roger that. Resuming the log now, choom."
-            else:
-                return "You got it, choomba! Spooling up the feed and jumping back into the action!"
-
-        # Fast-Path Conversational Intent 9: System / Construct / AI Inquiries
-        is_ai_inquiry = any(p in clean for p in ["are you an ai", "who made you", "what are you", "are you real", "are you a bot", "are you human", "what kind of bot"])
-        if is_ai_inquiry:
-            if "johnny" in char:
-                return "I'm Johnny Silverhand—rockerboy engram trapped in your neural optics, giving you the real Night City rundown. Don't go mistaking me for some corporate chatbot, samurai."
-            elif "lucy" in char:
-                return "I'm an edgerunner running an encrypted neural handshake through your cyberdeck. We dive through these archives together, David."
-            elif "v-female" in char or "v-male" in char or char == "v":
-                return "Solo mercenary linked directly to your tactical HUD. Running live audio interpretation while we work through this archive, choom."
-            else:
-                return "I'm David Martinez! Running high-speed through your cyberware link so we can tear through this story together. Built different, choom!"
-
-        # 2. Clean query tokens
-        query_terms = extract_query_tokens(query)
-
-        # 3. Extract document / book passages if present
-        book_context = ""
-        for tag in [
-            "Authoritative Document Passages (Primary Source of Truth):",
-            "Authoritative Document Passages:",
-            "Relevant Passages from Loaded Document:",
-            "Passages from Document:",
-            "Book Context:",
-            "Currently Spoken Line:",
-            "Context:",
-        ]:
-            if tag in user_msg:
-                after_tag = user_msg.split(tag)[1]
-                for stop_marker in ["Live Internet Web Search Results:", "User Question:", "Provide a direct"]:
-                    if stop_marker in after_tag:
-                        after_tag = after_tag.split(stop_marker)[0]
-                book_context = after_tag.strip()
-                break
-
-        # 4. Find most relevant sentence from the book / uploaded document
-        best_book_sent = ""
-        if book_context:
-            candidate_sents = [s.strip().lstrip("- ").strip() for s in re.split(r'(?<=[.!?])\s+|\n+', book_context) if len(s.strip()) > 10]
-            best_score = -1
-            for s in candidate_sents:
-                s_lower = s.lower()
-                score = 0
-                for qt in query_terms:
-                    if qt in s_lower:
-                        score += 3
-                    elif len(qt) >= 4 and qt[:4] in s_lower:
-                        score += 1
-                if score > best_score and score > 0:
-                    best_score = score
-                    best_book_sent = s
-
-        is_book_query = bool(
-            "Authoritative Document Passages" in user_msg
-            or "Primary Source of Truth" in user_msg
-            or any(w in query.lower() for w in ["story", "book", "chapter", "scene", "passage", "narrative", "sentence", "reading"])
-            or (best_book_sent and "Live Internet Web Search Results:" not in user_msg)
-        )
-
-        # Context provenance hierarchy: prioritize book context when query is about book contents
-        if is_book_query and best_book_sent:
-            if "johnny" in char:
-                return f"Straight from the scene, samurai: {best_book_sent} Keep your wits sharp."
-            elif "lucy" in char:
-                return f"In this passage: {best_book_sent} Don't lose focus, David."
-            elif "v-female" in char:
-                return f"Target intel from the scene: {best_book_sent} Let's move."
-            elif "v-male" in char or char == "v":
-                return f"Right here in the op, choom: {best_book_sent} Back to it."
-            else:
-                return f"Check it out, choom: {best_book_sent} Sandevistan primed, let's roll."
-
-        # Character lore banter helper (opinions on comrades & entities)
-        def _get_lore_banter() -> Optional[str]:
-            if ("lucy" in clean_words or "kushinada" in clean_words) and any(w in clean for w in ["what do you think", "who is", "tell me", "trust", "opinion"]):
-                if "david" in char:
-                    return "Lucy? She's nova, choom. Most brilliant netrunner in Night City and the reason I keep fighting. She dreams about the Moon, and I'm taking her there."
-                elif "johnny" in char:
-                    return "Lucy's a sharp netrunner. Got that haunted Arasaka survivor look, but she's got serious fire in her ICE. Watch her back, samurai."
-                elif "lucy" in char:
-                    return "You're asking about me? I don't look back at the past anymore. All that matters is looking ahead... to the Moon."
+                # Release what the filter still holds, also after a broken stream: a partial reply is spoken (N3).
+                tail = think_filter.flush()
+                if tail:
+                    spoke = spoke or bool(tail.strip())
+                    yield tail
+                if failure is None:
+                    outcome, detail = ("ok", "") if spoke else ("error", f"HTTP {status_code}, no content")
                 else:
-                    return "Lucy's one of the cleanest netrunners in Pacifica. Slices through corpo ICE before they even know she's in their subnet. Respect."
+                    outcome, detail = failure
+                    if outcome == "interrupted" and not spoke:
+                        outcome = "error"
 
-            if ("sandevistan" in clean_words or "sande" in clean_words) and any(w in clean for w in ["what is", "how does", "tell me", "cyberware", "spine"]):
-                if "david" in char:
-                    return "The Sandevistan is military-grade cyberware along my spine. When it spools up, cold neural coolant rushes through and the whole world freezes while I move at hyper-speed. Preem chrome, choom."
-                elif "johnny" in char:
-                    return "Sandevistan's a high-speed ticket to cyberpsychosis if you aren't careful, samurai. Chrome eats your soul if you let it. Use it, don't let it use you."
-                elif "lucy" in char:
-                    return "Military-grade reflex accelerator. Burns through neural coolant and pushes the brain to the brink. David runs it harder than anyone should."
-                else:
-                    return "Top-tier nervous system cyberware. Slows time in a firefight so you can outflank scavs and hit-squads. Essential chrome for a solo."
-
-            if ("arasaka" in clean_words or "arakasa" in clean or "arakas" in clean) and any(w in clean for w in ["what is", "who is", "tell me", "corporation", "corpo", "tower"]):
-                if "johnny" in char:
-                    return "Arasaka? The biggest, bloodiest megacorporation on Earth. Ruthless suits who think they own your soul and your chrome. I nuked their tower in 2023, and I'd do it again in a heartbeat."
-                elif "david" in char:
-                    return "Arasaka's the undisputed king of Night City. Megacorp security, weapons, and black-ops ICE. They chew up street kids from Santo Domingo and spit out empty husks. Stay off their radar, choom."
-                elif "lucy" in char:
-                    return "Arasaka is the corporate machine that stole my childhood. They trained us in deep subnets to dig through the Old Net. Don't ever trust a suit from Arasaka."
-                else:
-                    return "Arasaka is the apex megacorp in Night City. Banking, corporate security, weapons manufacturing, and the Relic. Cross them and you end up flatlined."
-
-            if ("johnny" in clean_words or "silverhand" in clean_words) and any(w in clean for w in ["who is", "tell me", "what is", "opinion", "think"]):
-                if "johnny" in char:
-                    return "You're looking at him, samurai. Rockerboy, lead guitar for Samurai, and the guy who put a thermonuclear charge in Arasaka Tower's elevator shaft."
-                elif "david" in char:
-                    return "Johnny Silverhand? Legendary rockerboy solo who went out in a blaze of glory at Arasaka Tower. Pure rock and roll rebellion, choom."
-                elif "lucy" in char:
-                    return "Johnny Silverhand is a ghost from 2023. An anti-corpo rebel whose construct is supposedly locked inside Arasaka's secure vault."
-                else:
-                    return "Silverhand's a Night City legend. Terrorist to the corpos, folk hero to the streets. Died hitting Arasaka Tower back in 2023."
-
-            if ("smasher" in clean_words or "adam smasher" in clean) and any(w in clean for w in ["who is", "tell me", "what is", "opinion", "think"]):
-                if "johnny" in char:
-                    return "Adam Smasher. Arasaka's metal monster. More cyberware than man, pure walking slaughter. He's the borg who took me down in 2023. If you ever see him, run or blow him to scrap."
-                elif "david" in char:
-                    return "Smasher... Arasaka's boogeyman. Full cyborg psycho who crushes edgerunners like bugs. Only way to survive him is to move faster than his targeting optics."
-                elif "lucy" in char:
-                    return "Adam Smasher is a demon in chrome. Arasaka's living weapon. Stay far out of his line of fire."
-                else:
-                    return "Adam Smasher. Head of Arasaka security, ninety-six percent cybernetic tank. Ultimate test for any solo in Night City."
-
-            if ("relic" in clean_words or "biochip" in clean_words) and any(w in clean for w in ["what is", "tell me", "how does", "who made"]):
-                if "johnny" in char:
-                    return "The Relic. Arasaka's top-secret biochip running Soulkiller tech. It's got an engram of my consciousness trapped inside. Shove it in your head, and my ghost starts taking over your brain."
-                elif "david" in char:
-                    return "The Relic is Arasaka's crown jewel biochip. Stolen prototype that stores human souls on carbon chips. The kind of tech people start wars over."
-                elif "lucy" in char:
-                    return "Arasaka's Secure Your Mind project. A prototype neural chip designed to house digital constructs of personalities. Deadly tech."
-                else:
-                    return "The Relic. Experimental biochip prototype. Placed in a dying skull, it overwrites the host's brain with the construct stored inside."
-
-            if "blackwall" in clean_words and any(w in clean for w in ["what is", "tell me", "how does"]):
-                if "lucy" in char:
-                    return "The Blackwall is an AI-powered firewall that separates our net from the Old Net—a chaotic graveyard filled with rogue military AIs. Once you touch the Blackwall, there is no coming back."
-                elif "johnny" in char:
-                    return "The Blackwall. NetWatch's flimsy ICE barrier keeping feral, rogue pre-collapse AIs from frying every brain in Night City."
-                elif "david" in char:
-                    return "That's NetWatch's deep ICE border. Beyond it are rogue demons from the data crash. Even Lucy gets chills talking about the Blackwall."
-                else:
-                    return "The Blackwall is the digital wall between survival and extinction. Stray past it, and rogue AIs melt your synaptic cortex in milliseconds."
-
-            if "night city" in clean and any(w in clean for w in ["what is", "tell me", "opinion", "think", "like"]):
-                if "johnny" in char:
-                    return "Night City. City of dreams, city of corpses. Neon gleam over blood and toxic smog. Best and worst place on the planet."
-                elif "david" in char:
-                    return "Night City's where you either make a name for yourself as a legend or die in an alleyway before twenty. But with the right crew, you own these streets."
-                elif "lucy" in char:
-                    return "Night City is a cage of plasteel and glass. Everyone is chasing a phantom dream. That's why I look to the stars."
-                else:
-                    return "Night City never sleeps and it never forgives. High-risk, high-reward contracts around every corner. Keep your weapons loaded."
-
-            return None
-
-        # If live web results were not injected, evaluate character lore banter first
-        has_live_web_results = "Live Internet Web Search Results:" in user_msg
-        if not has_live_web_results:
-            lore_resp = _get_lore_banter()
-            if lore_resp is not None:
-                return lore_resp
-
-        # 5. Extract web search results if present; or trigger live search if enabled
-        web_section = ""
-        if "Live Internet Web Search Results:" in user_msg:
-            after_web = user_msg.split("Live Internet Web Search Results:")[1]
-            if "User Question:" in after_web:
-                web_section = after_web.split("User Question:")[0].strip()
-            else:
-                web_section = after_web.strip()
-        elif getattr(self, "web_search_enabled", True) and query:
-            web_section = search_web_sync(query, max_results=8)
-
-        # 6. Extract substantive, non-truncated fact from Web Search
-        best_web_fact = ""
-        if web_section and web_section.strip():
-            candidate_web = []
-            for line in web_section.split("\n"):
-                line = line.strip().lstrip("- ").strip()
-                if not line:
-                    continue
-                if ":" in line:
-                    title, body = line.split(":", 1)
-                    title = title.strip()
-                    body = body.strip()
-                    if title.endswith(('.', '!', '?')):
-                        line = f"{title} {body}"
-                    else:
-                        line = f"{title}. {body}"
-                clean_snippet = sanitize_web_snippet(line)
-                for sent in re.split(r'(?<=[.!?])\s+', clean_snippet):
-                    sent = sent.strip()
-                    # Filter basic junk
-                    if len(sent) > 10 and not any(skip in sent.lower() for skip in ['login', 'sign up', 'all rights reserved', 'cookie', 'wikipedia is']):
-                        candidate_web.append(sent)
-
-            scored_web = []
-            for sent in candidate_web:
-                clean_sent = re.sub(r'^[^\w]+', '', sent.strip()).strip()
-                if not clean_sent:
-                    continue
-                score = score_candidate_sentence(clean_sent, query_terms)
-                if score > 0:
-                    scored_web.append((score, clean_sent))
-
-            scored_web.sort(key=lambda x: x[0], reverse=True)
-            if scored_web:
-                # Select top sentence ensuring no trailing '...' and full thought
-                top_sent = scored_web[0][1].strip()
-                if not top_sent.endswith(('.', '!', '?')):
-                    top_sent += '.'
-                best_web_fact = top_sent
-
-                # If short, add second relevant sentence if available and substantive
-                if len(top_sent) < 90 and len(scored_web) > 1:
-                    second_sent = scored_web[1][1].strip()
-                    if (
-                        second_sent
-                        and second_sent != top_sent
-                        and len(second_sent.split()) >= 6
-                        and not second_sent.endswith('?')
-                        and not second_sent.lower().startswith(INTERROGATIVE_PREFIXES)
-                    ):
-                        if not second_sent.endswith(('.', '!', '?')):
-                            second_sent += '.'
-                        best_web_fact = f"{top_sent} {second_sent}"
-
-        if best_web_fact:
-            if best_book_sent and any(qt in best_book_sent.lower() for qt in query_terms):
-                clean_book = best_book_sent.lstrip("\"'")
-                full_body = f"{best_web_fact} In our narrative, {clean_book}"
-            else:
-                full_body = best_web_fact
-
-            if "johnny" in char:
-                return f"Here's the real story, samurai: {full_body} What do you think—ready to jump back in, or got more on your mind?"
-            elif "lucy" in char:
-                return f"Here is what the deep net reveals: {full_body} Stay sharp, David. What's our next move?"
-            elif "v-female" in char:
-                return f"Here's the operational intel: {full_body} Objectives clear. Ready to resume the mission, or need more info?"
-            elif "v-male" in char or char == "v":
-                return f"Got the word on the street, choom: {full_body} What's your call—ready to jump back into the op?"
-            else:
-                return f"Check it out, choom: {full_body} Preem intel, right? Let me know if you want to keep rolling!"
-
-        # If only document / notes context is available
-        if best_book_sent:
-            if "johnny" in char:
-                return f"Straight from the scene, samurai: {best_book_sent} Keep your wits sharp. Ready to continue?"
-            elif "lucy" in char:
-                return f"In this passage: {best_book_sent} Don't lose focus, David. Shall we go on?"
-            elif "v-female" in char:
-                return f"Target intel from the scene: {best_book_sent} Let's move when you're ready."
-            elif "v-male" in char or char == "v":
-                return f"Right here in the op, choom: {best_book_sent} Ready to roll on your mark."
-            else:
-                return f"Check it out, choom: {best_book_sent} Sandevistan primed, ready when you are!"
-
-        # Lore banter fallback if web search or book context yielded no specific facts
-        lore_resp = _get_lore_banter()
-        if lore_resp is not None:
-            return lore_resp
-
-        # Conversational Intent 7: Inquisitive question fallback (who/what/where/why)
-        if "who" in clean or "what" in clean or "where" in clean or "why" in clean or "how" in clean:
-            if "johnny" in char:
-                return "Night City doesn't give free handouts, samurai, but that mystery unfolds right as we hit the next block. Keep your eyes sharp and your iron ready. What's on your mind?"
-            elif "lucy" in char:
-                return "There are encrypted layers to this that you only see when you dive deeper into the net. Stay close and keep your head down, David. What else do you need?"
-            elif "v-female" in char:
-                return "Tactical question. In Night City, the pieces fall into place once the op heats up. Ready to push forward, or got more queries?"
-            elif "v-male" in char or char == "v":
-                return "Good question, choom. Out in Night City, the answer usually comes down to who pulls the trigger first. Keep your optics peeled—what's our next play?"
-            else:
-                return "That's a wild thought, choom! Out here in Santo Domingo, you learn to trust your instincts and keep your feet moving. What do you think—ready to keep the story rolling?"
-
-        # Default conversational closer
-        if "johnny" in char:
-            return "Got it, samurai. Keep your eyes on the road and your chrome hot. We've got a city to burn."
-        elif "lucy" in char:
-            return "Understood. The signal is clear. Ready to continue our narrative, David."
-        elif "v-female" in char:
-            return "Copy that. Objectives locked and tactical feed active. Resuming mission."
-        elif "v-male" in char or char == "v":
-            return "Understood choom. Keep your iron ready and stay frosty. Ready when you are."
-        return "Understood choomba! Chrome is spooled up and ready. Let's roll whenever you say!"
-
+            if outcome != "ok":
+                logger.warning("LLM %s at %s: %s", outcome, self.base_url, detail)
+                if not spoke:
+                    yield OFFLINE_LINE
+        finally:
+            self.status = outcome
