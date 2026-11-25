@@ -40,9 +40,12 @@ class TaskRegistry:
         return None
 
     def cancel(self, name: str) -> None:
-        """Ask every live task called `name` to stop, without waiting for it."""
+        """Ask every live task called `name` to stop, without waiting for it. The task making this call is
+        left alone: it is the one deciding, and cancelling it would stop it at its next await."""
+        running = asyncio.current_task()
         for task in self._named(name):
-            task.cancel()
+            if task is not running:
+                task.cancel()
 
     async def cancel_and_wait(self, name: str) -> None:
         """Stop every live task called `name` and wait until it has.

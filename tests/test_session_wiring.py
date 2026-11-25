@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from fakes import FakeLLM, FakeSearch, FakeStt, FakeTts, wait_until
+from fakes import BlockingLLM, FakeLLM, FakeSearch, FakeStt, FakeTts, wait_until
 from voice_agent.orchestrator.state_machine import SessionState
 from voice_agent.server.app import create_app
 from voice_agent.server.connection_manager import ConnectionManager
@@ -490,4 +490,63 @@ async def test_transcript_is_routed_when_the_session_is_still_listening() -> Non
 
     assert await work == "what is arasaka"
     engine.handle_user_interruption.assert_called_once_with("what is arasaka")
+    await manager.tasks.cancel_all()
+
+
+@pytest.mark.parametrize("resting", ["NARRATING", "PAUSED"])
+async def test_barge_in_during_a_reply_cancels_the_reply(resting: str) -> None:
+    llm = BlockingLLM()
+    tts = FakeTts()
+    manager = ConnectionManager()
+    engine = make_engine(manager, settings=replace(Settings.fast(), barge_in_listen_s=0.1), llm=llm, tts=tts)
+    if resting == "NARRATING":
+        engine.start_narration()
+        await wait_for(lambda: len(tts.calls) >= 1)
+    reply = manager.tasks.spawn(engine.handle_user_interruption("who is lucy"), "reply", replace=True)
+    async with asyncio.timeout(5):
+        await llm.started.wait()
+    assert manager.state == "REPLYING"
+    assert manager.session.resume_to == resting
+
+    manager.trigger_barge_in()  # the user speaks over the answer
+    await asyncio.wait([reply], timeout=5)
+    assert reply.cancelled()
+    assert manager.state == "LISTENING"
+
+    await wait_for(lambda: manager.state == resting)  # nobody spoke: the deadline puts the session back
+    await asyncio.sleep(0.1)
+    assert manager.state == resting  # and the cancelled reply did not pull it back into LISTENING
+    assert manager.tasks.get("reply") is None
+    assert (manager.tasks.get("narration") is not None) == (resting == "NARRATING")
+    await manager.tasks.cancel_all()
+
+
+async def test_a_reply_survives_its_own_followup_window() -> None:
+    """Entering LISTENING for the follow-up is not a barge-in, so the reply is not cancelled by it."""
+    manager = ConnectionManager()
+    engine = make_engine(manager, settings=replace(Settings.fast(), followup_window_s=0.1))
+
+    reply = manager.tasks.spawn(engine.handle_user_interruption("who is lucy"), "reply", replace=True)
+    await asyncio.wait([reply], timeout=5)
+
+    assert reply.done() and not reply.cancelled()
+    assert reply.exception() is None
+    await manager.tasks.cancel_all()
+
+
+async def test_a_replacement_reply_is_not_cancelled_by_its_own_barge_in() -> None:
+    """A second question takes over from the first: its trigger_barge_in leaves REPLYING, but it is the new reply."""
+    llm = BlockingLLM()
+    manager = ConnectionManager()
+    engine = make_engine(manager, settings=Settings.fast(), llm=llm)
+
+    first = manager.tasks.spawn(engine.handle_user_interruption("one"), "reply", replace=True)
+    async with asyncio.timeout(5):
+        await llm.started.wait()
+    second = manager.tasks.spawn(engine.handle_user_interruption("two"), "reply", replace=True)
+    await wait_for(lambda: len(llm.calls) == 2)
+
+    assert first.cancelled()
+    assert not second.done()
+    assert manager.state == "REPLYING"
     await manager.tasks.cancel_all()

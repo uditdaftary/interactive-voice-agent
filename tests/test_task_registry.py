@@ -5,7 +5,7 @@ import logging
 
 import pytest
 
-from fakes import FakeLLM, FakeSearch, FakeTts
+from fakes import BlockingLLM, FakeLLM, FakeSearch, FakeTts
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.narration import NarrationEngine
 from voice_agent.server.tasks import TaskRegistry
@@ -187,21 +187,6 @@ async def test_cancel_and_wait_does_not_raise_for_a_task_that_failed_while_stopp
 # --- L5: cancelling a caller must reach it ----------------------------------------------------------------------------
 
 
-class BlockingLLM(FakeLLM):
-    """A stream that never produces a token until released."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.started = asyncio.Event()
-        self.release = asyncio.Event()
-
-    async def stream_generate(self, messages, character_id=None):  # type: ignore[no-untyped-def,override]
-        self.calls.append(messages)
-        self.started.set()
-        await self.release.wait()
-        yield "never"
-
-
 class SlowToStopTts:
     """Blocks inside synthesis; once cancelled it takes its time to finish stopping."""
 
@@ -267,3 +252,22 @@ async def test_caller_cancellation_propagates_while_narration_is_stopping(method
             await caller
     assert llm.calls == []  # the cancelled caller never went on to ask the model
     await engine.manager.tasks.cancel_all()
+
+
+async def test_cancel_never_cancels_the_calling_task() -> None:
+    """A task that triggers its own cancellation (a state listener running inside it) must not stop itself."""
+    registry = TaskRegistry()
+    reached_the_end = asyncio.Event()
+
+    async def cancels_by_name() -> None:
+        registry.cancel("reply")
+        await asyncio.sleep(0)  # a cancelled task would raise here
+        reached_the_end.set()
+
+    task = registry.spawn(cancels_by_name(), "reply")
+    other = registry.spawn(sleeper(), "reply")
+    await asyncio.wait([task], timeout=5)
+
+    assert reached_the_end.is_set()
+    assert other.cancelled()  # a different task of the same name is still cancelled
+    await registry.cancel_all()

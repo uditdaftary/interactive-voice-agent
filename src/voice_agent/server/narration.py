@@ -112,6 +112,11 @@ class NarrationEngine:
         elif new == "LISTENING":
             # A barge-in, from any source, silences narration; the deadline or the reply starts it again.
             self.manager.tasks.cancel("narration")
+            if old == "REPLYING" and reason == "barge_in":
+                # The user spoke over the answer: it stops, so nothing narrates under a reply that is still
+                # running. The reply's own follow-up window (reason "followup") and a replacement reply
+                # (which cancels the old one by name) are not barge-ins.
+                self.manager.tasks.cancel("reply")
         elif new == "NARRATING":
             self._ensure_narration()
 
