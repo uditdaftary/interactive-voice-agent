@@ -53,7 +53,7 @@ class StubSocket:
     app = object()
 
 
-def quick_manager(deadline_s: float = 0.05) -> ConnectionManager:
+def quick_manager(deadline_s: float = 0.03) -> ConnectionManager:
     return ConnectionManager(session=SessionState(listen_deadline_s=deadline_s, followup_window_s=deadline_s))
 
 
@@ -93,7 +93,7 @@ async def test_the_deadline_waits_while_the_recognizer_works() -> None:
 
     submit(manager, None, stt)
     await stt.wait_started()
-    await asyncio.sleep(0.15)  # three deadlines, with the utterance still at the recognizer
+    await asyncio.sleep(0.09)  # three deadlines, with the utterance still at the recognizer
     assert manager.state == "LISTENING"
 
     stt.release.set()
@@ -117,7 +117,7 @@ async def test_the_deadline_waits_while_the_stt_model_loads(monkeypatch: pytest.
         manager.accumulator.feed(LOUD_20MS)
 
     await handle_client_text_message('{"type": "voice_end"}', StubSocket(), manager)  # type: ignore[arg-type]
-    await asyncio.sleep(0.15)  # three deadlines in, the model is still loading
+    await asyncio.sleep(0.09)  # three deadlines in, the model is still loading
     assert manager.state == "LISTENING"
 
     loaded.set()
@@ -273,7 +273,7 @@ async def test_pause_then_a_new_barge_in_never_answers_the_old_question() -> Non
 
 
 async def test_an_abandoned_transcription_does_not_lift_the_new_turns_suspension() -> None:
-    manager = quick_manager(0.05)
+    manager = quick_manager()
     engine = MagicMock()
     first, second = GatedStt("first"), GatedStt("second")
     manager.session.enter_listening("barge_in")
@@ -284,7 +284,7 @@ async def test_an_abandoned_transcription_does_not_lift_the_new_turns_suspension
     submit(manager, engine, second)
     await second.wait_started()
     first.release.set()
-    await asyncio.sleep(0.15)  # three deadlines; the cancelled task has cleaned up by now
+    await asyncio.sleep(0.09)  # three deadlines; the cancelled task has cleaned up by now
 
     assert manager.state == "LISTENING"  # the second turn's clock is still stopped
     second.release.set()
@@ -296,7 +296,7 @@ async def test_slow_stt_in_the_followup_window_gives_one_reply_and_never_starts_
     manager = ConnectionManager()
     llm = StreamingLLM()
     tts = FakeTts()
-    engine = make_engine(manager, llm=llm, tts=tts, settings=replace(Settings.fast(), followup_window_s=0.1))
+    engine = make_engine(manager, llm=llm, tts=tts, settings=replace(Settings.fast(), followup_window_s=0.06))
     engine.start_narration()
     async with asyncio.timeout(5):
         await tts.wait_for_calls(1)
@@ -311,7 +311,7 @@ async def test_slow_stt_in_the_followup_window_gives_one_reply_and_never_starts_
     stt = GatedStt("and her friend")
     submit(manager, engine, stt)
     await stt.wait_started()
-    await asyncio.sleep(0.3)  # three windows, with the follow-up still being transcribed
+    await asyncio.sleep(0.18)  # three windows, with the follow-up still being transcribed
     assert manager.state == "LISTENING"
     assert manager.tasks.get("narration") is None
 
@@ -473,7 +473,7 @@ def test_a_held_turn_records_across_a_pause_and_ends_on_voice_end() -> None:
 
 
 def test_silence_ends_the_turn_again_after_the_hold_runs_out(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(websocket_module, "MAX_UTTERANCE_S", 0.1)
+    monkeypatch.setattr(websocket_module, "MAX_UTTERANCE_S", 0.05)
     manager = ConnectionManager()
     stt = FakeStt("what is arasaka")
     manager.stt_engine = stt
