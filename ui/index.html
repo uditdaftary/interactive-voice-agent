@@ -1383,6 +1383,7 @@
       this.audioEpoch = 0;           // counts stops, so a clip being decoded while one happens can tell
       // Only one tab holds the microphone and hears the audio; the server says which in every state_sync.
       this.isMicOwner = true;
+      this.resumeOnFirstSync = false;  // set when the socket opens: see onConnected
       this.lastTelemetryBins = null;
       this.lastTelemetryRms = null;
       this.lastTelemetryTime = 0;
@@ -1532,14 +1533,15 @@
       // Sync document and sentences from server
       syncDocumentFromServer();
 
-      // Signal resume to start backend narration
-      if (isPlaying) {
-        this.send({ type: 'playback_control', action: 'resume' });
-      }
+      // The user was playing, so narration should be running. Whether it is, the server says in the snapshot it sends
+      // first: the resume goes out only if that says PAUSED, so a tab opening cannot end another tab's recording
+      // or follow-up window.
+      this.resumeOnFirstSync = isPlaying;
     }
 
     onDisconnected() {
       this.isConnected = false;
+      this.resumeOnFirstSync = false;
       updateWsStatusUI(false);
       startSimulationLoop();
       this.stopBrowserMicCapture();
@@ -1681,6 +1683,12 @@
 
     handleStateSync(msg) {
       clearNarrativeTimer();
+      if (this.resumeOnFirstSync) {
+        this.resumeOnFirstSync = false;
+        if (msg.state === 'PAUSED') {
+          this.send({ type: 'playback_control', action: 'resume' });
+        }
+      }
       if (msg.mic_owner !== undefined) {
         this.setMicOwner(msg.mic_owner);
       }
