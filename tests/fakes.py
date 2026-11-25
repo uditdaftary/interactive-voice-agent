@@ -6,8 +6,10 @@ the engine actually asked for.
 """
 
 import asyncio
+import json
+import threading
 import time
-from collections.abc import AsyncGenerator, Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Collection, Sequence
 from types import SimpleNamespace
 from typing import Any
 
@@ -49,6 +51,24 @@ class FakeTts:
     @property
     def texts(self) -> list[str]:
         return [text for text, _, _ in self.calls]
+
+
+class FailingTts(FakeTts):
+    """A synthesizer that raises for the texts in `fail_on` (for every text when `fail_on` is None).
+
+    `attempts` lists every text it was asked to speak; `calls` and `texts` list only the ones that were synthesized.
+    """
+
+    def __init__(self, fail_on: Collection[str] | None = None) -> None:
+        super().__init__()
+        self.fail_on = None if fail_on is None else frozenset(fail_on)
+        self.attempts: list[str] = []
+
+    async def __call__(self, text: str, voice_id: str, cadence: float) -> tuple[bytes, str]:
+        self.attempts.append(text)
+        if self.fail_on is None or text in self.fail_on:
+            raise RuntimeError("synthesis exploded")
+        return await super().__call__(text, voice_id, cadence)
 
 
 class FakeSearch:
@@ -109,6 +129,32 @@ class BlockingLLM(FakeLLM):
         yield "never"
 
 
+class StreamingLLM(FakeLLM):
+    """Streams its tokens, or raises `error` when asked for the first one, and records whether the stream was closed.
+
+    An async generator is finalized promptly only when its consumer closes it; `closed` is how a test sees that happen.
+    """
+
+    def __init__(self, tokens: Sequence[str] = ("Hello ", "there. "), *, error: Exception | None = None) -> None:
+        super().__init__(tokens)
+        self.error = error
+        self.closed = False
+
+    async def stream_generate(
+        self,
+        messages: list[dict[str, str]],
+        character_id: str | None = None,
+    ) -> AsyncGenerator[str, None]:
+        self.calls.append(messages)
+        try:
+            if self.error is not None:
+                raise self.error
+            for token in self.tokens:
+                yield token
+        finally:
+            self.closed = True
+
+
 class FakeWhisper:
     """Stands in for `faster_whisper.WhisperModel`: patch the class with an instance, and calling it builds the model.
 
@@ -145,3 +191,67 @@ class FakeStt:
     def transcribe(self, audio_data: bytes | bytearray | np.ndarray, sample_rate: int = 16000) -> str:
         self.calls.append(audio_data.nbytes if isinstance(audio_data, np.ndarray) else len(audio_data))
         return self.fixed_transcript
+
+
+class GatedStt:
+    """An STT engine whose `transcribe` blocks until the test releases it, then returns `transcript`.
+
+    `started` is set once a call is inside `transcribe`; `inputs` holds the audio of every call.
+    """
+
+    def __init__(self, transcript: str = "") -> None:
+        self.transcript = transcript
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.inputs: list[bytes] = []
+
+    def transcribe(self, audio: bytes) -> str:
+        self.inputs.append(bytes(audio))
+        self.started.set()
+        assert self.release.wait(5), "the test never released the recognizer"
+        return self.transcript
+
+    async def wait_started(self) -> None:
+        """Return once a call is inside `transcribe`, without blocking the event loop."""
+        async with asyncio.timeout(5):
+            await asyncio.to_thread(self.started.wait, 5)
+
+
+class RecordingSocket:
+    """Stands in for a WebSocket: records every text frame the manager sends it, in arrival order."""
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+        self._arrived = asyncio.Event()
+
+    async def accept(self) -> None:
+        return None
+
+    async def send_text(self, text: str) -> None:
+        self.texts.append(text)
+        self._arrived.set()
+
+    async def send_bytes(self, data: bytes) -> None:
+        return None
+
+    async def close(self, code: int = 1000) -> None:
+        return None
+
+    def messages(self, message_type: str) -> list[dict[str, Any]]:
+        parsed = [json.loads(text) for text in self.texts]
+        return [message for message in parsed if message["type"] == message_type]
+
+    def states(self) -> list[str]:
+        return [message["state"] for message in self.messages("state_sync")]
+
+    def seen(self) -> list[tuple[str, str]]:
+        """(type, state) of each message received so far; state is "" for messages that have none."""
+        parsed = [json.loads(text) for text in self.texts]
+        return [(message["type"], message.get("state", "")) for message in parsed]
+
+    async def wait_until(self, condition: Callable[[], bool], timeout_s: float = 5.0) -> None:
+        """Return as soon as `condition()` holds, re-checking after every frame that arrives."""
+        async with asyncio.timeout(timeout_s):
+            while not condition():
+                self._arrived.clear()
+                await self._arrived.wait()

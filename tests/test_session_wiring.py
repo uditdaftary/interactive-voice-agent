@@ -3,7 +3,6 @@ a LISTENING deadline, and a pause when narration fails or the last client leaves
 
 import asyncio
 import json
-import threading
 import time
 from collections.abc import Callable
 from dataclasses import replace
@@ -14,7 +13,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from fakes import BlockingLLM, FakeLLM, FakeSearch, FakeStt, FakeTts, wait_until
+from fakes import BlockingLLM, FakeLLM, FakeSearch, FakeStt, FakeTts, GatedStt, RecordingSocket, wait_until
 from voice_agent.orchestrator.state_machine import SessionState
 from voice_agent.server.app import create_app
 from voice_agent.server.connection_manager import ConnectionManager
@@ -25,32 +24,6 @@ from voice_agent.stt.accumulator import SpeechTurnAccumulator
 
 SAMPLE_RATE = 16000
 LOUD_20MS = (np.sin(2 * np.pi * 440 * np.arange(320) / SAMPLE_RATE) * 16000).astype(np.int16).tobytes()
-
-
-class RecordingSocket:
-    """Stands in for a WebSocket: records everything the manager sends it."""
-
-    def __init__(self) -> None:
-        self.texts: list[str] = []
-
-    async def accept(self) -> None:
-        return None
-
-    async def send_text(self, text: str) -> None:
-        self.texts.append(text)
-
-    async def send_bytes(self, data: bytes) -> None:
-        return None
-
-    async def close(self, code: int = 1000) -> None:
-        return None
-
-    def messages(self, message_type: str) -> list[dict[str, Any]]:
-        parsed = [json.loads(text) for text in self.texts]
-        return [message for message in parsed if message["type"] == message_type]
-
-    def states(self) -> list[str]:
-        return [message["state"] for message in self.messages("state_sync")]
 
 
 async def wait_for(condition: Callable[[], bool], timeout_s: float = 5.0) -> None:
@@ -439,20 +412,6 @@ async def test_shutdown_leaves_no_tasks() -> None:
     assert reply.done()
 
 
-class GatedStt:
-    """An STT engine that blocks inside `transcribe` until the test lets it finish."""
-
-    def __init__(self, transcript: str) -> None:
-        self.transcript = transcript
-        self.started = threading.Event()
-        self.release = threading.Event()
-
-    def transcribe(self, audio: bytes) -> str:
-        self.started.set()
-        assert self.release.wait(5), "the test never released the recognizer"
-        return self.transcript
-
-
 @pytest.mark.parametrize("transcript", ["what is arasaka", ""])
 @pytest.mark.parametrize("left_for", ["PAUSED", "REPLYING"])
 async def test_transcript_is_dropped_when_the_session_left_listening(transcript: str, left_for: str) -> None:
@@ -627,21 +586,15 @@ def test_a_barge_in_without_voice_end_still_times_out_after_the_cap(monkeypatch:
 # --- message order ------------------------------------------------------------------------------------------------
 
 
-def seen(socket: RecordingSocket) -> list[tuple[str, str]]:
-    """(type, state) of each JSON message the socket received, in arrival order."""
-    messages = [json.loads(text) for text in socket.texts]
-    return [(message["type"], message.get("state", "")) for message in messages]
-
-
 async def test_state_sync_precedes_the_messages_the_state_causes() -> None:
     manager = ConnectionManager()
     engine = make_engine(manager)
     socket = await connected(manager)
 
     engine.start_narration()
-    await wait_for(lambda: any(kind == "cursor_update" for kind, _ in seen(socket)))
+    await wait_for(lambda: any(kind == "cursor_update" for kind, _ in socket.seen()))
 
-    order = seen(socket)
+    order = socket.seen()
     assert order.index(("state_sync", "NARRATING")) < order.index(("cursor_update", ""))
     await manager.tasks.cancel_all()
 
@@ -651,14 +604,14 @@ async def test_barge_in_then_deadline_resume_arrives_in_order() -> None:
     engine = make_engine(manager, settings=replace(Settings(), barge_in_listen_s=0.05))
     socket = await connected(manager)
     engine.start_narration()
-    await wait_for(lambda: any(kind == "cursor_update" for kind, _ in seen(socket)))
+    await wait_for(lambda: any(kind == "cursor_update" for kind, _ in socket.seen()))
     socket.texts.clear()
 
     manager.trigger_barge_in()
-    await wait_for(lambda: ("state_sync", "NARRATING") in seen(socket))
-    await wait_for(lambda: any(kind == "cursor_update" for kind, _ in seen(socket)[seen(socket).index(("state_sync", "NARRATING")):]))
+    await wait_for(lambda: ("state_sync", "NARRATING") in socket.seen())
+    await wait_for(lambda: any(kind == "cursor_update" for kind, _ in socket.seen()[socket.seen().index(("state_sync", "NARRATING")):]))
 
-    order = seen(socket)
+    order = socket.seen()
     barge_in = order.index(("barge_in", ""))
     listening = order.index(("state_sync", "LISTENING"))
     narrating = order.index(("state_sync", "NARRATING"))
