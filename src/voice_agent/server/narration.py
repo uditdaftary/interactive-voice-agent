@@ -8,9 +8,11 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 from voice_agent.document.bm25 import BM25Index
+from voice_agent.cursor.tracker import CursorPosition, CursorTracker
 from voice_agent.document.parser import DocumentContent
 from voice_agent.llm.client import (
     CHARACTER_PERSONA_PROMPTS,
@@ -50,8 +52,55 @@ REPLY_ERROR_LINE = "Something went wrong answering that."
 UNRECOGNIZED_LINE = "I didn't catch that."
 
 
+# After an interruption, a pause or a change of owner, a sentence that was partly spoken starts again this many words
+# before the stop point. The HUD is told the same number when narration comes back from a question.
+RESUME_PRE_ROLL_WORDS = 4
+
+
 class EmptyReply(Exception):
     """The language model finished without producing any text."""
+
+
+@dataclass(frozen=True)
+class _Synthesis:
+    """One sentence, made: what to send, and what the server expects of its playback."""
+
+    sentence_idx: int
+    first_word: int  # the sentence's word that the audio starts at: 0, or a few before the stop point on a restart
+    word_count: int  # words in the audio
+    duration_s: float  # the estimate: steps the word cursor, and is the length a missing report is waited for beyond
+    gap_s: float  # the pause the browser adds before this clip when it follows another
+    audio: bytes | None  # None: every synthesizer failed, so there is nothing to play or to wait for
+
+
+@dataclass(frozen=True)
+class _Clip:
+    """A sentence handed to the owner (or, without a segment, paced by the estimate alone)."""
+
+    synthesis: _Synthesis
+    segment_id: int | None
+    generation: int  # the audio generation it was sent under
+    played: asyncio.Event = field(default_factory=asyncio.Event, compare=False)  # set once the loop has played it
+
+    @property
+    def sentence_idx(self) -> int:
+        return self.synthesis.sentence_idx
+
+    @property
+    def first_word(self) -> int:
+        return self.synthesis.first_word
+
+    @property
+    def word_count(self) -> int:
+        return self.synthesis.word_count
+
+    @property
+    def duration_s(self) -> float:
+        return self.synthesis.duration_s
+
+    @property
+    def gap_s(self) -> float:
+        return self.synthesis.gap_s
 
 
 # Default resident narrative text (Cyberpunk 2077 / Edgerunners excerpt)
@@ -235,8 +284,119 @@ class NarrationEngine:
         self.manager.session.transition("PAUSED", "pause")
         logger.info("Narration paused.")
 
+    # --- narration ------------------------------------------------------------------------------------------------
+
+    def _restart_point(self) -> tuple[int, int, str]:
+        """Where narration starts: the sentence, its first word, and the text spoken from there.
+
+        A sentence that was partly spoken (an interruption, a pause, a new owner) starts again a few words before the
+        stop point, so the listener picks the thread up; anything else starts at the sentence's first word.
+        """
+        index = self.current_sentence_idx % len(self.sentences)
+        sentence = self.sentences[index]
+        if index != self.current_sentence_idx or self.current_word_idx == 0:
+            return index, 0, sentence
+        tracker = CursorTracker()
+        tracker.sentences = self.sentences
+        tracker.pos = CursorPosition(sentence_idx=index, word_offset=self.current_word_idx)
+        text = tracker.get_resumption_text(pre_roll_words=RESUME_PRE_ROLL_WORDS)
+        if not text:
+            return index, 0, sentence
+        return index, len(sentence.split()) - len(text.split()), text
+
+    async def _show_word(self, sentence_idx: int, word_idx: int) -> None:
+        """Move the cursor to a word and tell the clients."""
+        self.current_sentence_idx = sentence_idx
+        self.current_word_idx = word_idx
+        self.manager.update_cursor(sentence_idx=sentence_idx, word_offset=word_idx)
+        await self.manager.broadcast_json(CursorUpdateMessage(
+            sentence_idx=sentence_idx,
+            word_offset=word_idx,
+            sentence_text=self.sentences[sentence_idx],
+            total_sentences=len(self.sentences),
+        ))
+
+    async def _synthesize(self, sentence_idx: int, first_word: int, text: str) -> _Synthesis:
+        """Make the audio for one sentence, with the voice and cadence in force now: a change applies from the next
+        sentence that has not been synthesized yet."""
+        voice_id = self.manager.active_voice or "david-martinez"
+        cadence = self.manager.cadence or 1.0
+        audio_bytes, _fmt = await self.tts(text, voice_id, cadence)
+        return _Synthesis(
+            sentence_idx=sentence_idx,
+            first_word=first_word,
+            word_count=max(1, len(text.split())),
+            duration_s=self._estimated_duration_s(text, cadence),
+            gap_s=self.settings.inter_sentence_pause_s / cadence,
+            audio=audio_bytes or None,
+        )
+
+    async def _feed(
+        self,
+        start: tuple[int, int, str],
+        room: asyncio.Semaphore,
+        clips: "asyncio.Queue[_Clip | Exception]",
+    ) -> None:
+        """Make each sentence's audio, and hand it to the owner as soon as there is room for it. The sentence after the
+        one being made is not started before this one has been sent, so at most one is made ahead of what is out. A
+        failure goes to the loop through the queue, which reports it."""
+        index, first_word, text = start
+        first = True
+        try:
+            while True:
+                synthesis = await self._synthesize(index, first_word, text)
+                await room.acquire()
+                generation = self.manager.generation
+                segment_id = None
+                if synthesis.audio:
+                    segment_id = await self.manager.send_audio(synthesis.audio, gap_s=0.0 if first else synthesis.gap_s)
+                clip = _Clip(synthesis, segment_id, generation)
+                clips.put_nowait(clip)
+                first = False
+                if segment_id is None:
+                    # Nothing was sent, so nothing is playing: the sentence is paced by the estimate when the loop
+                    # reaches it, and the sentence after it is not sent before that, or it would be heard early.
+                    await clip.played.wait()
+                index = (index + 1) % len(self.sentences)
+                first_word, text = 0, self.sentences[index]
+        except Exception as exc:  # noqa: BLE001  # handed to the loop, which logs it with its traceback and pauses
+            clips.put_nowait(exc)
+
+    async def _play(self, clip: _Clip) -> str:
+        """Step the word cursor through the clip that is playing, and wait for the browser to say it has finished.
+
+        Returns "played", "stalled" (the report never came) or "stopped" (audio was stopped under it). The cursor goes
+        word by word at the estimated rate, stops at the last word, and moves on only when the clip is done, so it is
+        never ahead of what the listener hears. A clip with nothing to report is paced by the estimate alone.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + clip.duration_s + self.settings.playback_ack_timeout_s
+        done = self.manager.playback.done_future(clip.segment_id) if clip.segment_id is not None else None
+        step_s = clip.duration_s / clip.word_count
+        for offset in range(clip.word_count):
+            await self._show_word(clip.sentence_idx, clip.first_word + offset)
+            if done is None:
+                await asyncio.sleep(step_s)
+            else:
+                await asyncio.wait({done}, timeout=step_s)
+                if done.done():
+                    break
+        if clip.segment_id is None:
+            await asyncio.sleep(clip.gap_s)  # no browser to add the pause between sentences
+            return "played"
+        if await self.manager.playback.wait_done(clip.segment_id, max(0.0, deadline - loop.time())):
+            return "played"
+        return "stopped" if self.manager.generation != clip.generation else "stalled"
+
     async def _narration_loop(self) -> None:
-        """Main narration loop: synthesizes each sentence, streams audio, and steps cursor."""
+        """Narrate, one sentence ahead of the listener and no more.
+
+        Two clips are out at any time: the one playing and the one queued behind it. A feeder task makes the next
+        sentence's audio while those play and sends it the moment the browser reports the playing one finished; this
+        loop moves the cursor to the queued clip at that report. So a barge-in flushes at most one queued sentence,
+        and the book never piles up in the browser.
+        """
+        feeder: asyncio.Task[None] | None = None
         try:
             if self._cue_pre_roll:
                 self._cue_pre_roll = False
@@ -244,82 +404,38 @@ class NarrationEngine:
                 await self.manager.broadcast_json(PromptEnvelopeMessage(
                     state="NARRATING",
                     context=self.sentences[self.current_sentence_idx % len(self.sentences)] if self.sentences else "",
-                    pre_roll_words=4,
+                    pre_roll_words=RESUME_PRE_ROLL_WORDS,
                 ))
+            start = self._restart_point()
+            await self._show_word(start[0], start[1])  # the sentence is on screen while its audio is being made
+            clips: asyncio.Queue[_Clip | Exception] = asyncio.Queue()
+            room = asyncio.Semaphore(2)  # the clip playing and the one queued behind it
+            feeder = asyncio.create_task(self._feed(start, room, clips), name="narration-feed")
             while self.manager.state == "NARRATING":
-                if not self.sentences:
-                    await asyncio.sleep(self.settings.idle_poll_s)
-                    continue
-
-                if self.current_sentence_idx >= len(self.sentences):
-                    self.current_sentence_idx = 0  # Loop back to beginning
-
-                sentence_text = self.sentences[self.current_sentence_idx]
-                voice_id = self.manager.active_voice or "david-martinez"
-                cadence = self.manager.cadence or 1.0
-
-                # 1. Update cursor to sentence start
-                self.current_word_idx = 0
-                self.manager.update_cursor(
-                    sentence_idx=self.current_sentence_idx,
-                    word_offset=0,
-                )
-                cursor_msg = CursorUpdateMessage(
-                    sentence_idx=self.current_sentence_idx,
-                    word_offset=0,
-                    sentence_text=sentence_text,
-                    total_sentences=len(self.sentences),
-                )
-                await self.manager.broadcast_json(cursor_msg)
-
-                # 2. Synthesize audio for current sentence
-                audio_bytes, fmt = await self.tts(sentence_text, voice_id, cadence)
-
-                if self.manager.state != "NARRATING":
-                    break
-
-                # 3. Send the clip to the owner connection
-                if audio_bytes:
-                    segment_id = await self.manager.send_audio(audio_bytes)
-                    if segment_id is not None:
-                        self.manager.playback.forget(segment_id)  # paced by the estimate below
-
-                # 4. Stream word cursor highlighting across sentence duration
-                words = sentence_text.split()
-                num_words = max(1, len(words))
-                duration_sec = self._estimated_duration_s(sentence_text, cadence)
-                step_interval = duration_sec / num_words
-
-                for w_idx in range(num_words):
-                    if self.manager.state != "NARRATING":
-                        break
-                    self.current_word_idx = w_idx
-                    self.manager.update_cursor(
-                        sentence_idx=self.current_sentence_idx,
-                        word_offset=w_idx,
-                    )
-                    await self.manager.broadcast_json(CursorUpdateMessage(
-                        sentence_idx=self.current_sentence_idx,
-                        word_offset=w_idx,
-                        sentence_text=sentence_text,
-                        total_sentences=len(self.sentences),
-                    ))
-                    await asyncio.sleep(step_interval)
-
-                if self.manager.state != "NARRATING":
-                    break
-
-                # Pause briefly between sentences
-                await asyncio.sleep(self.settings.inter_sentence_pause_s / cadence)
-
-                # Step to next sentence
-                self.current_sentence_idx = (self.current_sentence_idx + 1) % len(self.sentences)
+                clip = await clips.get()
+                if isinstance(clip, Exception):
+                    raise clip
+                outcome = await self._play(clip)
+                if outcome == "stalled":
+                    logger.warning("Narration paused: the browser never reported a clip played.")
+                    await self.manager.broadcast_json(ErrorMessage(detail="playback stalled"))
+                    self.manager.session.transition("PAUSED", "playback_stalled")
+                    return
+                if outcome == "stopped":
+                    return  # whoever stopped the audio cancels or restarts this loop
+                clip.played.set()
+                room.release()
 
         except Exception as exc:  # noqa: BLE001  # logged with its traceback, then the session pauses and the HUD is told
             logger.exception("Error in narration loop")
             await self.manager.broadcast_json(ErrorMessage(detail=f"narration stopped: {type(exc).__name__}"))
             if self.manager.state == "NARRATING":
                 self.manager.session.transition("PAUSED", "narration_error")
+        finally:
+            if feeder is not None:
+                feeder.cancel()
+                # Waited for, so that no synthesis is still running when the loop is gone.
+                await asyncio.gather(feeder, return_exceptions=True)
 
     def search_document_passages_with_scores(
         self,

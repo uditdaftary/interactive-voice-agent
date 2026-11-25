@@ -26,7 +26,6 @@ class Settings:
     web_search_enabled: bool = True
 
     # Narration loop
-    idle_poll_s: float = 0.5
     inter_sentence_pause_s: float = 0.35  # divided by cadence at the call site
     words_per_s: float = 2.5  # reading rate at cadence 1.0; a divisor, not a duration
     min_sentence_s: float = 1.2
@@ -38,7 +37,6 @@ class Settings:
     def fast(cls) -> "Settings":
         """Every wait collapses to zero. Rates become infinite so derived durations are exactly 0."""
         return cls(
-            idle_poll_s=0.0,
             inter_sentence_pause_s=0.0,
             words_per_s=float("inf"),
             min_sentence_s=0.0,
