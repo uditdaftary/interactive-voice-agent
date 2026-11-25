@@ -86,7 +86,6 @@ class NarrationEngine:
         self.document_title: str = "Night City: Santo Domingo Run"
         self.current_sentence_idx: int = 0
         self.current_word_idx: int = 0
-        self._narration_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
         self._is_replying = False
         self._conversation_history: List[dict] = []
@@ -110,16 +109,15 @@ class NarrationEngine:
     def start_narration(self) -> None:
         """Start or resume background narration loop."""
         self.manager.set_state("NARRATING")
-        if self._narration_task is None or self._narration_task.done():
-            self._narration_task = asyncio.create_task(self._narration_loop())
+        if self.manager.tasks.get("narration") is None:
+            self.manager.tasks.spawn(self._narration_loop(), "narration")
         logger.info("Narration started/resumed.")
 
     def pause_narration(self) -> None:
         """Pause narration loop."""
         if self.manager.state == "NARRATING":
             self.manager.set_state("PAUSED")
-        if self._narration_task and not self._narration_task.done():
-            self._narration_task.cancel()
+        self.manager.tasks.cancel("narration")
         logger.info("Narration paused.")
 
     async def _narration_loop(self) -> None:
@@ -193,10 +191,8 @@ class NarrationEngine:
                 # Step to next sentence
                 self.current_sentence_idx = (self.current_sentence_idx + 1) % len(self.sentences)
 
-        except asyncio.CancelledError:
-            pass
-        except Exception as exc:  # noqa: BLE001  # S3.3 RC4
-            logger.error(f"Error in narration loop: {exc}")
+        except Exception:  # noqa: BLE001  # narration ends; logged with its traceback
+            logger.exception("Error in narration loop")
 
     def search_document_passages_with_scores(
         self,
@@ -240,13 +236,7 @@ class NarrationEngine:
         """Handle real-time barge-in question: grounds query with web search & book passages, queries LLM, speaks answer."""
         async with self._lock:
             # 1. Instantly terminate any background narration loop to avoid race conditions
-            if self._narration_task and not self._narration_task.done():
-                self._narration_task.cancel()
-                try:
-                    await self._narration_task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110  # S3.3 RC4
-                    pass
-                self._narration_task = None
+            await self.manager.tasks.cancel_and_wait("narration")
 
             # 2. Instantaneous barge-in drain (< 50ms)
             barge_in_event = self.manager.trigger_barge_in()
@@ -426,13 +416,7 @@ class NarrationEngine:
     async def handle_unrecognized_interruption(self) -> None:
         """Handle cases where barge-in was triggered but speech could not be recognized."""
         async with self._lock:
-            if self._narration_task and not self._narration_task.done():
-                self._narration_task.cancel()
-                try:
-                    await self._narration_task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110  # S3.3 RC4
-                    pass
-                self._narration_task = None
+            await self.manager.tasks.cancel_and_wait("narration")
 
             voice_id = self.manager.active_voice or "david-martinez"
             cadence = self.manager.cadence or 1.0

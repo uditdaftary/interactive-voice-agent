@@ -18,6 +18,7 @@ from voice_agent.server.schemas import (
     ErrorMessage,
     StateSyncMessage,
 )
+from voice_agent.server.tasks import TaskRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class ConnectionManager:
     ) -> None:
         self._lock = threading.RLock()
         self.active_connections: List[WebSocket] = []
+        self.tasks = TaskRegistry()
 
         # Session state defaults
         self._state: str = "NARRATING"

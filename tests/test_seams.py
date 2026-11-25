@@ -17,8 +17,7 @@ def cancel_narration():
     engines: list[NarrationEngine] = []
     yield engines.append
     for engine in engines:
-        if engine._narration_task is not None:
-            engine._narration_task.cancel()
+        engine.manager.tasks.cancel("narration")
 
 
 async def test_engine_uses_injected_tts_and_search(cancel_narration) -> None:

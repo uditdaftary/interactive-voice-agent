@@ -209,8 +209,7 @@ async def test_chatml_sanitization_and_token_budget_in_interruption():
     try:
         await engine.handle_user_interruption(injection_query)
     finally:
-        if engine._narration_task is not None:
-            engine._narration_task.cancel()
+        engine.manager.tasks.cancel("narration")
 
     assert len(llm.calls) == 1
     messages = llm.calls[0]
