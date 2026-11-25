@@ -374,6 +374,7 @@ def create_app(
         action = body.action
         eng: NarrationEngine = app.state.narration_engine
         mgr: ConnectionManager = app.state.connection_manager
+        state_before = mgr.state
 
         if action in ("resume", "start"):
             eng.start_narration()
@@ -388,7 +389,9 @@ def create_app(
             eng.current_word_idx = 0
             mgr.update_cursor(eng.current_sentence_idx, 0)
 
-        await mgr.broadcast_json(mgr.get_state_sync_message())
+        if mgr.state == state_before:
+            # No transition happened, so the state listener announced nothing; still answer the request.
+            await mgr.broadcast_json(mgr.get_state_sync_message())
         return {"status": "ok", "state": mgr.state, "current_sentence_idx": eng.current_sentence_idx}
 
     @app.post("/api/transcribe")

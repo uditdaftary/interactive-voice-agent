@@ -84,3 +84,15 @@ def test_fast_zeroes_timings() -> None:
 def test_followup_poll_count_legacy_and_fast() -> None:
     assert Settings().followup_poll_count == 25
     assert Settings.fast().followup_poll_count == 0
+
+
+def test_barge_in_listen_default_and_env_override() -> None:
+    assert Settings().barge_in_listen_s == 8.0
+    assert load_settings({"VOICE_AGENT_BARGE_IN_LISTEN_S": "3.5"}).barge_in_listen_s == 3.5
+    assert Settings.fast().barge_in_listen_s == 8.0  # waiting for the user is not pacing; fast() leaves it alone
+
+
+@pytest.mark.parametrize("raw", ["soon", "0", "-2", "nan", "inf", ""])
+def test_barge_in_listen_rejects_nonsense_at_load(raw: str) -> None:
+    with pytest.raises(ValueError, match="VOICE_AGENT_BARGE_IN_LISTEN_S"):
+        load_settings({"VOICE_AGENT_BARGE_IN_LISTEN_S": raw})

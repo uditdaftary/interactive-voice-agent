@@ -117,6 +117,7 @@ Settings are read from environment variables (see `.env.example`; the app does n
 | `VOICE_AGENT_WEB_SEARCH` | `true` | Ground answers with DuckDuckGo results; `0`, `false` or `no` turns it off |
 | `VOICE_AGENT_STT_INITIAL_PROMPT` | empty | Names or terms that bias Whisper decoding |
 | `VOICE_AGENT_TTS_PRIMARY` | `edge` | `edge` or `pyttsx3`; the other is the fallback |
+| `VOICE_AGENT_BARGE_IN_LISTEN_S` | `8.0` | Seconds the app waits for you after an interruption before it goes back to what it was doing; extended while you speak |
 
 The provider, model, voice, cadence and microphone source can also be changed at runtime from the UI or with `POST /api/config`.
 

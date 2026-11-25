@@ -18,6 +18,8 @@ from pydantic import (
     model_validator,
 )
 
+from voice_agent.orchestrator.state_machine import SessionStateName
+
 # ============================================================================
 # Shared field constraints (REST bodies and WebSocket client messages)
 # ============================================================================
@@ -219,8 +221,8 @@ class StateSyncMessage(BaseProtocolMessage):
     """Server state synchronization snapshot sent on handshake and state changes."""
 
     type: Literal["state_sync"] = "state_sync"
-    state: str = Field(
-        default="NARRATING",
+    state: SessionStateName = Field(
+        default="PAUSED",
         description="Current agent state (NARRATING, LISTENING, REPLYING, PAUSED)",
     )
     active_voice: str = Field(

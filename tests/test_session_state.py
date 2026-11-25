@@ -32,7 +32,7 @@ def test_initial_state_is_paused() -> None:
     assert session.resume_to == "PAUSED"
 
 
-# (from, to) pairs that spec 5.1 allows without consulting resume_to.
+# (from, to) pairs that are legal whatever resume_to is.
 LEGAL_EDGES = [
     ("NARRATING", "LISTENING"),
     ("PAUSED", "LISTENING"),
@@ -119,6 +119,20 @@ def test_resume_only_leaves_listening_or_replying() -> None:
     assert session.state == "PAUSED"
 
 
+def test_listeners_can_tell_a_resume_from_a_pause() -> None:
+    session = make_session()  # resume_to is PAUSED
+    seen: list[tuple[str, bool]] = []
+    session.add_listener(lambda old, new, reason: seen.append((reason, session.resuming)))
+
+    session.transition("LISTENING", "push_to_talk")
+    session.resume("deadline")
+    session.transition("LISTENING", "push_to_talk")
+    session.transition("PAUSED", "pause")
+
+    assert seen == [("push_to_talk", False), ("deadline", True), ("push_to_talk", False), ("pause", False)]
+    assert session.resuming is False
+
+
 def test_listeners_called_once_per_change_in_order() -> None:
     session = make_session()
     calls: list[tuple[str, str, str, str]] = []
@@ -185,16 +199,19 @@ async def test_deadline_resumes_to_paused_when_it_started_paused() -> None:
 
 
 async def test_extend_keeps_listening() -> None:
-    session = make_session(listen_deadline_s=DEADLINE)
+    # A long deadline against short extension steps: a busy machine can delay a step a long way without
+    # the deadline legitimately running out in between.
+    deadline = 0.2
+    session = make_session(listen_deadline_s=deadline)
     session.transition("NARRATING", "start")
     session.enter_listening("barge_in")
 
-    for _ in range(10):  # 0.2 s in total, four times the deadline
+    for _ in range(15):  # 0.3 s in total, longer than the deadline
         await settle(0.02)
         session.extend_deadline()
         assert session.state == "LISTENING"
 
-    await settle(DEADLINE * 5)  # no more speech
+    await settle(deadline * 3)  # no more speech
     assert session.state == "NARRATING"
 
 

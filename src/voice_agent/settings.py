@@ -6,6 +6,7 @@ the narration loop without real sleeps.
 """
 
 import dataclasses
+import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -66,6 +67,10 @@ class Settings:
     # TTS: the backend tried first; the other one is the fallback. "edge" or "pyttsx3".
     tts_primary: str = "edge"
 
+    # Turn-taking: how long the session waits for the user after a barge-in before returning to what it was
+    # doing. It is extended while the user is heard speaking. (`followup_window_s` is the wait after a reply.)
+    barge_in_listen_s: float = 8.0
+
 
 def _tts_primary(raw: str | None, default: str) -> str:
     """Case-insensitive, stored lower case. Any other name fails here, at load, not at the first narrated sentence."""
@@ -77,6 +82,18 @@ def _tts_primary(raw: str | None, default: str) -> str:
             f"VOICE_AGENT_TTS_PRIMARY must be one of {', '.join(TTS_BACKEND_NAMES)}; got {raw!r}"
         )
     return name
+
+
+def _positive_seconds(raw: str | None, default: float, variable: str) -> float:
+    if raw is None:
+        return default
+    try:
+        seconds = float(raw)
+    except ValueError:
+        raise ValueError(f"{variable} must be a number of seconds; got {raw!r}") from None
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError(f"{variable} must be greater than zero; got {raw!r}")
+    return seconds
 
 
 def _env_bool(raw: str | None, default: bool) -> bool:
@@ -97,4 +114,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         web_search_enabled=_env_bool(source.get("VOICE_AGENT_WEB_SEARCH"), defaults.web_search_enabled),
         stt_initial_prompt=source.get("VOICE_AGENT_STT_INITIAL_PROMPT", defaults.stt_initial_prompt),
         tts_primary=_tts_primary(source.get("VOICE_AGENT_TTS_PRIMARY"), defaults.tts_primary),
+        barge_in_listen_s=_positive_seconds(
+            source.get("VOICE_AGENT_BARGE_IN_LISTEN_S"), defaults.barge_in_listen_s, "VOICE_AGENT_BARGE_IN_LISTEN_S"
+        ),
     )

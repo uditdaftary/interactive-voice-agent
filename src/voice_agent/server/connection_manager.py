@@ -13,12 +13,14 @@ import threading
 from fastapi import WebSocket
 from pydantic import BaseModel
 
+from voice_agent.orchestrator.state_machine import SessionState, SessionStateName
 from voice_agent.server.schemas import (
     BargeInEventMessage,
     ErrorMessage,
     StateSyncMessage,
 )
 from voice_agent.server.tasks import TaskRegistry
+from voice_agent.settings import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -26,23 +28,39 @@ logger = logging.getLogger(__name__)
 SEND_TIMEOUT_S = 2.0
 
 # Session states in which microphone audio is recorded as a user turn.
-LISTENING_STATES = frozenset({"LISTENING", "BARGE_IN"})
+LISTENING_STATES = frozenset({"LISTENING"})
 
 
 class ConnectionManager:
-    """Thread-safe WebSocket connection and session state manager."""
+    """WebSocket connections and session settings. The session state itself lives in `session`.
+
+    State changes and task spawns happen on the event loop thread; the lock guards the plain settings
+    that other threads may read.
+    """
 
     def __init__(
         self,
         stt_engine: Optional[Any] = None,
         accumulator: Optional[Any] = None,
+        *,
+        session: Optional[SessionState] = None,
     ) -> None:
         self._lock = threading.RLock()
         self.active_connections: List[WebSocket] = []
         self.tasks = TaskRegistry()
 
-        # Session state defaults
-        self._state: str = "NARRATING"
+        if session is None:
+            # Defaults only: the NarrationEngine applies the configured durations when it attaches.
+            defaults = Settings()
+            session = SessionState(
+                listen_deadline_s=defaults.barge_in_listen_s, followup_window_s=defaults.followup_window_s
+            )
+        self.session = session
+        # Registered once, in this order: drop a half-recorded turn, then tell the clients.
+        self.session.add_listener(self._disarm_accumulator)
+        self.session.add_listener(self._announce_state)
+
+        # Session defaults
         self._active_voice: str = "david-martinez"
         self._mic_source: str = "browser"
         self._cadence: float = 1.0
@@ -103,18 +121,21 @@ class ConnectionManager:
     # ========================================================================
 
     @property
-    def state(self) -> str:
-        with self._lock:
-            return self._state
+    def state(self) -> SessionStateName:
+        """Read-only view of `session.state`; every change goes through `session`."""
+        return self.session.state
 
-    def set_state(self, state: str) -> None:
-        with self._lock:
-            self._state = state
-            if state not in LISTENING_STATES and self._accumulator is not None:
-                # Drop the half-recorded turn on every exit from LISTENING, here and not when the next
-                # audio frame happens to arrive: until then a stale tail could be transcribed together
-                # with the next question. Callers run on the event loop, like the accumulator's feed().
-                self._accumulator.disarm()
+    def _disarm_accumulator(self, old: str, new: str, reason: str) -> None:
+        if new not in LISTENING_STATES and self._accumulator is not None:
+            # Drop the half-recorded turn on every exit from LISTENING, here and not when the next
+            # audio frame happens to arrive: until then a stale tail could be transcribed together
+            # with the next question. Runs on the event loop, like the accumulator's feed().
+            self._accumulator.disarm()
+
+    def _announce_state(self, old: str, new: str, reason: str) -> None:
+        """The one place a state change is broadcast. With nobody connected there is nobody to tell."""
+        if self.connection_count:
+            self.broadcast_json_sync(self.get_state_sync_message())
 
     @property
     def active_voice(self) -> str:
@@ -205,18 +226,27 @@ class ConnectionManager:
     ) -> BargeInEventMessage:
         """Trigger an instantaneous barge-in interruption.
 
-        Increments generation counter, switches state to LISTENING,
-        and invokes registered pipeline callback.
+        Increments the generation counter, announces the barge-in to the clients, switches to LISTENING
+        (which arms its deadline) and invokes the registered pipeline callback. The barge-in event is queued
+        before the state change so clients see it first. Call it on the event loop.
         """
         cb = None
         with self._lock:
             self._generation += 1
-            self._state = "LISTENING"
             self._latency_ms = latency_ms
             current_gen = self._generation
             cb = self._barge_in_callback
             if self._accumulator is not None:
                 self._accumulator.reset(preserve_pre_roll=True)
+
+        event = BargeInEventMessage(
+            latency_ms=latency_ms,
+            generation=current_gen,
+            flushed_samples=flushed_samples,
+        )
+        if self.connection_count:
+            self.broadcast_json_sync(event)
+        self.session.enter_listening("barge_in")
 
         if cb is not None:
             try:
@@ -224,17 +254,13 @@ class ConnectionManager:
             except Exception as e:  # noqa: BLE001  # S3.3 RC4
                 logger.error(f"Error executing barge_in_callback: {e}")
 
-        return BargeInEventMessage(
-            latency_ms=latency_ms,
-            generation=current_gen,
-            flushed_samples=flushed_samples,
-        )
+        return event
 
     def get_state_sync_message(self) -> StateSyncMessage:
         """Generate a StateSyncMessage snapshot from current session state."""
         with self._lock:
             return StateSyncMessage(
-                state=self._state,
+                state=self.session.state,
                 active_voice=self._active_voice,
                 mic_source=self._mic_source,
                 cadence=self._cadence,

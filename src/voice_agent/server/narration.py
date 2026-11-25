@@ -90,6 +90,33 @@ class NarrationEngine:
         self._is_replying = False
         self._conversation_history: List[dict] = []
         self._interruption_count: int = 0
+        self._listening_ended = asyncio.Event()  # set whenever the session leaves LISTENING
+
+        # The engine owns turn-taking timing, so it hands the configured waits to the session it drives.
+        session = self.manager.session
+        session.listen_deadline_s = self.settings.barge_in_listen_s
+        session.followup_window_s = self.settings.followup_window_s
+        session.add_listener(self._on_state_change)
+
+    def _on_state_change(self, old: str, new: str, reason: str) -> None:
+        """Keep the background tasks in step with the session state."""
+        if old == "LISTENING" and new != "LISTENING":
+            self._listening_ended.set()
+        if new == "PAUSED" and not self.manager.session.resuming:
+            # Pausing stops everything that speaks or listens, wherever the pause came from. (Returning to a
+            # paused session after a reply or a deadline is not a pause: nothing is left to stop, and the
+            # reply may be the very task finishing.)
+            for name in ("narration", "reply", "stt"):
+                self.manager.tasks.cancel(name)
+        elif new == "LISTENING":
+            # A barge-in, from any source, silences narration; the deadline or the reply starts it again.
+            self.manager.tasks.cancel("narration")
+        elif new == "NARRATING":
+            self._ensure_narration()
+
+    def _ensure_narration(self) -> None:
+        if self.manager.tasks.get("narration") is None:
+            self.manager.tasks.spawn(self._narration_loop(), "narration")
 
     def load_document(self, doc: DocumentContent) -> None:
         """Load a parsed document (PDF, EPUB, TXT) into the active narrator."""
@@ -107,17 +134,15 @@ class NarrationEngine:
         logger.info(f"Loaded document '{doc.title}' with {len(self.sentences)} sentences, {doc.total_words} words.")
 
     def start_narration(self) -> None:
-        """Start or resume background narration loop."""
-        self.manager.set_state("NARRATING")
-        if self.manager.tasks.get("narration") is None:
-            self.manager.tasks.spawn(self._narration_loop(), "narration")
+        """Start or resume background narration loop. Refused (and logged) from a state that may not narrate."""
+        if not self.manager.session.transition("NARRATING", "resume"):
+            return
+        self._ensure_narration()  # the state listener starts it on a change; this covers a loop that has since ended
         logger.info("Narration started/resumed.")
 
     def pause_narration(self) -> None:
-        """Pause narration loop."""
-        if self.manager.state == "NARRATING":
-            self.manager.set_state("PAUSED")
-        self.manager.tasks.cancel("narration")
+        """Pause: stops narration, any reply being spoken and any pending transcription."""
+        self.manager.session.transition("PAUSED", "pause")
         logger.info("Narration paused.")
 
     async def _narration_loop(self) -> None:
@@ -238,13 +263,9 @@ class NarrationEngine:
             # 1. Instantly terminate any background narration loop to avoid race conditions
             await self.manager.tasks.cancel_and_wait("narration")
 
-            # 2. Instantaneous barge-in drain (< 50ms)
-            barge_in_event = self.manager.trigger_barge_in()
-            await self.manager.broadcast_json(barge_in_event)
-
-            self.manager.set_state("REPLYING")
-            sync_msg = self.manager.get_state_sync_message()
-            await self.manager.broadcast_json(sync_msg)
+            # 2. Instantaneous barge-in drain (< 50ms). The session broadcasts each state change itself.
+            self.manager.trigger_barge_in()
+            self.manager.session.transition("REPLYING", "question")
 
             current_context = self.sentences[self.current_sentence_idx] if self.sentences else ""
             voice_id = self.manager.active_voice or "david-martinez"
@@ -383,22 +404,23 @@ class NarrationEngine:
             await asyncio.sleep(playback_delay)
 
             # 8. Conversational Turn-Taking Window: leave comms open for follow-up before auto-resuming
-            self.manager.set_state("LISTENING")
+            self._listening_ended.clear()
+            self.manager.session.enter_listening("followup", followup=True)
             await self.manager.broadcast_json(PromptEnvelopeMessage(
                 state="LISTENING",
                 context=current_context,
                 query=query,
                 reply=final_reply,
             ))
-            await self.manager.broadcast_json(self.manager.get_state_sync_message())
 
-            # Pause up to followup_window_s for conversational follow-up or next utterance
-            for _ in range(self.settings.followup_poll_count):
-                await asyncio.sleep(self.settings.followup_poll_s)
-                if self._interruption_count != current_turn or self.manager.state != "LISTENING":
-                    return
+            # The session deadline ends this window (and a user who is speaking extends it), so wait for the
+            # session to leave LISTENING rather than counting polls. A newer question or a pause means someone
+            # else owns the session now.
+            await self._listening_ended.wait()
+            if self._interruption_count != current_turn or self.manager.state != "NARRATING":
+                return
 
-            # 9. Pre-Roll Resumption Cue & return to NARRATING
+            # 9. The deadline resumed narration (its state listener restarted the loop): show the pre-roll cue
             await self.manager.broadcast_json(PromptEnvelopeMessage(
                 state="NARRATING",
                 context=current_context,
@@ -406,12 +428,6 @@ class NarrationEngine:
                 reply=final_reply,
                 pre_roll_words=4,
             ))
-            await asyncio.sleep(self.settings.preroll_pause_s)
-
-            # 10. Cleanly resume background narration
-            self.manager.set_state("NARRATING")
-            await self.manager.broadcast_json(self.manager.get_state_sync_message())
-            self.start_narration()
 
     async def handle_unrecognized_interruption(self) -> None:
         """Handle cases where barge-in was triggered but speech could not be recognized."""
@@ -431,14 +447,13 @@ class NarrationEngine:
             else:
                 recovery_text = "Couldn't hear ya over the street noise, choombatta! Let's get right back to the story."
 
-            self.manager.set_state("REPLYING")
+            self.manager.session.transition("REPLYING", "unrecognized")
             await self.manager.broadcast_json(PromptEnvelopeMessage(
                 state="REPLYING",
                 context=current_context,
                 query="",
                 reply=recovery_text,
             ))
-            await self.manager.broadcast_json(self.manager.get_state_sync_message())
 
             audio_bytes, fmt = await self.tts(recovery_text, voice_id, cadence)
             if audio_bytes:
@@ -456,6 +471,5 @@ class NarrationEngine:
             ))
             await asyncio.sleep(self.settings.preroll_pause_s)
 
-            self.manager.set_state("NARRATING")
-            await self.manager.broadcast_json(self.manager.get_state_sync_message())
-            self.start_narration()
+            # Back to what the session was doing; the state listener restarts narration if that was narrating.
+            self.manager.session.resume("reply_done")

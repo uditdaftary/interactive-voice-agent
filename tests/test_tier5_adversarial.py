@@ -163,18 +163,21 @@ def test_concurrency_abrupt_client_drops_during_active_broadcast() -> None:
 
 
 def test_concurrency_thread_safety_under_rlock() -> None:
-    """Stress test: 10 background threads mutating state and broadcasting concurrently."""
+    """Stress test: 10 background threads mutating the settings and cursor and reading snapshots concurrently.
+
+    The session state is not part of this: it belongs to the event loop thread (see SessionState).
+    """
     manager = ConnectionManager()
     errors = []
 
     def worker(worker_id: int):
         try:
             for i in range(50):
-                manager.set_state("REPLYING" if i % 2 == 0 else "NARRATING")
                 manager.set_cadence(1.0 + (i % 5) * 0.1)
+                manager.set_voice("lucy-kushinada" if i % 2 else "david-martinez")
                 manager.update_cursor(sentence_idx=i, word_offset=i * 2, latency_ms=0.03)
-                _ = manager.get_state_sync_message()
-                _ = manager.trigger_barge_in(flushed_samples=i * 10, latency_ms=0.02)
+                snapshot = manager.get_state_sync_message()
+                assert snapshot.state == "PAUSED"
         except Exception as exc:
             errors.append(exc)
 
@@ -185,7 +188,17 @@ def test_concurrency_thread_safety_under_rlock() -> None:
         t.join(timeout=5.0)
 
     assert len(errors) == 0, f"Thread-safety errors observed: {errors}"
-    assert manager.generation == 500  # 10 threads * 50 triggers
+
+
+async def test_barge_in_generation_counts_every_trigger() -> None:
+    manager = ConnectionManager()
+
+    for i in range(100):
+        event = manager.trigger_barge_in(flushed_samples=i, latency_ms=0.02)
+        assert event.generation == i + 1
+
+    assert manager.generation == 100
+    assert manager.state == "LISTENING"
 
 
 # ============================================================================
@@ -492,15 +505,15 @@ def test_rapid_barge_in_websocket_flooding() -> None:
             for _ in range(100):
                 ws.send_json({"type": "barge_in_trigger"})
 
-            # Read back all 100 pairs of (barge_in, state_sync) events
-            for i in range(100):
-                barge_event = ws.receive_json()
-                assert barge_event["type"] == "barge_in"
-                assert barge_event["generation"] == i + 1
-
-                sync_event = ws.receive_json()
-                assert sync_event["type"] == "state_sync"
-                assert sync_event["state"] == "LISTENING"
+            # Read back the 100 barge_in events, in order. Only the first one changes the state, so the
+            # session announces LISTENING exactly once, right after it.
+            messages = [ws.receive_json() for _ in range(101)]
+            barge_events = [m for m in messages if m["type"] == "barge_in"]
+            sync_events = [m for m in messages if m["type"] == "state_sync"]
+            assert [m["generation"] for m in barge_events] == list(range(1, 101))
+            assert [m["state"] for m in sync_events] == ["LISTENING"]
+            assert messages[0]["type"] == "barge_in"
+            assert messages[1]["type"] == "state_sync"
 
             elapsed = (time.perf_counter() - start_t) * 1000.0
             print(f"\n[TIER 5 ADVERSARIAL] 100 WebSocket Barge-In Roundtrips in {elapsed:.2f} ms")

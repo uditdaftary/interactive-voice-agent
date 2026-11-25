@@ -12,18 +12,16 @@ Validates:
 """
 
 import io
-import httpx
 import pytest
 from fastapi.testclient import TestClient
 import pypdf
 
 from voice_agent.document.parser import DocumentParser
-from voice_agent.llm.client import LLMClient
 from voice_agent.server.app import create_app
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.narration import NarrationEngine
 from voice_agent.settings import Settings
-from fakes import FakeSearch, FakeTts, wait_until
+from fakes import FakeLLM, FakeSearch, FakeTts, wait_until
 
 
 @pytest.fixture
@@ -32,7 +30,7 @@ def test_client():
     manager = ConnectionManager()
     engine = NarrationEngine(
         connection_manager=manager,
-        llm_client=LLMClient(transport=httpx.MockTransport(lambda request: httpx.Response(503))),  # no real dial
+        llm_client=FakeLLM(tokens=["Understood."]),
         settings=Settings.fast(),
         tts=FakeTts(),
         search=FakeSearch(),
@@ -146,8 +144,8 @@ def test_api_upload_document_file_multipart(test_client):
     assert engine.sentences[0].startswith("Call me Ishmael")
 
 
-def test_api_ask_question_interruption(test_client):
-    """Test triggering an ad-hoc interruption question via POST /api/ask."""
+def test_api_ask_question_while_paused(test_client):
+    """A question asked while paused is answered, and the session goes back to paused."""
     client, manager, engine = test_client
 
     resp = client.post("/api/ask", json={"query": "Who is David Martinez?"})
@@ -156,14 +154,33 @@ def test_api_ask_question_interruption(test_client):
     assert data["status"] == "ok"
     assert data["query"] == "Who is David Martinez?"
 
-    # The interruption runs in the background: reply spoken first, then narration resumes.
+    # The interruption runs in the background as the reply task.
     tts = engine.tts
-    assert wait_until(lambda: len(tts.calls) >= 2), "interruption did not speak a reply and resume narration"
+    # PAUSED again, with the reply already spoken, means the whole exchange is over.
+    assert wait_until(lambda: len(tts.calls) >= 1 and manager.state == "PAUSED"), "interruption did not run"
     reply_text, reply_voice, _ = tts.calls[0]
     assert reply_text.strip()
     assert reply_text not in engine.sentences
     assert reply_voice == "david-martinez"
-    assert tts.calls[1][0] in engine.sentences
+    assert manager.state == "PAUSED"
+    assert len(tts.calls) == 1  # nothing was narrated
+
+
+def test_api_ask_question_while_narrating(test_client):
+    """A question interrupts narration, is answered, and narration picks up again."""
+    client, manager, engine = test_client
+    client.post("/api/narration/control", json={"action": "resume"})
+    tts = engine.tts
+    assert wait_until(lambda: len(tts.calls) >= 1), "narration did not start"
+
+    client.post("/api/ask", json={"query": "Who is David Martinez?"})
+
+    def reply_then_narration() -> bool:
+        texts = tts.texts
+        reply_at = next((i for i, text in enumerate(texts) if text not in engine.sentences), None)
+        return reply_at is not None and any(text in engine.sentences for text in texts[reply_at + 1:])
+
+    assert wait_until(reply_then_narration), "narration did not resume after the reply"
     assert manager.state == "NARRATING"
 
 

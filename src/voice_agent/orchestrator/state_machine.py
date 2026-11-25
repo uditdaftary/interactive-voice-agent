@@ -114,6 +114,7 @@ class SessionState:
         self._deadline_timer: asyncio.TimerHandle | None = None
         self._armed_for_s: float | None = None  # the full duration extend/resume re-arm; None outside LISTENING
         self._deadline_suspended = False
+        self._resuming = False
 
     @property
     def state(self) -> SessionStateName:
@@ -122,6 +123,12 @@ class SessionState:
     @property
     def resume_to(self) -> Literal["NARRATING", "PAUSED"]:
         return self._resume_to
+
+    @property
+    def resuming(self) -> bool:
+        """True while listeners are being told about a `resume()`: the session is returning to what it was doing,
+        as opposed to being stopped. A listener that cancels work on PAUSED must not cancel on a resume."""
+        return self._resuming
 
     def add_listener(self, fn: StateListener) -> None:
         """Call `fn(old, new, reason)` after every change, in registration order."""
@@ -155,7 +162,11 @@ class SessionState:
         if self._state not in ("LISTENING", "REPLYING"):
             logger.debug("resume ignored in %s (%s)", self._state, reason)
             return False
-        return self.transition(self._resume_to, reason)
+        self._resuming = True
+        try:
+            return self.transition(self._resume_to, reason)
+        finally:
+            self._resuming = False
 
     # --- LISTENING deadline ---------------------------------------------------------------------------------------
 
