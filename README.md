@@ -74,8 +74,8 @@ Network needs on first use: Edge TTS and web search call out to the internet, an
 src/voice_agent/
   audio/          Ring buffer, microphone bridge, virtual loopback device
   vad/            Energy-based voice activity detector
-  stt/            Whisper backend, speech judge, utterance accumulator
-  tts/            Edge and pyttsx3 backends, fallback chain
+  stt/            Whisper and Moonshine backends, speech judge, utterance accumulator
+  tts/            Edge, pyttsx3 and Pocket backends, fallback chain
   llm/            Streaming sentence parser, answerer, web search grounding
   document/       PDF, EPUB and text parsing, BM25 index
   cursor/         Sentence splitter and reading cursor
@@ -99,9 +99,18 @@ Settings are read from environment variables (see `.env.example`; the app does n
 | `VOICE_AGENT_LLM_API_KEY` | `local` | Bearer token for hosted providers; kept out of logged settings |
 | `VOICE_AGENT_WEB_SEARCH` | `true` | Ground answers with DuckDuckGo results |
 | `VOICE_AGENT_STT_INITIAL_PROMPT` | empty | Names or terms that bias Whisper decoding |
-| `VOICE_AGENT_TTS_PRIMARY` | `edge` | `edge` or `pyttsx3`; the other is the fallback |
+| `VOICE_AGENT_TTS_PRIMARY` | `edge` | `edge`, `pyttsx3` or `pocket`; the other backends are the fallbacks |
+| `VOICE_AGENT_STT_BACKEND` | `whisper` | `whisper` or `moonshine`; the server still transcribes with Whisper (see below) |
+| `VOICE_AGENT_MOONSHINE_MODEL_DIR` | `models/stt/moonshine-tiny-en-int8` | Folder with the Moonshine model files |
 
 The provider, model, voice, cadence and microphone source can also be changed at runtime from the UI or with `POST /api/config`.
+
+## Optional local voices
+
+Both optional backends are installed only through extras, so the base install and CI never need them.
+
+- **Pocket TTS** (`pip install -e ".[pocket]"`, which pulls in PyTorch): set `VOICE_AGENT_TTS_PRIMARY=pocket`. Each voice is cloned from `models/voices/<voice_id>.wav` on the CPU. The clips must be 16-bit PCM WAV. A voice without a file speaks in `v-male`, with a warning. The model loads on the first sentence. Its voice-cloning weights on Hugging Face (`kyutai/pocket-tts`) are gated: accept the licence on that page and log in with the Hugging Face CLI before first use. Without access the backend reports an error and the chain falls back to edge-tts or pyttsx3. Voice clips are never committed to this repository.
+- **Moonshine STT** (`pip install -e ".[moonshine]"`): set `VOICE_AGENT_STT_BACKEND=moonshine`. Place the Moonshine Tiny English int8 model files (`preprocess.onnx`, `encode.int8.onnx`, `uncached_decode.int8.onnx`, `cached_decode.int8.onnx`, `tokens.txt`) in `models/stt/moonshine-tiny-en-int8`, or point `VOICE_AGENT_MOONSHINE_MODEL_DIR` at them. A local worker process runs the model on the CPU and restarts after a failure. The server does not read `VOICE_AGENT_STT_BACKEND` yet, so it still uses Whisper; the setting is ready for when the server wiring lands.
 
 ## Limitations and roadmap
 
@@ -113,9 +122,7 @@ The provider, model, voice, cadence and microphone source can also be changed at
 - **No authentication.** The server is meant for loopback use and rejects non-loopback Host headers. Do not expose it on a network.
 - **One session.** One narration engine and connection manager serve all connected clients.
 - **Sample content is themed on a Cyberpunk fan story.** The bundled story, character personas and voice names are fan material and are not affiliated with any rights holder. Voice reference clips are no longer tracked in this repository.
-- **Unused vendored code.** Three large TTS worker modules under `src/voice_agent/tts/` (`pocket_voice_*.py`, `resident_voice_worker.py`) are not imported by the app and are excluded from lint and type checks. They are slated for removal.
-
-Candidate next steps: wire the audio building blocks into the server, add optional Pocket TTS and Moonshine STT backends, and replace the placeholder latency display with a measured value.
+Candidate next steps: wire the audio building blocks and the STT backend setting into the server, and replace the placeholder latency display with a measured value.
 
 ## License
 

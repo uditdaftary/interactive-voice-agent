@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - S0.2: network-free default test suite, injection seams, lazy STT (M2, M19, M20, M21, L15).
 - S3.2: STT/TTS backend protocols, judged Whisper output, configurable initial prompt, pyttsx3 on one dedicated thread with whole-word gender match (a fresh engine per utterance: a reused pyttsx3 engine stalls); removed the Google STT fallback, the mock STT engine and the synthetic TTS tier (M16, L9, L10, L12).
 - S1: same-origin and host checks, validated request bodies, bounded spine-ordered parsing, robust broadcast and WS error replies (H3, H4, H5, M5, M8, M9, M10, M14, N5, N7, L2, L3).
+- S4.2: optional Pocket TTS and Moonshine STT backends behind `pocket` and `moonshine` extras; deleted the vendored game-mod TTS workers (H9).
 
 ---
 
