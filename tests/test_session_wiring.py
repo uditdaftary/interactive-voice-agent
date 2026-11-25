@@ -625,3 +625,46 @@ def test_a_barge_in_without_voice_end_still_times_out_after_the_cap(monkeypatch:
         ws.send_json({"type": "barge_in_trigger"})
         read_until_state(ws, "LISTENING")
         read_until_state(ws, "PAUSED")  # cap, then the normal deadline
+
+
+# --- message order ------------------------------------------------------------------------------------------------
+
+
+def seen(socket: RecordingSocket) -> list[tuple[str, str]]:
+    """(type, state) of each JSON message the socket received, in arrival order."""
+    messages = [json.loads(text) for text in socket.texts]
+    return [(message["type"], message.get("state", "")) for message in messages]
+
+
+async def test_state_sync_precedes_the_messages_the_state_causes() -> None:
+    manager = ConnectionManager()
+    engine = make_engine(manager)
+    socket = await connected(manager)
+
+    engine.start_narration()
+    await wait_for(lambda: any(kind == "cursor_update" for kind, _ in seen(socket)))
+
+    order = seen(socket)
+    assert order.index(("state_sync", "NARRATING")) < order.index(("cursor_update", ""))
+    await manager.tasks.cancel_all()
+
+
+async def test_barge_in_then_deadline_resume_arrives_in_order() -> None:
+    manager = ConnectionManager()
+    engine = make_engine(manager, settings=replace(Settings(), barge_in_listen_s=0.05))
+    socket = await connected(manager)
+    engine.start_narration()
+    await wait_for(lambda: any(kind == "cursor_update" for kind, _ in seen(socket)))
+    socket.texts.clear()
+
+    manager.trigger_barge_in()
+    await wait_for(lambda: ("state_sync", "NARRATING") in seen(socket))
+    await wait_for(lambda: any(kind == "cursor_update" for kind, _ in seen(socket)[seen(socket).index(("state_sync", "NARRATING")):]))
+
+    order = seen(socket)
+    barge_in = order.index(("barge_in", ""))
+    listening = order.index(("state_sync", "LISTENING"))
+    narrating = order.index(("state_sync", "NARRATING"))
+    cursor_after_resume = next(i for i, (kind, _) in enumerate(order) if kind == "cursor_update" and i > listening)
+    assert barge_in < listening < narrating < cursor_after_resume
+    await manager.tasks.cancel_all()

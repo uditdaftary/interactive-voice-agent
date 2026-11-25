@@ -414,9 +414,22 @@ class ConnectionManager:
         message: Union[BaseModel, Dict[str, Any], str],
         loop: Optional[asyncio.AbstractEventLoop] = None,
     ) -> None:
-        """Thread-safe synchronous broadcast helper for background audio threads."""
+        """Synchronous broadcast helper: safe from background audio threads and from the loop itself.
+
+        On the loop thread the broadcast becomes a tracked task right away, so it is queued ahead of anything
+        started after it: a state_sync reaches clients before the messages the new state causes. From another
+        thread it is posted to the loop, in the order the loop receives it.
+        """
         target_loop = self._usable_loop(loop, "broadcast_json_sync")
-        if target_loop is not None:
+        if target_loop is None:
+            return
+        try:
+            on_target_loop = asyncio.get_running_loop() is target_loop
+        except RuntimeError:  # a thread with no loop of its own
+            on_target_loop = False
+        if on_target_loop:
+            self.tasks.spawn(self.broadcast_json(message), "broadcast")
+        else:
             fut = asyncio.run_coroutine_threadsafe(self.broadcast_json(message), target_loop)
             fut.add_done_callback(self._log_future_exception)
 
