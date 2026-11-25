@@ -24,6 +24,7 @@ from voice_agent.orchestrator.context import (
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.schemas import (
     CursorUpdateMessage,
+    ErrorMessage,
     PromptEnvelopeMessage,
 )
 from voice_agent.settings import Settings, load_settings
@@ -216,8 +217,11 @@ class NarrationEngine:
                 # Step to next sentence
                 self.current_sentence_idx = (self.current_sentence_idx + 1) % len(self.sentences)
 
-        except Exception:  # noqa: BLE001  # narration ends; logged with its traceback
+        except Exception as exc:  # noqa: BLE001  # logged with its traceback, then the session pauses and the HUD is told
             logger.exception("Error in narration loop")
+            await self.manager.broadcast_json(ErrorMessage(detail=f"narration stopped: {type(exc).__name__}"))
+            if self.manager.state == "NARRATING":
+                self.manager.session.transition("PAUSED", "narration_error")
 
     def search_document_passages_with_scores(
         self,

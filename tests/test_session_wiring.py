@@ -160,6 +160,44 @@ async def test_pause_cancels_narration_reply_and_stt_tasks() -> None:
     await manager.tasks.cancel_all()
 
 
+async def test_tts_error_pauses_with_error() -> None:
+    async def broken_tts(text: str, voice_id: str, cadence: float) -> tuple[bytes | None, str]:
+        raise RuntimeError("synthesis exploded")
+
+    manager = ConnectionManager()
+    engine = make_engine(manager, tts=broken_tts)
+    socket = await connected(manager)
+
+    engine.start_narration()
+    await wait_for(lambda: manager.state == "PAUSED")
+    await asyncio.sleep(0.05)
+
+    errors = socket.messages("error")
+    assert [error["detail"] for error in errors] == ["narration stopped: RuntimeError"]
+    assert socket.states() == ["NARRATING", "PAUSED"]
+    assert manager.tasks.get("narration") is None
+
+
+async def test_last_disconnect_pauses() -> None:
+    manager = ConnectionManager()
+    engine = make_engine(manager)
+    first, second = await connected(manager), await connected(manager)
+    engine.start_narration()
+    await wait_for(lambda: manager.tasks.get("narration") is not None)
+
+    manager.disconnect(first)  # type: ignore[arg-type]
+    await asyncio.sleep(0.05)
+    assert manager.state == "NARRATING"
+
+    manager.disconnect(second)  # type: ignore[arg-type]
+    await asyncio.sleep(0.05)
+
+    assert manager.state == "PAUSED"
+    assert len(manager.tasks) == 0
+    # A client that connects later is told the truth.
+    assert manager.get_state_sync_message().state == "PAUSED"
+
+
 async def test_barge_in_from_any_source_stops_narration() -> None:
     manager = ConnectionManager()
     engine = make_engine(manager)

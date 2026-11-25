@@ -96,7 +96,11 @@ class ConnectionManager:
         with self._lock:
             if websocket in self.active_connections:
                 self.active_connections.remove(websocket)
-        logger.info(f"WebSocket client disconnected. Active connections: {len(self.active_connections)}")
+            remaining = len(self.active_connections)
+        logger.info(f"WebSocket client disconnected. Active connections: {remaining}")
+        if remaining == 0:
+            # Nobody is listening: stop speaking to an empty room. A client that connects later is told PAUSED.
+            self.session.transition("PAUSED", "no_clients")
 
     async def disconnect_all(self) -> None:
         """Close and disconnect all active connections during shutdown."""
