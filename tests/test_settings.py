@@ -19,7 +19,6 @@ def test_defaults_match_legacy_literals() -> None:
     assert s.min_reply_playback_s == 2.0
     assert s.reply_words_per_s == 2.2
     assert s.followup_window_s == 2.5
-    assert s.followup_poll_s == 0.1
     assert s.preroll_pause_s == 0.8
     assert s.unrecognized_pause_s == 2.0
     assert s.words_per_s == 2.5
@@ -67,7 +66,6 @@ def test_fast_zeroes_timings() -> None:
         "inter_sentence_pause_s",
         "min_reply_playback_s",
         "followup_window_s",
-        "followup_poll_s",
         "preroll_pause_s",
         "unrecognized_pause_s",
         "min_sentence_s",
@@ -79,11 +77,6 @@ def test_fast_zeroes_timings() -> None:
     # Non-timing fields are untouched.
     assert s.llm_model == Settings().llm_model
     assert s.web_search_enabled == Settings().web_search_enabled
-
-
-def test_followup_poll_count_legacy_and_fast() -> None:
-    assert Settings().followup_poll_count == 25
-    assert Settings.fast().followup_poll_count == 0
 
 
 def test_barge_in_listen_default_and_env_override() -> None:
