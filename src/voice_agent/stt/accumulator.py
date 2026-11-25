@@ -72,8 +72,13 @@ class SpeechTurnAccumulator:
         self.reset()
         return utterance
 
-    def feed(self, pcm_chunk: bytes) -> Optional[bytes]:
-        """Feed a 16-bit PCM chunk. Returns full utterance bytes when user finishes speaking."""
+    def feed(self, pcm_chunk: bytes, *, end_on_silence: bool = True) -> Optional[bytes]:
+        """Feed a 16-bit PCM chunk. Returns full utterance bytes when user finishes speaking.
+
+        With `end_on_silence=False` a pause never ends the turn: a client that records until it says it is done
+        (push-to-talk) owns the end, so a breath in the middle of a question must not cut it in half. The utterance
+        cap still applies.
+        """
         if not pcm_chunk or len(pcm_chunk) < 2:
             return None
 
@@ -121,7 +126,7 @@ class SpeechTurnAccumulator:
 
             # Monotonic wall-clock elapsed silence governs active voice turns to prevent
             # sample-rate mismatches (e.g. 48kHz vs 16kHz) from triggering premature cut-offs.
-            is_silence_timeout = (
+            is_silence_timeout = end_on_silence and (
                 elapsed_silence_ms >= self.silence_timeout_ms
                 or chunk_duration_ms >= self.silence_timeout_ms
             )

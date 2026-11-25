@@ -228,4 +228,35 @@ def test_speech_turn_accumulator_extended_preroll_captures_plosives():
     assert len(acc._speech_buffer) == expected_chunks
 
 
+def test_end_on_silence_false_keeps_recording_across_a_long_pause():
+    """A held turn ends only when the client says so: a pause longer than the silence timeout is not the end."""
+    acc = SpeechTurnAccumulator(sample_rate=16000, silence_timeout_ms=500)
+    first = (np.sin(2 * np.pi * 440 * np.linspace(0, 0.3, 4800, endpoint=False)) * 16000).astype(np.int16).tobytes()
+    gap = np.zeros(16000, dtype=np.int16).tobytes()  # one second of silence, twice the timeout
+    second = (np.sin(2 * np.pi * 330 * np.linspace(0, 0.3, 4800, endpoint=False)) * 16000).astype(np.int16).tobytes()
+
+    assert acc.feed(first, end_on_silence=False) is None
+    assert acc.feed(gap, end_on_silence=False) is None
+    assert acc.is_speaking
+    assert acc.feed(second, end_on_silence=False) is None
+
+    assert acc.flush() == first + gap + second  # both halves, and the gap between them
+
+
+def test_end_on_silence_defaults_to_true():
+    acc = SpeechTurnAccumulator(sample_rate=16000, silence_timeout_ms=500)
+    loud = (np.sin(2 * np.pi * 440 * np.linspace(0, 0.3, 4800, endpoint=False)) * 16000).astype(np.int16).tobytes()
+    acc.feed(loud)
+
+    assert acc.feed(np.zeros(16000, dtype=np.int16).tobytes()) is not None
+
+
+def test_end_on_silence_false_still_cuts_at_the_utterance_cap():
+    acc = SpeechTurnAccumulator(sample_rate=16000, silence_timeout_ms=500)
+    loud = (np.sin(2 * np.pi * 440 * np.linspace(0, 1.0, 16000, endpoint=False)) * 16000).astype(np.int16).tobytes()
+    cut = None
+    for _ in range(31):  # 31 s of speech: the 30 s cap still applies under a hold
+        cut = acc.feed(loud, end_on_silence=False) or cut
+
+    assert cut is not None
 
