@@ -503,7 +503,7 @@
   let currentWordIdx = 0;
   let isPlaying = true;
   let currentCadence = 1.0;
-  let currentState = 'NARRATING'; // NARRATING, BARGE_IN, LISTENING, REPLYING
+  let currentState = 'NARRATING'; // NARRATING, PAUSED, LISTENING, REPLYING (BARGE_IN is a client-side flash only)
   let narrativeTimer = null;
   let wordsArray = [];
   let isLiveMode = false;
@@ -1098,6 +1098,12 @@
         bargePill.className = 'state-pill replying';
         bargePill.innerHTML = `<i></i>REPLYING`;
       }
+    } else if (currentState === 'PAUSED') {
+      if (headPill) headPill.className = 'state-pill paused';
+      if (bargePill) {
+        bargePill.className = 'state-pill paused';
+        bargePill.innerHTML = `<i></i>PAUSED`;
+      }
     }
   }
 
@@ -1608,6 +1614,10 @@
           isPlaying = true;
           const btnLabel = document.getElementById('btn-playback-label');
           if (btnLabel) btnLabel.innerText = 'PAUSE NARRATION';
+        } else if (msg.state === 'PAUSED') {
+          isPlaying = false;
+          const btnLabel = document.getElementById('btn-playback-label');
+          if (btnLabel) btnLabel.innerText = 'RESUME NARRATION';
         }
         updateStateUI();
       }

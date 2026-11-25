@@ -213,6 +213,8 @@ code, .mono { font-family: var(--mono); font-stretch: 90%; font-variation-settin
 .state-pill.listening { color: var(--high); }
 .state-pill.replying i { background: var(--ink); }
 .state-pill.replying { color: var(--ink); }
+.state-pill.paused i { background: var(--advisory); }
+.state-pill.paused { color: var(--advisory); }
 .state-pill.connected i { background: var(--high); }
 .state-pill.connected { color: var(--ink); }
 .state-pill.offline i { background: var(--advisory); }
