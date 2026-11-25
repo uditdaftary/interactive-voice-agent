@@ -38,6 +38,9 @@
         <span class="faint">WS LINK:</span>
         <span class="state-pill offline" id="ws-status-pill"><i></i>OFFLINE SIMULATION</span>
       </div>
+      <div class="item" id="audio-elsewhere" style="display:none;">
+        <span>Audio is playing in another tab</span>
+      </div>
       <div class="item">
         <span class="faint">INPUT:</span>
         <div class="mic-toggle-group" id="mic-toggle-group">
@@ -923,6 +926,11 @@
     if (wsClient) {
       wsClient.stopAllAudio();
     }
+    // Only the tab that holds the microphone may start a turn, so a tab that does not asks for it first. The server
+    // handles the two messages in the order they are sent.
+    if (wsClient && wsClient.isConnected && !wsClient.isMicOwner) {
+      wsClient.send({ type: 'set_mic_source', source: 'browser' });
+    }
     triggerBargeIn();
 
     // 2. Ensure WebSocket client starts streaming 16kHz PCM mic frames
@@ -1373,6 +1381,8 @@
       this.pendingSegment = null;    // the announcement for the blob that comes next
       this.stoppedBefore = 0;        // clips of a generation below this are dead
       this.audioEpoch = 0;           // counts stops, so a clip being decoded while one happens can tell
+      // Only one tab holds the microphone and hears the audio; the server says which in every state_sync.
+      this.isMicOwner = true;
       this.lastTelemetryBins = null;
       this.lastTelemetryRms = null;
       this.lastTelemetryTime = 0;
@@ -1461,6 +1471,12 @@
       }
       this.stoppedBefore = Math.max(this.stoppedBefore, generation);
       this.stopClips((clip) => clip.generation === null || clip.generation < this.stoppedBefore);
+    }
+
+    setMicOwner(isOwner) {
+      this.isMicOwner = isOwner !== false;
+      const note = document.getElementById('audio-elsewhere');
+      if (note) note.style.display = this.isMicOwner ? 'none' : 'flex';
     }
 
     reportPlayed(segment) {
@@ -1665,6 +1681,9 @@
 
     handleStateSync(msg) {
       clearNarrativeTimer();
+      if (msg.mic_owner !== undefined) {
+        this.setMicOwner(msg.mic_owner);
+      }
       if (msg.state) {
         currentState = msg.state;
         if (msg.state === 'NARRATING') {
@@ -1906,7 +1925,7 @@
           }
 
           // Hands-free voice barge-in detection on downsampled 16kHz buffer
-          if (handsFreeDetectionEnabled && currentState === 'NARRATING' && !isVoiceListening) {
+          if (handsFreeDetectionEnabled && this.isMicOwner && currentState === 'NARRATING' && !isVoiceListening) {
             let sumSquares = 0.0;
             for (let i = 0; i < downsampled.length; i++) {
               sumSquares += downsampled[i] * downsampled[i];
