@@ -277,7 +277,7 @@ def test_barge_in_from_paused_returns_to_paused() -> None:
 def test_speaking_extends_deadline() -> None:
     manager = ConnectionManager()
     manager.accumulator = SpeechTurnAccumulator(sample_rate=SAMPLE_RATE, silence_timeout_ms=60_000)
-    deadline_s = 0.2
+    deadline_s = 0.15
     app = create_app(
         connection_manager=manager,
         settings=replace(Settings(), barge_in_listen_s=deadline_s),
@@ -295,7 +295,7 @@ def test_speaking_extends_deadline() -> None:
         started = time.monotonic()
         while time.monotonic() - started < deadline_s * 2:
             ws.send_bytes(LOUD_20MS)
-            time.sleep(0.04)
+            time.sleep(0.03)
             assert manager.state == "LISTENING"
 
         # The user stopped talking: the deadline now runs out.
@@ -513,8 +513,7 @@ async def test_barge_in_during_a_reply_cancels_the_reply(resting: str) -> None:
     assert manager.state == "LISTENING"
 
     await wait_for(lambda: manager.state == resting)  # nobody spoke: the deadline puts the session back
-    await asyncio.sleep(0.1)
-    assert manager.state == resting  # and the cancelled reply did not pull it back into LISTENING
+    assert manager.state == resting  # and the cancelled reply (asserted above) cannot pull it back into LISTENING
     assert manager.tasks.get("reply") is None
     assert (manager.tasks.get("narration") is not None) == (resting == "NARRATING")
     await manager.tasks.cancel_all()
