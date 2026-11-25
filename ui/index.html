@@ -1620,6 +1620,12 @@
           if (btnLabel) btnLabel.innerText = 'RESUME NARRATION';
         }
         updateStateUI();
+        if ((msg.state === 'NARRATING' || msg.state === 'PAUSED') && !isVoiceListening) {
+          // The turn is over, whatever became of its transcript (answered, dropped, or never understood): do not
+          // leave "Transcribing..." on screen until the next voice turn.
+          const speechTicker = document.getElementById('speech-ticker');
+          if (speechTicker) speechTicker.style.display = 'none';
+        }
       }
       if (msg.active_voice) {
         selectVoice(msg.active_voice, false);
