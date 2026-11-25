@@ -248,7 +248,7 @@ def test_barge_in_deadline_resumes() -> None:
         ws.send_json({"type": "playback_control", "action": "resume"})
         read_until_state(ws, "NARRATING")
 
-        ws.send_json({"type": "barge_in_trigger"})
+        client.portal.call(manager.trigger_barge_in)  # server-detected speech; a push-to-talk click holds the deadline
         read_until_state(ws, "LISTENING")
         read_until_state(ws, "NARRATING")  # nobody spoke: the deadline puts the session back where it was
 
@@ -267,7 +267,7 @@ def test_barge_in_from_paused_returns_to_paused() -> None:
 
     with TestClient(app) as client, client.websocket_connect("/ws") as ws:
         ws.receive_json()
-        ws.send_json({"type": "barge_in_trigger"})
+        client.portal.call(manager.trigger_barge_in)
         read_until_state(ws, "LISTENING")
         read_until_state(ws, "PAUSED")
 
@@ -288,7 +288,8 @@ def test_speaking_extends_deadline() -> None:
 
     with TestClient(app) as client, client.websocket_connect("/ws") as ws:
         ws.receive_json()
-        ws.send_json({"type": "barge_in_trigger"})
+        # Server-detected speech (not a push-to-talk click, which holds the deadline until voice_end).
+        client.portal.call(manager.trigger_barge_in)
         read_until_state(ws, "LISTENING")
 
         started = time.monotonic()
@@ -576,3 +577,51 @@ async def test_each_app_owns_its_session_and_engine() -> None:
     await wait_for(lambda: len(tts.calls) >= 1)  # the other app's own engine narrates, with its own TTS
     assert module_manager.tasks.get("narration") is None
     await other_manager.tasks.cancel_all()
+
+
+def test_quiet_push_to_talk_is_answered_after_the_deadline_would_have_run_out() -> None:
+    """Speech below the server's threshold never extends the deadline; the client's voice_end ends the turn."""
+    deadline_s = 0.15
+    manager = ConnectionManager()
+    manager.accumulator = SpeechTurnAccumulator(sample_rate=SAMPLE_RATE, silence_timeout_ms=60_000)
+    manager.stt_engine = FakeStt("what is arasaka")
+    quiet = (np.sin(2 * np.pi * 440 * np.arange(320) / SAMPLE_RATE) * 60).astype(np.int16).tobytes()  # RMS ~0.0013
+    engine = MagicMock()
+    engine.handle_user_interruption = AsyncMock()
+    app = create_app(connection_manager=manager, narration_engine=engine)
+    manager.session.listen_deadline_s = deadline_s
+
+    with TestClient(app) as client, client.websocket_connect("/ws") as ws:
+        ws.receive_json()
+        ws.send_json({"type": "barge_in_trigger"})
+        read_until_state(ws, "LISTENING")
+        started = time.monotonic()
+        while time.monotonic() - started < deadline_s * 3:
+            ws.send_bytes(quiet)
+            time.sleep(0.02)
+            assert manager.state == "LISTENING"  # three deadlines of quiet speech later, still listening
+
+        ws.send_json({"type": "voice_end"})
+        assert wait_until(lambda: engine.handle_user_interruption.called)
+
+    engine.handle_user_interruption.assert_called_once_with("what is arasaka")
+
+
+def test_a_barge_in_without_voice_end_still_times_out_after_the_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    from voice_agent.server import websocket as websocket_module
+
+    monkeypatch.setattr(websocket_module, "MAX_UTTERANCE_S", 0.1)
+    manager = ConnectionManager()
+    app = create_app(
+        connection_manager=manager,
+        settings=replace(Settings(), barge_in_listen_s=0.1),
+        llm_client=FakeLLM(),
+        tts=FakeTts(),
+        search=FakeSearch(),
+    )
+
+    with TestClient(app) as client, client.websocket_connect("/ws") as ws:
+        ws.receive_json()
+        ws.send_json({"type": "barge_in_trigger"})
+        read_until_state(ws, "LISTENING")
+        read_until_state(ws, "PAUSED")  # cap, then the normal deadline

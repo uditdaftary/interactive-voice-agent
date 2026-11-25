@@ -298,3 +298,64 @@ async def test_extend_and_suspend_outside_listening_are_noops() -> None:
     await settle(DEADLINE * 5)
 
     assert session.state == "NARRATING"  # the earlier no-op suspend did not leave the deadline suspended
+
+
+# --- holding the deadline for a client that records until it is done ------------------------------------------------
+
+
+async def wait_for_state(session: SessionState, state: str, timeout_s: float = 5.0) -> None:
+    async with asyncio.timeout(timeout_s):
+        while session.state != state:
+            await asyncio.sleep(0.005)
+
+
+async def test_held_deadline_waits_for_the_release() -> None:
+    session = make_session(listen_deadline_s=DEADLINE)
+    session.transition("NARRATING", "start")
+    session.enter_listening("barge_in")
+
+    session.hold_deadline(30.0)
+    await settle(DEADLINE * 4)
+    assert session.state == "LISTENING"
+    session.extend_deadline()  # speech does not matter while held
+    session.suspend_deadline()
+    session.resume_deadline()
+    await settle(DEADLINE * 4)
+    assert session.state == "LISTENING"
+
+    session.release_deadline_hold()  # the normal deadline starts now
+    assert session.state == "LISTENING"
+    await wait_for_state(session, "NARRATING")
+
+
+async def test_hold_is_bounded() -> None:
+    session = make_session(listen_deadline_s=DEADLINE)
+    session.transition("NARRATING", "start")
+    session.enter_listening("barge_in")
+
+    session.hold_deadline(DEADLINE * 2)  # the cap, then the normal deadline on top of it
+    await settle(DEADLINE)
+    assert session.state == "LISTENING"
+
+    await wait_for_state(session, "NARRATING")
+
+
+async def test_leaving_listening_clears_a_hold() -> None:
+    session = make_session(listen_deadline_s=DEADLINE, followup_window_s=DEADLINE)
+    session.transition("NARRATING", "start")
+    session.enter_listening("barge_in")
+    session.hold_deadline(30.0)
+
+    session.transition("REPLYING", "question")
+    session.enter_listening("followup", followup=True)  # a fresh turn: not held
+    await wait_for_state(session, "NARRATING")
+
+
+async def test_hold_outside_listening_is_a_noop() -> None:
+    session = make_session(listen_deadline_s=DEADLINE)
+    session.transition("NARRATING", "start")
+
+    session.hold_deadline(30.0)
+    session.enter_listening("barge_in")  # the earlier hold did not carry over
+
+    await wait_for_state(session, "NARRATING")

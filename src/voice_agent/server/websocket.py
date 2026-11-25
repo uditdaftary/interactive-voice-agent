@@ -16,6 +16,7 @@ from voice_agent.server.connection_manager import (
     default_connection_manager,
 )
 from voice_agent.server.security import origin_allowed
+from voice_agent.stt.accumulator import MAX_UTTERANCE_S
 from voice_agent.server.schemas import (
     BargeInTriggerMessage,
     PlaybackControlMessage,
@@ -157,8 +158,10 @@ async def handle_client_text_message(
         await manager.broadcast_json(sync_msg)
 
     elif isinstance(msg, BargeInTriggerMessage):
-        # Narration stops at once; the session returns to it when the LISTENING deadline runs out unanswered.
+        # Narration stops at once. The client records until it sends voice_end, and quiet speech never registers
+        # with the server, so the deadline waits for that message, but no longer than one utterance can last.
         manager.trigger_barge_in()
+        manager.session.hold_deadline(MAX_UTTERANCE_S)
 
     elif isinstance(msg, SetCadenceMessage):
         manager.set_cadence(msg.cadence)
@@ -213,6 +216,7 @@ async def handle_client_text_message(
 
     elif isinstance(msg, VoiceEndMessage):
         if manager.state in LISTENING_STATES:
+            manager.session.release_deadline_hold()
             acc = getattr(manager, "accumulator", None)
             utterance = acc.flush() if acc is not None else None
             fb = getattr(msg, "fallback_query", None)

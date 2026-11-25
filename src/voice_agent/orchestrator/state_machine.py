@@ -103,6 +103,7 @@ class SessionState:
     LISTENING has a deadline so the session can never wait for a user who is not there. It is
     extended while the user speaks and suspended while an utterance is being transcribed; it resumes
     to `resume_to` when it runs out. Leaving LISTENING always cancels it, so a stale timer never fires.
+    A client that records until it says it is done (push-to-talk) can hold the clock for a bounded time.
     """
 
     def __init__(self, *, listen_deadline_s: float, followup_window_s: float) -> None:
@@ -114,6 +115,8 @@ class SessionState:
         self._deadline_timer: asyncio.TimerHandle | None = None
         self._armed_for_s: float | None = None  # the full duration extend/resume re-arm; None outside LISTENING
         self._deadline_suspended = False
+        self._deadline_held = False
+        self._hold_timer: asyncio.TimerHandle | None = None
         self._resuming = False
 
     @property
@@ -181,6 +184,7 @@ class SessionState:
             return False
         self._armed_for_s = self.followup_window_s if followup else self.listen_deadline_s
         self._deadline_suspended = False
+        self._release_hold()
         self._arm_deadline(loop)
         return True
 
@@ -202,8 +206,38 @@ class SessionState:
             if self._can_rearm():
                 self._arm_deadline(asyncio.get_running_loop())
 
+    def hold_deadline(self, max_s: float) -> None:
+        """Stop the clock until `release_deadline_hold`, for at most `max_s`, then run the normal deadline.
+
+        For a client that records until it reports it is done: speech too quiet for the server to hear
+        must not time the turn out while the user is still talking.
+        """
+        if self._state == "LISTENING" and self._armed_for_s is not None:
+            self._release_hold()
+            self._deadline_held = True
+            self._cancel_timer()
+            self._hold_timer = asyncio.get_running_loop().call_later(max_s, self.release_deadline_hold)
+
+    def release_deadline_hold(self) -> None:
+        """End a hold and start the normal deadline."""
+        was_held = self._deadline_held
+        self._release_hold()
+        if was_held and self._can_rearm():
+            self._arm_deadline(asyncio.get_running_loop())
+
+    def _release_hold(self) -> None:
+        self._deadline_held = False
+        if self._hold_timer is not None:
+            self._hold_timer.cancel()
+            self._hold_timer = None
+
     def _can_rearm(self) -> bool:
-        return self._state == "LISTENING" and self._armed_for_s is not None and not self._deadline_suspended
+        return (
+            self._state == "LISTENING"
+            and self._armed_for_s is not None
+            and not self._deadline_suspended
+            and not self._deadline_held
+        )
 
     def _arm_deadline(self, loop: asyncio.AbstractEventLoop) -> None:
         self._cancel_timer()
@@ -217,11 +251,12 @@ class SessionState:
 
     def _clear_deadline(self) -> None:
         self._cancel_timer()
+        self._release_hold()
         self._armed_for_s = None
         self._deadline_suspended = False
 
     def _expire(self) -> None:
         self._deadline_timer = None
         # The timer is cancelled on every exit from LISTENING, so these guards only matter if that ever regresses.
-        if self._state == "LISTENING" and not self._deadline_suspended:
+        if self._state == "LISTENING" and not self._deadline_suspended and not self._deadline_held:
             self.resume("deadline")
