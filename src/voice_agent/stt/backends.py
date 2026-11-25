@@ -40,6 +40,8 @@ STT_BACKEND_NAMES: tuple[str, ...] = ("whisper", "moonshine")
 WORKER_PATH = Path(__file__).resolve().parent / "local_stt_worker.py"
 # A reply must arrive within this many seconds; the same bound caps the writes, so a hung worker cannot hold the lock forever.
 READ_TIMEOUT_S = 30.0
+# Loading the model and its warm-up decode can take far longer than one exchange on a slow disk, so the ready wait has its own bound.
+READY_TIMEOUT_S = 120.0
 # One second of 16 kHz int16 mono per audio line keeps each JSON line small.
 CHUNK_BYTES = SAMPLE_RATE * 2
 
@@ -242,12 +244,14 @@ class MoonshineBackend:
         worker_path: Path = WORKER_PATH,
         python: str = sys.executable,
         timeout_s: float = READ_TIMEOUT_S,
+        ready_timeout_s: float = READY_TIMEOUT_S,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.model_dir = model_dir
         self._worker_path = worker_path
         self._python = python
         self._timeout_s = timeout_s
+        self._ready_timeout_s = ready_timeout_s
         self._clock = clock
         self._worker: _WorkerProcess | None = None
         self._failed_at: float | None = None
@@ -281,8 +285,14 @@ class MoonshineBackend:
         self._request_number += 1
         request_id = f"m{self._request_number}"
         # The watchdog bounds the writes as well as the reads: a worker that stops reading would otherwise block the write forever,
-        # and with it the lock.
-        watchdog = threading.Timer(self._timeout_s, worker.kill)
+        # and with it the lock. It records that it fired, so the kill is logged by its cause rather than as a plain exit.
+        expired = threading.Event()
+
+        def expire() -> None:
+            expired.set()
+            worker.kill()
+
+        watchdog = threading.Timer(self._timeout_s, expire)
         watchdog.start()
         try:
             try:
@@ -292,21 +302,26 @@ class MoonshineBackend:
                     worker.send({"op": "audio", "id": request_id, "pcm": base64.b64encode(chunk).decode("ascii")})
                 worker.send({"op": "finish", "id": request_id})
             except OSError as error:
-                self._give_up(worker, f"the worker stopped reading ({error})")
+                reason = self._expired_reason() if expired.is_set() else f"the worker stopped reading ({error})"
+                self._give_up(worker, reason)
                 return Transcript("", STT_UNAVAILABLE)
-            return self._await_final(worker, request_id)
+            return self._await_final(worker, request_id, expired)
         finally:
             watchdog.cancel()
 
-    def _await_final(self, worker: _WorkerProcess, request_id: str) -> Transcript:
+    def _expired_reason(self) -> str:
+        return f"the exchange timeout of {self._timeout_s:g} s expired and the watchdog killed the worker"
+
+    def _await_final(self, worker: _WorkerProcess, request_id: str, expired: threading.Event) -> Transcript:
         while True:
             try:
                 message = worker.lines.get(timeout=self._timeout_s)
             except queue.Empty:
-                self._give_up(worker, f"no reply within {self._timeout_s:g} s")
+                # The same bound as the watchdog, which may fire a moment later on the timer thread: either way it is this timeout.
+                self._give_up(worker, f"the exchange timeout of {self._timeout_s:g} s expired with no reply")
                 return Transcript("", STT_UNAVAILABLE)
             if message is None:
-                self._give_up(worker, "the worker exited")
+                self._give_up(worker, self._expired_reason() if expired.is_set() else "the worker exited")
                 return Transcript("", STT_UNAVAILABLE)
             if message.get("id") != request_id:
                 continue  # the ready line, or a reply to an earlier request
@@ -335,9 +350,9 @@ class MoonshineBackend:
             self._give_up(None, f"could not start the worker ({error})")
             return None
         try:
-            message = worker.lines.get(timeout=self._timeout_s)
+            message = worker.lines.get(timeout=self._ready_timeout_s)
         except queue.Empty:
-            self._give_up(worker, f"no ready signal within {self._timeout_s:g} s")
+            self._give_up(worker, f"the ready timeout of {self._ready_timeout_s:g} s expired and the worker was killed")
             return None
         if message is not None and message.get("type") == "ready":
             logger.info("moonshine worker ready (%s, loaded in %s ms)", message.get("engine"), message.get("loadMs"))

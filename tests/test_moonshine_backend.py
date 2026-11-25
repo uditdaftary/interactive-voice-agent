@@ -42,6 +42,7 @@ if config.get("mode") == "load-error":
     sys.exit(3)
 if config.get("mode") == "never-ready":
     time.sleep(120)
+time.sleep(config.get("ready_delay_s", 0))
 send({"type": "ready", "engine": "moonshine-tiny-en-int8", "kind": "moonshine", "threads": 1, "loadMs": 1})
 
 audio_bytes = 0
@@ -96,7 +97,9 @@ def make_worker(tmp_path: Path) -> Iterator[object]:
     starts_log = tmp_path / "starts.log"
     audio_log = tmp_path / "audio.log"
 
-    def make(timeout_s: float = 5.0, clock: Clock | None = None, **config: object) -> MoonshineBackend:
+    def make(
+        timeout_s: float = 5.0, ready_timeout_s: float = 5.0, clock: Clock | None = None, **config: object
+    ) -> MoonshineBackend:
         (tmp_path / "worker.json").write_text(
             json.dumps({"starts_log": str(starts_log), "audio_log": str(audio_log), **config}), encoding="utf-8"
         )
@@ -105,6 +108,7 @@ def make_worker(tmp_path: Path) -> Iterator[object]:
             worker_path=script,
             python=sys.executable,
             timeout_s=timeout_s,
+            ready_timeout_s=ready_timeout_s,
             clock=clock if clock is not None else Clock(),
         )
         backends.append(backend)
@@ -191,16 +195,25 @@ def test_dead_worker_restarts_after_cooldown(make_worker, tmp_path: Path) -> Non
     assert make_worker.starts() == 2
 
 
-def test_read_timeout_kills_worker(make_worker) -> None:
+def test_read_timeout_kills_worker_and_logs_the_timeout(make_worker, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING, logger="voice_agent.stt.backends")
     backend = make_worker(timeout_s=0.2, mode="silent")
 
     assert backend.transcribe(one_second_of_speech(), SAMPLE_RATE) == Transcript("", STT_UNAVAILABLE)
     assert not backend.is_running
+    assert "exchange timeout of 0.2 s expired" in caplog.text
+
+
+def test_slow_start_is_within_the_ready_bound(make_worker) -> None:
+    # The model load takes longer than one exchange may take; the ready wait has its own, longer bound.
+    backend = make_worker(timeout_s=0.2, ready_timeout_s=5.0, ready_delay_s=0.6, text="hello there")
+
+    assert backend.transcribe(one_second_of_speech(), SAMPLE_RATE) == Transcript("hello there", None)
 
 
 def test_worker_that_never_reports_ready_is_unavailable(make_worker, caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.WARNING, logger="voice_agent.stt.backends")
-    backend = make_worker(timeout_s=0.2, mode="never-ready")
+    backend = make_worker(timeout_s=0.2, ready_timeout_s=0.2, mode="never-ready")
 
     assert backend.transcribe(one_second_of_speech(), SAMPLE_RATE) == Transcript("", STT_UNAVAILABLE)
     assert not backend.is_running
