@@ -668,3 +668,22 @@ async def test_barge_in_then_deadline_resume_arrives_in_order() -> None:
     cursor_after_resume = next(i for i, (kind, _) in enumerate(order) if kind == "cursor_update" and i > listening)
     assert barge_in < listening < narrating < cursor_after_resume
     await manager.tasks.cancel_all()
+
+
+@pytest.mark.parametrize("resting", ["NARRATING", "PAUSED"])
+async def test_unrecognized_speech_cues_narration_only_when_narration_resumes(resting: str) -> None:
+    manager = ConnectionManager()
+    engine = make_engine(manager, settings=Settings.fast())
+    socket = await connected(manager)
+    if resting == "NARRATING":
+        engine.start_narration()
+        await wait_for(lambda: manager.tasks.get("narration") is not None)
+    manager.trigger_barge_in()
+
+    await engine.handle_unrecognized_interruption()
+    await asyncio.sleep(0.05)
+
+    cues = [m for m in socket.messages("prompt_envelope") if m["state"] == "NARRATING"]
+    assert bool(cues) == (resting == "NARRATING")
+    assert manager.state == resting
+    await manager.tasks.cancel_all()

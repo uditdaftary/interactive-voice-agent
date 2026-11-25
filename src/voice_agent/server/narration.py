@@ -470,15 +470,16 @@ class NarrationEngine:
 
             await asyncio.sleep(self.settings.unrecognized_pause_s)
 
-            # Pre-Roll Resumption Cue & return to NARRATING
-            await self.manager.broadcast_json(PromptEnvelopeMessage(
-                state="NARRATING",
-                context=current_context,
-                query="",
-                reply=recovery_text,
-                pre_roll_words=4,
-            ))
-            await asyncio.sleep(self.settings.preroll_pause_s)
+            # Pre-roll resumption cue, but only if narration is what the session returns to
+            if self.manager.session.resume_to == "NARRATING":
+                await self.manager.broadcast_json(PromptEnvelopeMessage(
+                    state="NARRATING",
+                    context=current_context,
+                    query="",
+                    reply=recovery_text,
+                    pre_roll_words=4,
+                ))
+                await asyncio.sleep(self.settings.preroll_pause_s)
 
             # Back to what the session was doing; the state listener restarts narration if that was narrating.
             self.manager.session.resume("reply_done")
