@@ -48,11 +48,12 @@ async def _active_stt_engine(websocket: WebSocket, manager: ConnectionManager, s
     deadline is held until it is ready."""
     if stt_engine:
         return stt_engine
-    manager.session.suspend_deadline()
+    turn = manager.session.turn_id
+    manager.session.suspend_deadline(turn)
     try:
         return await _ensure_stt_engine(websocket.app)
     finally:
-        manager.session.resume_deadline()
+        manager.session.resume_deadline(turn)
 
 
 async def process_stt_utterance(
@@ -80,14 +81,15 @@ async def process_stt_utterance(
 
     start_t = time.perf_counter()
     # The LISTENING deadline must not run out while the utterance is with the recognizer.
-    manager.session.suspend_deadline()
+    turn = manager.session.turn_id
+    manager.session.suspend_deadline(turn)
     try:
         transcript = await asyncio.to_thread(stt_engine.transcribe, utterance)
     except Exception as exc:  # noqa: BLE001  # S3.3 RC4
         logger.warning(f"STT transcription failed: {exc}")
         transcript = ""
     finally:
-        manager.session.resume_deadline()
+        manager.session.resume_deadline(turn)
 
     latency_ms = round((time.perf_counter() - start_t) * 1000.0, 2)
     if manager.state not in LISTENING_STATES:

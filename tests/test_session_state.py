@@ -229,7 +229,7 @@ async def test_suspended_deadline_never_fires() -> None:
     session.transition("NARRATING", "start")
     session.enter_listening("barge_in")
 
-    session.suspend_deadline()
+    session.suspend_deadline(session.turn_id)
     await settle(QUIET)
     assert session.state == "LISTENING"
 
@@ -237,7 +237,7 @@ async def test_suspended_deadline_never_fires() -> None:
     await settle(QUIET)
     assert session.state == "LISTENING"
 
-    session.resume_deadline()  # re-arms the full duration
+    session.resume_deadline(session.turn_id)  # re-arms the full duration
     await wait_for_state(session, "NARRATING")
 
 
@@ -255,7 +255,7 @@ async def test_leaving_listening_cancels_timer() -> None:
 async def test_reentering_listening_does_not_inherit_a_stale_suspension() -> None:
     session = make_session(listen_deadline_s=DEADLINE)
     session.enter_listening("barge_in")
-    session.suspend_deadline()
+    session.suspend_deadline(session.turn_id)
     session.transition("REPLYING", "question")
 
     session.enter_listening("barge_in")
@@ -298,8 +298,8 @@ async def test_extend_and_suspend_outside_listening_are_noops() -> None:
     session.transition("NARRATING", "start")
 
     session.extend_deadline()
-    session.suspend_deadline()
-    session.resume_deadline()
+    session.suspend_deadline(session.turn_id)
+    session.resume_deadline(session.turn_id)
     session.enter_listening("barge_in")
 
     await wait_for_state(session, "NARRATING")  # the earlier no-op suspend did not leave the deadline suspended
@@ -317,8 +317,8 @@ async def test_held_deadline_waits_for_the_release() -> None:
     await settle(QUIET)
     assert session.state == "LISTENING"
     session.extend_deadline()  # speech does not matter while held
-    session.suspend_deadline()
-    session.resume_deadline()
+    session.suspend_deadline(session.turn_id)
+    session.resume_deadline(session.turn_id)
     await settle(QUIET)
     assert session.state == "LISTENING"
 
@@ -358,3 +358,116 @@ async def test_hold_outside_listening_is_a_noop() -> None:
     session.enter_listening("barge_in")  # the earlier hold did not carry over
 
     await wait_for_state(session, "NARRATING")
+
+
+async def test_deadline_held_reports_the_hold() -> None:
+    session = make_session(listen_deadline_s=30.0)
+    session.enter_listening("barge_in")
+    assert session.deadline_held is False
+
+    session.hold_deadline(30.0)
+    assert session.deadline_held is True
+
+    session.release_deadline_hold()
+    assert session.deadline_held is False
+
+
+# --- turns: one listening entry is answered once ---------------------------------------------------------------------
+
+
+async def test_turn_ids_start_at_zero_and_count_every_entry_into_listening() -> None:
+    session = make_session(listen_deadline_s=30.0)
+    assert session.turn_id == 0
+
+    session.enter_listening("barge_in")
+    assert session.turn_id == 1
+
+    session.enter_listening("barge_in")  # LISTENING to LISTENING is a new turn too
+    assert session.turn_id == 2
+
+    session.transition("REPLYING", "question")
+    session.enter_listening("followup", followup=True)
+    assert session.turn_id == 3
+
+
+async def test_a_bare_transition_into_listening_starts_a_turn() -> None:
+    session = make_session(listen_deadline_s=30.0)
+
+    session.transition("LISTENING", "push_to_talk")
+
+    assert session.turn_id == 1
+    assert session.claim_turn(1) is True
+
+
+async def test_a_turn_is_claimed_once() -> None:
+    session = make_session(listen_deadline_s=30.0)
+    session.enter_listening("barge_in")
+    turn = session.turn_id
+
+    assert session.claim_turn(turn) is True
+    assert session.claim_turn(turn) is False  # the second turn-end for the same entry is dropped
+
+
+async def test_an_old_turn_cannot_be_claimed() -> None:
+    session = make_session(listen_deadline_s=30.0)
+    session.enter_listening("barge_in")
+    old = session.turn_id
+    session.enter_listening("barge_in")
+
+    assert session.claim_turn(old) is False
+    assert session.claim_turn(session.turn_id) is True
+
+
+@pytest.mark.parametrize("state", ["NARRATING", "PAUSED", "REPLYING"])
+async def test_a_turn_cannot_be_claimed_outside_listening(state: str) -> None:
+    session = make_session(listen_deadline_s=30.0)
+    session.transition("NARRATING", "start")
+    session.enter_listening("barge_in")
+    turn = session.turn_id
+    if state == "REPLYING":
+        session.transition("REPLYING", "question")
+    elif state == "NARRATING":
+        session.resume("deadline")
+    else:
+        session.transition("PAUSED", "pause")
+
+    assert session.state == state
+    assert session.claim_turn(turn) is False
+
+
+async def test_reentering_listening_gives_a_new_claimable_turn() -> None:
+    session = make_session(listen_deadline_s=30.0)
+    session.enter_listening("barge_in")
+    assert session.claim_turn(session.turn_id) is True
+
+    session.enter_listening("barge_in")  # the user spoke again: a fresh turn
+
+    assert session.claim_turn(session.turn_id) is True
+
+
+async def test_resuming_the_deadline_of_an_old_turn_keeps_the_new_turns_suspension() -> None:
+    session = make_session(listen_deadline_s=DEADLINE)
+    session.enter_listening("barge_in")
+    old = session.turn_id
+    session.suspend_deadline(old)
+    session.enter_listening("barge_in")  # a newer turn, whose own transcript is now with the recognizer
+    new = session.turn_id
+    session.suspend_deadline(new)
+
+    session.resume_deadline(old)  # the cancelled recogniser task cleaning up
+    await settle(QUIET)
+    assert session.state == "LISTENING"
+
+    session.resume_deadline(new)
+    await wait_for_state(session, "PAUSED")
+
+
+async def test_suspending_the_deadline_of_an_old_turn_does_nothing() -> None:
+    session = make_session(listen_deadline_s=DEADLINE)
+    session.enter_listening("barge_in")
+    old = session.turn_id
+    session.enter_listening("barge_in")
+
+    session.suspend_deadline(old)
+
+    await wait_for_state(session, "PAUSED")  # the new turn's deadline still runs
