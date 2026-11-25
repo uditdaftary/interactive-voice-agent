@@ -1,6 +1,6 @@
 """Tests for Server-Side Neural STT WebSocket Streaming Protocol & Pipeline."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 import numpy as np
 from fastapi.testclient import TestClient
 
@@ -78,7 +78,6 @@ def test_websocket_voice_end_triggers_stt_transcription_and_interruption() -> No
     manager.stt_engine = mock_stt
 
     mock_engine = MagicMock()
-    mock_engine.handle_user_interruption = AsyncMock()
 
     app = create_app(connection_manager=manager, narration_engine=mock_engine)
 
@@ -109,8 +108,8 @@ def test_websocket_voice_end_triggers_stt_transcription_and_interruption() -> No
             assert transcript_event["is_final"] is True
             assert "latency_ms" in transcript_event
 
-            # 6. Verify narration engine handle_user_interruption called
-            mock_engine.handle_user_interruption.assert_called_once_with("what is arasaka")
+            # 6. Verify the narration engine was asked the question
+            mock_engine.ask.assert_called_once_with("what is arasaka")
 
 
 def test_websocket_turn_accumulator_automatic_speech_segmentation() -> None:
@@ -126,7 +125,6 @@ def test_websocket_turn_accumulator_automatic_speech_segmentation() -> None:
     )
 
     mock_engine = MagicMock()
-    mock_engine.handle_user_interruption = AsyncMock()
 
     app = create_app(connection_manager=manager, narration_engine=mock_engine)
 
@@ -134,8 +132,9 @@ def test_websocket_turn_accumulator_automatic_speech_segmentation() -> None:
         with client.websocket_connect("/ws") as ws:
             _ = ws.receive_json()  # Handshake
 
-            # Trigger barge-in
-            ws.send_json({"type": "barge_in_trigger"})
+            # Server-detected speech starts the turn. (A push-to-talk click holds the turn open until voice_end,
+            # so silence would not end it.)
+            client.portal.call(manager.trigger_barge_in)
             _ = ws.receive_json()  # barge_in
             _ = ws.receive_json()  # state_sync
 
@@ -154,7 +153,7 @@ def test_websocket_turn_accumulator_automatic_speech_segmentation() -> None:
             assert transcript_event["transcript"] == "query via auto pause"
             assert transcript_event["is_final"] is True
 
-            mock_engine.handle_user_interruption.assert_called_once_with("query via auto pause")
+            mock_engine.ask.assert_called_once_with("query via auto pause")
 
 
 def test_websocket_binary_pcm_ignored_when_not_listening() -> None:
@@ -163,7 +162,6 @@ def test_websocket_binary_pcm_ignored_when_not_listening() -> None:
     manager.stt_engine = FakeStt("should not transcribe")
 
     mock_engine = MagicMock()
-    mock_engine.handle_user_interruption = AsyncMock()
 
     app = create_app(connection_manager=manager, narration_engine=mock_engine)
 
@@ -186,5 +184,5 @@ def test_websocket_binary_pcm_ignored_when_not_listening() -> None:
             assert resp["type"] == "state_sync"
             assert resp["cadence"] == 1.2
 
-            # handle_user_interruption should NOT have been called
-            mock_engine.handle_user_interruption.assert_not_called()
+            # The engine should NOT have been asked anything
+            mock_engine.ask.assert_not_called()

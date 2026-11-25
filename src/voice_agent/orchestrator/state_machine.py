@@ -139,6 +139,11 @@ class SessionState:
         return self._turn_id
 
     @property
+    def turn_claimed(self) -> bool:
+        """True once the current turn's first end was taken (see `claim_turn`): its audio is already being answered."""
+        return self._turn_claimed
+
+    @property
     def deadline_held(self) -> bool:
         """True while a client that records until it is done holds the LISTENING clock (see `hold_deadline`)."""
         return self._deadline_held
