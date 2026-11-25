@@ -37,6 +37,9 @@ class FakePocket:
         self.chunk_count = 3
         self.chunk_delay_s = 0.0
         self.chunks_made = 0
+        self.active_generations = 0
+        self.max_active_generations = 0
+        self.generations_finished = 0
 
     def module(self) -> types.ModuleType:
         fake = self
@@ -69,12 +72,18 @@ class FakePocket:
                 copy_state: bool = True,
                 stop: threading.Event | None = None,
             ) -> Any:
+                fake.active_generations += 1
+                fake.max_active_generations = max(fake.max_active_generations, fake.active_generations)
                 for _ in range(fake.chunk_count):
                     if stop is not None and stop.is_set():
-                        return
+                        break
                     time.sleep(fake.chunk_delay_s)
                     fake.chunks_made += 1
                     yield np.full(2400, 0.25, dtype=np.float32)
+                # Modelled on pocket-tts: a generation is over only once its stream runs out. An early close leaves its
+                # threads running, so the count stays up.
+                fake.active_generations -= 1
+                fake.generations_finished += 1
 
         return _with_model(TTSModel)
 
@@ -180,10 +189,29 @@ async def test_cancel_stops_between_chunks(fake_pocket: FakePocket, voices: Path
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    # Ten chunk delays: long enough that an uncancelled generation would have made all ten chunks.
-    await asyncio.sleep(0.5)
+    # The generation has ended only when its stream ran out, so waiting on that is exact; no fixed sleep needed.
+    await wait_until(lambda: fake_pocket.generations_finished == 1)
 
     assert fake_pocket.chunks_made < 3
+
+
+async def test_next_generation_waits_for_the_stopped_one(fake_pocket: FakePocket, voices: Path) -> None:
+    fake_pocket.chunk_count = 10
+    fake_pocket.chunk_delay_s = 0.05
+    backend = PocketTtsBackend(voices_dir=voices)
+    task = asyncio.create_task(backend.synthesize("a long sentence", "lucy", 1.0))
+    await wait_until(lambda: fake_pocket.chunks_made >= 1)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    fake_pocket.chunk_count = 2
+    fake_pocket.chunk_delay_s = 0.0
+    audio = await backend.synthesize("the next sentence", "lucy", 1.0)
+
+    assert audio.mime == "audio/wav"
+    # Two generations never run on the model at once: the stopped one has been drained before the next starts.
+    assert fake_pocket.max_active_generations == 1
 
 
 async def test_gated_weights_raise_the_licence_error_once(fake_pocket: FakePocket, voices: Path) -> None:

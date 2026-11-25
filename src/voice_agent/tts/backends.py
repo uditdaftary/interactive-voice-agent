@@ -269,15 +269,11 @@ class PocketTtsBackend:
         model = self._loaded_model()
         state = self._voice_state(model, voice_id)
         chunks: list[np.ndarray] = []
-        stream = model.generate_audio_stream(state, text, stop=stop)
-        try:
-            while not stop.is_set():
-                chunk = next(stream, None)
-                if chunk is None:
-                    break
+        # The stream is read to its end even after stop is set: pocket-tts joins its generation and decoder threads only when the
+        # stream runs out, and a stopped stream ends within one frame. Breaking out early would let the next generation overlap it.
+        for chunk in model.generate_audio_stream(state, text, stop=stop):
+            if not stop.is_set():
                 chunks.append(np.asarray(chunk, dtype=np.float32).reshape(-1))
-        finally:
-            stream.close()
         samples = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
         return _wav_bytes(samples, int(model.sample_rate))
 
