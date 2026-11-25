@@ -52,8 +52,14 @@ htmlcov/
 Thumbs.db
 desktop.ini
 
-# Multi-Agent runtime scratch
-.agents/
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
 
-# Inter-agent scratch messages (orchestration protocol)
-AGENT_COMMS_*.txt
+# Tooling caches
+.ruff_cache/
+.mypy_cache/
+
+# Voice-clone reference clips stay local (character voices from third-party media)
+models/voices/*.wav
