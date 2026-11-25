@@ -179,15 +179,11 @@ async def handle_client_text_message(
             else:
                 manager.session.transition("NARRATING", "resume")
         elif msg.action == "next":
-            if engine is not None and getattr(engine, "sentences", None):
-                engine.current_sentence_idx = (engine.current_sentence_idx + 1) % max(1, len(engine.sentences))
-                engine.current_word_idx = 0
-                manager.update_cursor(engine.current_sentence_idx, 0)
+            if engine is not None:
+                engine.next_sentence()
         elif msg.action == "prev":
-            if engine is not None and getattr(engine, "sentences", None):
-                engine.current_sentence_idx = (engine.current_sentence_idx - 1 + len(engine.sentences)) % max(1, len(engine.sentences))
-                engine.current_word_idx = 0
-                manager.update_cursor(engine.current_sentence_idx, 0)
+            if engine is not None:
+                engine.previous_sentence()
 
         if manager.state == state_before:
             # No transition happened, so the state listener announced nothing; still answer the request.

@@ -132,19 +132,66 @@ class NarrationEngine:
         if self.manager.tasks.get("narration") is None:
             self.manager.tasks.spawn(self._narration_loop(), "narration")
 
+    def _go_to(self, sentence_idx: int) -> None:
+        """Put the cursor at the start of a sentence. Narration, if that is what the session is doing, goes on from
+        there; in any other state the cursor only moves.
+
+        The old narration task may be in the middle of a sentence. It is cancelled, so it can never reach its own
+        step to the next sentence and skip one.
+        """
+        self.manager.tasks.cancel("narration")
+        self.current_sentence_idx = sentence_idx
+        self.current_word_idx = 0
+        self.manager.update_cursor(sentence_idx=sentence_idx, word_offset=0)
+        if self.manager.state == "NARRATING":
+            self._ensure_narration()  # the new loop announces the sentence itself
+        else:
+            self.manager.broadcast_json_sync(CursorUpdateMessage(
+                sentence_idx=sentence_idx,
+                word_offset=0,
+                sentence_text=self.sentences[sentence_idx] if self.sentences else "",
+                total_sentences=len(self.sentences),
+            ))
+
+    def next_sentence(self) -> None:
+        """Move to the start of the next sentence, wrapping at the end."""
+        if self.sentences:
+            self._go_to((self.current_sentence_idx + 1) % len(self.sentences))
+
+    def previous_sentence(self) -> None:
+        """Move to the start of the previous sentence, wrapping at the start."""
+        if self.sentences:
+            self._go_to((self.current_sentence_idx - 1) % len(self.sentences))
+
     def load_document(self, doc: DocumentContent) -> None:
-        """Load a parsed document (PDF, EPUB, TXT) into the active narrator."""
+        """Load a parsed document (PDF, EPUB, TXT) into the active narrator.
+
+        A question or a recording in progress is about the old document, so that turn is abandoned and the session
+        goes back to what it was doing, now at the new document's first sentence.
+        """
         if not doc.sentences:
             return
+        session = self.manager.session
+        self.manager.tasks.cancel("narration")
         self.sentences = list(doc.sentences)
         self._bm25_index = BM25Index.from_sentences(self.sentences)
         self.document_title = doc.title
+        self._conversation_history.clear()
         self.current_sentence_idx = 0
         self.current_word_idx = 0
-
-        # Broadcast state sync with updated document info
         self.manager.update_cursor(sentence_idx=0, word_offset=0)
-        self.manager.broadcast_json_sync(self.manager.get_state_sync_message())
+
+        state_before = session.state
+        if state_before in ("LISTENING", "REPLYING"):
+            self.manager.tasks.cancel("reply")
+            self.manager.tasks.cancel("stt")
+            # After the new text is in place: if narration was what the session came from, its loop restarts now.
+            session.resume("document_loaded")
+        elif state_before == "NARRATING":
+            self._ensure_narration()
+        if session.state == state_before:
+            # No transition announced the new document and cursor.
+            self.manager.broadcast_json_sync(self.manager.get_state_sync_message())
         logger.info(f"Loaded document '{doc.title}' with {len(self.sentences)} sentences, {doc.total_words} words.")
 
     def start_narration(self) -> None:
