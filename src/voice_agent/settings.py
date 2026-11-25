@@ -11,6 +11,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from voice_agent.stt.backends import STT_BACKEND_NAMES
 from voice_agent.tts.backends import TTS_BACKEND_NAMES
 
 _FALSE_SPELLINGS = frozenset({"0", "false", "no"})
@@ -55,23 +56,25 @@ class Settings:
     # STT: Whisper's initial prompt, which biases decoding toward names the user cares about. Empty means none.
     stt_initial_prompt: str = ""
 
-    # TTS: the backend tried first; the other one is the fallback. "edge" or "pyttsx3".
+    # TTS: the backend tried first; the other one is the fallback. "edge", "pyttsx3", or the optional "pocket".
     tts_primary: str = "edge"
+
+    # STT: "whisper" (default) or the optional "moonshine" worker, and where its model files are.
+    stt_backend: str = "whisper"
+    moonshine_model_dir: str = "models/stt/moonshine-tiny-en-int8"
 
     # Turn-taking: how long the session waits for the user after a barge-in before returning to what it was
     # doing. It is extended while the user is heard speaking. (`followup_window_s` is the wait after a reply.)
     barge_in_listen_s: float = 8.0
 
 
-def _tts_primary(raw: str | None, default: str) -> str:
-    """Case-insensitive, stored lower case. Any other name fails here, at load, not at the first narrated sentence."""
+def _one_of(env_name: str, raw: str | None, default: str, names: tuple[str, ...]) -> str:
+    """Case-insensitive, stored lower case. Any other name fails here, at load, not at the first use."""
     if raw is None:
         return default
     name = raw.strip().lower()
-    if name not in TTS_BACKEND_NAMES:
-        raise ValueError(
-            f"VOICE_AGENT_TTS_PRIMARY must be one of {', '.join(TTS_BACKEND_NAMES)}; got {raw!r}"
-        )
+    if name not in names:
+        raise ValueError(f"{env_name} must be one of {', '.join(names)}; got {raw!r}")
     return name
 
 
@@ -104,7 +107,9 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         llm_api_key=source.get("VOICE_AGENT_LLM_API_KEY", defaults.llm_api_key),
         web_search_enabled=_env_bool(source.get("VOICE_AGENT_WEB_SEARCH"), defaults.web_search_enabled),
         stt_initial_prompt=source.get("VOICE_AGENT_STT_INITIAL_PROMPT", defaults.stt_initial_prompt),
-        tts_primary=_tts_primary(source.get("VOICE_AGENT_TTS_PRIMARY"), defaults.tts_primary),
+        tts_primary=_one_of("VOICE_AGENT_TTS_PRIMARY", source.get("VOICE_AGENT_TTS_PRIMARY"), defaults.tts_primary, TTS_BACKEND_NAMES),
+        stt_backend=_one_of("VOICE_AGENT_STT_BACKEND", source.get("VOICE_AGENT_STT_BACKEND"), defaults.stt_backend, STT_BACKEND_NAMES),
+        moonshine_model_dir=source.get("VOICE_AGENT_MOONSHINE_MODEL_DIR", defaults.moonshine_model_dir),
         barge_in_listen_s=_positive_seconds(
             source.get("VOICE_AGENT_BARGE_IN_LISTEN_S"), defaults.barge_in_listen_s, "VOICE_AGENT_BARGE_IN_LISTEN_S"
         ),
