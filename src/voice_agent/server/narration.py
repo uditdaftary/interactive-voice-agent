@@ -355,7 +355,7 @@ class NarrationEngine:
     def report_unrecognized(self) -> None:
         """Say that the speech was not understood, then go back to what the session was doing."""
         self._begin_reply("unrecognized", barge_in=False)
-        self.manager.tasks.spawn(self._guarded(self._say_unrecognized()), "reply", replace=True)
+        self.manager.tasks.spawn(self._unrecognized_reply(), "reply", replace=True)
 
     def _begin_reply(self, reason: str, *, barge_in: bool) -> None:
         tasks = self.manager.tasks
@@ -365,8 +365,13 @@ class NarrationEngine:
             self.manager.announce_barge_in()
         self.manager.session.transition("REPLYING", reason)
 
+    # The body coroutines are created inside the task, not handed to it: a task cancelled before its first step
+    # never runs, and a coroutine it was given would be reported as never awaited.
     async def _reply(self, query: str) -> None:
         await self._guarded(self._answer(query))
+
+    async def _unrecognized_reply(self) -> None:
+        await self._guarded(self._say_unrecognized())
 
     async def _guarded(self, body: Awaitable[None]) -> None:
         """Run a reply body so that no way of ending it strands the session in REPLYING.

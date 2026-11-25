@@ -2,7 +2,9 @@
 no task is orphaned, and the clients hear about it in the right order."""
 
 import asyncio
+import gc
 import logging
+import warnings
 from dataclasses import replace
 from typing import Any
 
@@ -373,6 +375,26 @@ async def test_the_reply_ends_in_an_open_followup_window_with_an_empty_pre_roll(
     assert manager.state == "LISTENING"  # the reply task has ended; nothing waits inside it
     assert acc._pre_roll_buffer == []  # the window starts clean: the answer's own echo is not the next question
     await manager.tasks.cancel_all()
+
+
+@pytest.mark.parametrize("start", ["ask", "report_unrecognized"])
+async def test_a_reply_cancelled_before_its_first_step_leaves_no_unawaited_coroutine(start: str) -> None:
+    manager = ConnectionManager()
+    engine = make_engine(manager)
+    manager.trigger_barge_in()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        if start == "ask":
+            engine.ask("who is lucy")
+        else:
+            engine.report_unrecognized()
+        engine.pause_narration()  # in the same loop pass: the reply task has not taken its first step
+        await manager.tasks.cancel_all()
+        await asyncio.sleep(0)  # the loop lets go of the finished task (and with it the coroutine it never started)
+        gc.collect()  # an abandoned coroutine is reported when it is collected
+
+    assert [str(w.message) for w in caught if "never awaited" in str(w.message)] == []
 
 
 # --- unrecognized speech -----------------------------------------------------------------------------------------
