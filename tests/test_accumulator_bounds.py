@@ -57,9 +57,12 @@ def test_buffers_bounded_over_an_hour_while_armed() -> None:
     acc.arm()
     utterances: list[bytes] = []
     largest_session = largest_speech = 0
+    # Half-second chunks carry the same hour of audio in a fifth of the feed calls; the 30 s cap is still
+    # exactly 60 whole chunks, so every cut lands on the cap.
+    half_second_chunk = tone(0.5, 16000)
 
-    for _ in range(int(3600 / 0.1)):
-        utterance = acc.feed(LOUD_100MS)
+    for _ in range(int(3600 / 0.5)):
+        utterance = acc.feed(half_second_chunk)
         if utterance is not None:
             utterances.append(utterance)
         sizes = buffered_bytes(acc)
