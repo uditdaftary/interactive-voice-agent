@@ -550,3 +550,29 @@ async def test_a_replacement_reply_is_not_cancelled_by_its_own_barge_in() -> Non
     assert not second.done()
     assert manager.state == "REPLYING"
     await manager.tasks.cancel_all()
+
+
+# --- one engine per session ---------------------------------------------------------------------------------------
+
+
+async def test_each_app_owns_its_session_and_engine() -> None:
+    """Importing the module-level app and then building another must not stack listeners or share narration."""
+    from voice_agent.server.app import app as module_app
+
+    tts = FakeTts()
+    other = create_app(settings=Settings.fast(), llm_client=FakeLLM(), tts=tts, search=FakeSearch())
+    module_manager: ConnectionManager = module_app.state.connection_manager
+    other_manager: ConnectionManager = other.state.connection_manager
+
+    assert other_manager is not module_manager
+    assert other_manager.session is not module_manager.session
+    # Disarm, announce, and the one engine: no matter how many apps were built before.
+    assert len(module_manager.session._listeners) == 3
+    assert len(other_manager.session._listeners) == 3
+    assert other_manager.session.followup_window_s == 0.0  # Settings.fast()
+    assert module_manager.session.followup_window_s == Settings().followup_window_s
+
+    other.state.narration_engine.start_narration()
+    await wait_for(lambda: len(tts.calls) >= 1)  # the other app's own engine narrates, with its own TTS
+    assert module_manager.tasks.get("narration") is None
+    await other_manager.tasks.cancel_all()

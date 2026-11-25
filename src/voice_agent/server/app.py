@@ -190,7 +190,7 @@ def create_app(
 
     Args:
         ui_dir: Path to static dashboard UI directory. Defaults to project `ui/`.
-        connection_manager: Custom ConnectionManager instance. Defaults to default singleton.
+        connection_manager: Custom ConnectionManager instance. Defaults to a new one, so apps never share a session.
         narration_engine: Custom NarrationEngine instance. Defaults to new instance.
         stt_engine: Custom STT engine (any object with a `transcribe` method). Defaults to the connection manager's engine,
             else one is built on first use.
@@ -220,7 +220,9 @@ def create_app(
     resolved_settings = settings if settings is not None else load_settings()
     app.state.settings = resolved_settings
 
-    manager = connection_manager if connection_manager is not None else default_connection_manager
+    # Each app owns its manager, because the manager owns the session and the engine hooks into it. Apps that
+    # shared one would stack listeners, and the first engine to attach would run everyone's narration.
+    manager = connection_manager if connection_manager is not None else ConnectionManager()
     app.state.connection_manager = manager
 
     engine = (
@@ -451,8 +453,8 @@ def create_app(
     return app
 
 
-# Module-level default application instance for uvicorn
-app = create_app()
+# Module-level default application instance for uvicorn. It is the one app backed by the shared default manager.
+app = create_app(connection_manager=default_connection_manager)
 
 
 def run(host: str = "127.0.0.1", port: int = 8000, reload: bool = False) -> None:
