@@ -64,7 +64,7 @@
       </div>
       <div class="item">
         <span class="faint">LATENCY:</span>
-        <span class="num" id="header-latency" style="color:var(--high);">&lt; 0.05 ms</span>
+        <span class="num" id="header-latency">not measured</span>
       </div>
       <div class="item">
         <span class="faint">ACTIVE VOICE:</span>
@@ -229,7 +229,7 @@
               [VAD SENSITIVITY // SUB-50MS ATOMIC DRAIN]
             </div>
             <div id="bargein-flash-tag" class="visualizer-overlay-right num" style="color:var(--critical-ink); display:none;">
-              FLUSH: 0.04 ms
+              FLUSH
             </div>
           </div>
 
@@ -329,7 +329,7 @@
   <section class="diagnostics-strip">
     <div class="diag-cell">
       <span class="label">TRUNCATION LATENCY</span>
-      <span class="val num" id="diag-latency" style="color:var(--high);">&lt; 0.05 ms</span>
+      <span class="val num" id="diag-latency">not measured</span>
     </div>
     <div class="diag-cell">
       <span class="label">AUDIO SAMPLE RATE</span>
@@ -1121,6 +1121,14 @@
     }
   }
 
+  // The server sends null for a latency it did not measure, and that is shown as such, never as a number.
+  function showLatency(ms) {
+    const text = (ms === null || ms === undefined) ? 'not measured' : `${Number(ms).toFixed(2)} ms`;
+    document.getElementById('header-latency').innerText = text;
+    document.getElementById('diag-latency').innerText = text;
+    return text;
+  }
+
   function updateWsStatusUI(connected) {
     const pill = document.getElementById('ws-status-pill');
     if (!pill) return;
@@ -1722,9 +1730,7 @@
         setCadence(msg.cadence, null, false);
       }
       if (msg.latency_ms !== undefined) {
-        const latStr = `${Number(msg.latency_ms).toFixed(2)} ms`;
-        document.getElementById('header-latency').innerText = latStr;
-        document.getElementById('diag-latency').innerText = latStr;
+        showLatency(msg.latency_ms);
       }
       if (msg.sentence_idx !== undefined) {
         currentSentenceIdx = msg.sentence_idx;
@@ -1744,12 +1750,10 @@
       this.stopAudioBefore(msg.generation);
       currentState = 'BARGE_IN';
       updateStateUI();
-      const lat = (msg.latency_ms !== undefined) ? Number(msg.latency_ms).toFixed(2) : '0.04';
-      document.getElementById('header-latency').innerText = `${lat} ms`;
-      document.getElementById('diag-latency').innerText = `${lat} ms`;
+      const latency = showLatency(msg.latency_ms);
       const flashTag = document.getElementById('bargein-flash-tag');
       if (flashTag) {
-        flashTag.innerText = `FLUSH: ${lat} ms`;
+        flashTag.innerText = `FLUSH: ${latency}`;
         flashTag.style.display = 'block';
         setTimeout(() => {
           flashTag.style.display = 'none';
