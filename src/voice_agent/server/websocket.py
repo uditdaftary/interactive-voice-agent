@@ -209,7 +209,8 @@ async def handle_client_text_message(
         await manager.broadcast_json(sync_msg)
 
     elif isinstance(msg, VoiceEndMessage):
-        # Whatever happens to the turn, the client is done recording: the hold ends and the normal deadline starts.
+        # The client is done recording, so the hold ends. The turn ends here, on Stop; the normal deadline only runs
+        # if Stop never comes and the hold's cap passes.
         manager.session.release_deadline_hold()
         if manager.state not in LISTENING_STATES:
             # The turn ended before the client's Stop (silence, a typed question, a navigation). The client is waiting
