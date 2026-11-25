@@ -304,9 +304,13 @@ async def test_extend_and_suspend_outside_listening_are_noops() -> None:
 
 
 async def wait_for_state(session: SessionState, state: str, timeout_s: float = 5.0) -> None:
+    """Return as soon as the session enters `state`; a slow machine costs time only up to `timeout_s`."""
+    if session.state == state:
+        return
+    reached = asyncio.Event()
+    session.add_listener(lambda old, new, reason: reached.set() if new == state else None)
     async with asyncio.timeout(timeout_s):
-        while session.state != state:
-            await asyncio.sleep(0.005)
+        await reached.wait()
 
 
 async def test_held_deadline_waits_for_the_release() -> None:
