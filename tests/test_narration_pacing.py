@@ -115,7 +115,8 @@ async def test_never_more_than_two_clips_are_out_and_a_third_waits_for_the_first
 
     engine.start_narration()
     await listener.wait_for_clips(2)
-    await settle()
+    await until(lambda: len(tts.calls) == 3)  # the third is made while the first plays
+    await settle()  # and has the chance to be sent, which it must not be
 
     assert len(listener.clips) == 2  # the one playing and the one queued behind it
     assert len(tts.calls) == 3  # the third is already made, and held back until there is room for it
@@ -136,7 +137,8 @@ async def test_the_cursor_is_on_the_sentence_that_is_playing_and_moves_on_the_re
 
     engine.start_narration()
     await listener.wait_for_clips(2)
-    await settle()
+    await until(lambda: engine.current_word_idx == WORDS - 1)
+    await settle()  # and has the chance to move on, which it must not do
 
     assert {sentence_idx for sentence_idx, _ in cursor(listener)} == {0}  # sentence 1 is queued, not playing
     assert (engine.current_sentence_idx, engine.current_word_idx) == (0, WORDS - 1)  # held on its last word
@@ -190,12 +192,12 @@ async def test_a_voice_or_cadence_change_applies_from_the_next_sentence_not_yet_
 
     engine.start_narration()
     await listener.wait_for_clips(2)
-    await settle()  # sentences 0 and 1 are out and sentence 2 is made
+    await until(lambda: len(tts.calls) == 3)  # sentences 0 and 1 are out and sentence 2 is made
     manager.set_cadence(1.5)
     manager.set_voice("lucy-kushinada")
     await listener.ack()
     await listener.wait_for_clips(3)
-    await settle()
+    await until(lambda: len(tts.calls) == 4)  # the sentence after the one just sent is made with the new voice
 
     assert [(call[1], call[2]) for call in tts.calls[:4]] == [
         ("david-martinez", 1.0),
