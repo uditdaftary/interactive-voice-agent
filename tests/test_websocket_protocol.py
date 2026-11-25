@@ -54,7 +54,7 @@ def test_websocket_handshake_and_initial_state_sync(isolated_app) -> None:
             assert init_msg["cadence"] == 1.0
             assert init_msg["sentence_idx"] == 0
             assert init_msg["word_offset"] == 0
-            assert "latency_ms" in init_msg
+            assert init_msg["latency_ms"] is None  # nothing has been measured, so no number is shown
 
             assert manager.connection_count == 1
 
@@ -104,8 +104,8 @@ def test_client_barge_in_trigger_action(isolated_app) -> None:
             barge_in_event = ws.receive_json()
             assert barge_in_event["type"] == "barge_in"
             assert barge_in_event["generation"] == 1
-            assert "latency_ms" in barge_in_event
-            assert "flushed_samples" in barge_in_event
+            assert barge_in_event["latency_ms"] is None  # the server measures neither: null, not a constant
+            assert barge_in_event["flushed_samples"] is None
 
             # 2. Receives updated state_sync with LISTENING
             state_event = ws.receive_json()

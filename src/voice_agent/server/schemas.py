@@ -254,9 +254,9 @@ class StateSyncMessage(BaseProtocolMessage):
         default=0,
         description="Active word index offset within current sentence",
     )
-    latency_ms: float = Field(
-        default=0.0,
-        description="Latest measured round-trip or drain latency in milliseconds",
+    latency_ms: Optional[float] = Field(
+        default=None,
+        description="Latest measured round-trip or drain latency in milliseconds; null when nothing was measured",
     )
     mic_owner: bool = Field(
         default=True,
@@ -290,17 +290,17 @@ class BargeInEventMessage(BaseProtocolMessage):
     """Sub-50ms barge-in interruption event dispatched to client HUD."""
 
     type: Literal["barge_in"] = "barge_in"
-    latency_ms: float = Field(
-        ...,
-        description="Atomic buffer drain execution latency in milliseconds (< 0.05ms target)",
+    latency_ms: Optional[float] = Field(
+        default=None,
+        description="Measured time to stop the audio, in milliseconds; null when nothing was measured",
     )
     generation: int = Field(
         ...,
         description="Monotonically incremented generation counter invalidating stale audio",
     )
-    flushed_samples: int = Field(
-        ...,
-        description="Number of audio samples purged from playback ring buffer",
+    flushed_samples: Optional[int] = Field(
+        default=None,
+        description="Number of audio samples purged from the playback buffer; null when nothing was measured",
     )
 
 

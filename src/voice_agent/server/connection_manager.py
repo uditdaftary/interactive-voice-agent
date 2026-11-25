@@ -77,7 +77,7 @@ class ConnectionManager:
         self._cadence: float = 1.0
         self._sentence_idx: int = 0
         self._word_offset: int = 0
-        self._latency_ms: float = 0.0
+        self._latency_ms: Optional[float] = None  # None until something measures it
         self._generation: int = 0
 
         # STT & Speech Turn-taking
@@ -86,7 +86,7 @@ class ConnectionManager:
 
         # Optional callbacks for DSP / Orchestrator integration
         self._audio_sink: Optional[Callable[[bytes], Any]] = None
-        self._barge_in_callback: Optional[Callable[[int, float], Any]] = None
+        self._barge_in_callback: Optional[Callable[[Optional[int], Optional[float]], Any]] = None
         self._voice_change_callback: Optional[Callable[[str], Any]] = None
         self._mic_source_change_callback: Optional[Callable[[str], Any]] = None
 
@@ -314,8 +314,8 @@ class ConnectionManager:
 
     def announce_barge_in(
         self,
-        flushed_samples: int = 0,
-        latency_ms: float = 0.04,
+        flushed_samples: Optional[int] = None,
+        latency_ms: Optional[float] = None,
     ) -> BargeInEventMessage:
         """Tell everyone the user has cut in: bump the generation, drop the half-recorded turn (the pre-roll stays,
         because the speech that triggered this has already begun), queue the `barge_in` event for the clients and
@@ -350,8 +350,8 @@ class ConnectionManager:
 
     def trigger_barge_in(
         self,
-        flushed_samples: int = 0,
-        latency_ms: float = 0.04,
+        flushed_samples: Optional[int] = None,
+        latency_ms: Optional[float] = None,
     ) -> BargeInEventMessage:
         """Trigger an instantaneous barge-in: announce it, drop a transcription that is still pending (the user is
         starting a newer turn, and the newest turn wins), and switch to LISTENING, which arms its deadline and stops
@@ -450,7 +450,7 @@ class ConnectionManager:
         with self._lock:
             self._audio_sink = callback
 
-    def register_barge_in_callback(self, callback: Callable[[int, float], Any]) -> None:
+    def register_barge_in_callback(self, callback: Callable[[Optional[int], Optional[float]], Any]) -> None:
         """Register a callback invoked when barge-in is triggered."""
         with self._lock:
             self._barge_in_callback = callback

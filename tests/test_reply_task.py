@@ -324,16 +324,20 @@ async def test_a_barge_in_drops_a_transcription_that_is_still_pending() -> None:
 
 async def test_announcing_a_barge_in_does_not_change_the_state() -> None:
     manager = ConnectionManager()
-    seen: list[tuple[int, float]] = []
+    seen: list[tuple[int | None, float | None]] = []
     manager.register_barge_in_callback(lambda flushed, latency: seen.append((flushed, latency)))
     generation = manager.generation
 
-    event = manager.announce_barge_in(flushed_samples=5, latency_ms=0.5)
+    event = manager.announce_barge_in(flushed_samples=5, latency_ms=0.5)  # a caller that did measure
+    unmeasured = manager.announce_barge_in()
 
     assert manager.state == "PAUSED"
-    assert manager.generation == generation + 1
-    assert event.generation == manager.generation
-    assert seen == [(5, 0.5)]
+    assert manager.generation == generation + 2
+    assert event.generation == generation + 1
+    assert (event.flushed_samples, event.latency_ms) == (5, 0.5)
+    assert unmeasured.flushed_samples is None and unmeasured.latency_ms is None  # no constant stands in for a measurement
+    assert manager.get_state_sync_message().latency_ms is None
+    assert seen == [(5, 0.5), (None, None)]
 
 
 # --- the order the clients see ---------------------------------------------------------------------------------------
