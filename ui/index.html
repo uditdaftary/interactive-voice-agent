@@ -774,6 +774,9 @@
 
   function nextSentence() {
     clearNarrativeTimer();
+    // Queued clips belong to the sentence being left. Not while an answer is in progress: it is not part of the
+    // narration and must finish.
+    if (currentState === 'NARRATING' && wsClient) wsClient.stopAllAudio();
     currentSentenceIdx = (currentSentenceIdx + 1) % STORY_PARAGRAPHS.length;
     currentWordIdx = 0;
     renderNarrativeStream();
@@ -787,6 +790,9 @@
 
   function prevSentence() {
     clearNarrativeTimer();
+    // Queued clips belong to the sentence being left. Not while an answer is in progress: it is not part of the
+    // narration and must finish.
+    if (currentState === 'NARRATING' && wsClient) wsClient.stopAllAudio();
     currentSentenceIdx = (currentSentenceIdx - 1 + STORY_PARAGRAPHS.length) % STORY_PARAGRAPHS.length;
     currentWordIdx = 0;
     renderNarrativeStream();
@@ -2057,6 +2063,8 @@
       }
 
       const result = await resp.json();
+      // Whatever is still queued is from the old document, whatever state the session was in.
+      if (wsClient) wsClient.stopAllAudio();
       if (statusEl) {
         statusEl.innerText = `Success: Ingested "${result.title}" (${result.sentence_count} sentences, ${result.word_count} words).`;
       }
