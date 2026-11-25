@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import threading
 from enum import Enum
@@ -98,6 +99,10 @@ class SessionState:
 
     `resume_to` is the resting state (NARRATING or PAUSED) most recently left, so a barge-in or a
     question returns to what the user had before.
+
+    LISTENING has a deadline so the session can never wait for a user who is not there. It is
+    extended while the user speaks and suspended while an utterance is being transcribed; it resumes
+    to `resume_to` when it runs out. Leaving LISTENING always cancels it, so a stale timer never fires.
     """
 
     def __init__(self, *, listen_deadline_s: float, followup_window_s: float) -> None:
@@ -106,6 +111,9 @@ class SessionState:
         self._listeners: list[StateListener] = []
         self.listen_deadline_s = listen_deadline_s
         self.followup_window_s = followup_window_s
+        self._deadline_timer: asyncio.TimerHandle | None = None
+        self._armed_for_s: float | None = None  # the full duration extend/resume re-arm; None outside LISTENING
+        self._deadline_suspended = False
 
     @property
     def state(self) -> SessionStateName:
@@ -131,6 +139,8 @@ class SessionState:
 
         if old == "NARRATING" or old == "PAUSED":
             self._resume_to = old
+        if old == "LISTENING" and to != "LISTENING":
+            self._clear_deadline()
         self._state = to
         for listener in list(self._listeners):
             try:
@@ -146,3 +156,61 @@ class SessionState:
             logger.debug("resume ignored in %s (%s)", self._state, reason)
             return False
         return self.transition(self._resume_to, reason)
+
+    # --- LISTENING deadline ---------------------------------------------------------------------------------------
+
+    def enter_listening(self, reason: str, *, followup: bool = False) -> bool:
+        """Go to LISTENING and arm its deadline: the follow-up window after a reply, else the barge-in deadline.
+
+        Needs a running loop for the timer. Without one this raises before changing anything, rather than
+        leaving a session in LISTENING that nothing will ever end.
+        """
+        loop = asyncio.get_running_loop()
+        if not self.transition("LISTENING", reason):
+            return False
+        self._armed_for_s = self.followup_window_s if followup else self.listen_deadline_s
+        self._deadline_suspended = False
+        self._arm_deadline(loop)
+        return True
+
+    def extend_deadline(self) -> None:
+        """Re-arm the full duration. Call it whenever the user is heard speaking."""
+        if self._can_rearm():
+            self._arm_deadline(asyncio.get_running_loop())
+
+    def suspend_deadline(self) -> None:
+        """Stop the clock while an utterance is with the recognizer, so a slow transcript cannot expire the turn."""
+        if self._state == "LISTENING" and self._armed_for_s is not None:
+            self._deadline_suspended = True
+            self._cancel_timer()
+
+    def resume_deadline(self) -> None:
+        """Start the clock again with the full duration."""
+        if self._deadline_suspended:
+            self._deadline_suspended = False
+            if self._can_rearm():
+                self._arm_deadline(asyncio.get_running_loop())
+
+    def _can_rearm(self) -> bool:
+        return self._state == "LISTENING" and self._armed_for_s is not None and not self._deadline_suspended
+
+    def _arm_deadline(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._cancel_timer()
+        if self._armed_for_s is not None:
+            self._deadline_timer = loop.call_later(self._armed_for_s, self._expire)
+
+    def _cancel_timer(self) -> None:
+        if self._deadline_timer is not None:
+            self._deadline_timer.cancel()
+            self._deadline_timer = None
+
+    def _clear_deadline(self) -> None:
+        self._cancel_timer()
+        self._armed_for_s = None
+        self._deadline_suspended = False
+
+    def _expire(self) -> None:
+        self._deadline_timer = None
+        # The timer is cancelled on every exit from LISTENING, so these guards only matter if that ever regresses.
+        if self._state == "LISTENING" and not self._deadline_suspended:
+            self.resume("deadline")

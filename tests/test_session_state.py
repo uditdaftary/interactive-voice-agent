@@ -1,5 +1,6 @@
-"""SessionState: legal transitions, resume_to and listeners."""
+"""SessionState: legal transitions, resume_to, listeners and the LISTENING deadline."""
 
+import asyncio
 import logging
 
 import pytest
@@ -151,3 +152,132 @@ def test_listener_exception_logged_others_run(caplog: pytest.LogCaptureFixture) 
     assert len(failures) == 1
     assert failures[0].exc_info is not None
     assert failures[0].exc_info[0] is RuntimeError
+
+
+# --- LISTENING deadline -----------------------------------------------------------------------------------------------
+
+DEADLINE = 0.05
+
+
+async def settle(seconds: float) -> None:
+    await asyncio.sleep(seconds)
+
+
+async def test_deadline_returns_to_resume_to() -> None:
+    session = make_session(listen_deadline_s=DEADLINE)
+    session.transition("NARRATING", "start")
+
+    assert session.enter_listening("barge_in") is True
+    assert session.state == "LISTENING"
+
+    await settle(DEADLINE * 5)
+
+    assert session.state == "NARRATING"
+
+
+async def test_deadline_resumes_to_paused_when_it_started_paused() -> None:
+    session = make_session(listen_deadline_s=DEADLINE)
+
+    session.enter_listening("push_to_talk")
+    await settle(DEADLINE * 5)
+
+    assert session.state == "PAUSED"
+
+
+async def test_extend_keeps_listening() -> None:
+    session = make_session(listen_deadline_s=DEADLINE)
+    session.transition("NARRATING", "start")
+    session.enter_listening("barge_in")
+
+    for _ in range(10):  # 0.2 s in total, four times the deadline
+        await settle(0.02)
+        session.extend_deadline()
+        assert session.state == "LISTENING"
+
+    await settle(DEADLINE * 5)  # no more speech
+    assert session.state == "NARRATING"
+
+
+async def test_suspended_deadline_never_fires() -> None:
+    session = make_session(listen_deadline_s=DEADLINE)
+    session.transition("NARRATING", "start")
+    session.enter_listening("barge_in")
+
+    session.suspend_deadline()
+    await settle(DEADLINE * 3)
+    assert session.state == "LISTENING"
+
+    session.extend_deadline()  # speech while suspended does not re-arm either
+    await settle(DEADLINE * 3)
+    assert session.state == "LISTENING"
+
+    session.resume_deadline()  # re-arms the full duration
+    await settle(DEADLINE * 5)
+    assert session.state == "NARRATING"
+
+
+async def test_leaving_listening_cancels_timer() -> None:
+    session = make_session(listen_deadline_s=DEADLINE)
+    session.transition("NARRATING", "start")
+    session.enter_listening("barge_in")
+
+    session.transition("REPLYING", "question")
+    await settle(DEADLINE * 5)
+
+    assert session.state == "REPLYING"
+
+
+async def test_reentering_listening_does_not_inherit_a_stale_suspension() -> None:
+    session = make_session(listen_deadline_s=DEADLINE)
+    session.enter_listening("barge_in")
+    session.suspend_deadline()
+    session.transition("REPLYING", "question")
+
+    session.enter_listening("barge_in")
+    await settle(DEADLINE * 5)
+
+    assert session.state == "PAUSED"  # resumed: the new LISTENING turn armed its own deadline
+
+
+async def test_followup_uses_followup_window() -> None:
+    session = make_session(listen_deadline_s=30.0, followup_window_s=DEADLINE)
+    session.transition("NARRATING", "start")
+    session.transition("REPLYING", "question")
+
+    session.enter_listening("followup", followup=True)
+    await settle(DEADLINE * 5)
+
+    assert session.state == "NARRATING"
+
+
+async def test_barge_in_uses_the_listen_deadline_not_the_followup_window() -> None:
+    session = make_session(listen_deadline_s=30.0, followup_window_s=DEADLINE)
+    session.transition("NARRATING", "start")
+
+    session.enter_listening("barge_in")
+    await settle(DEADLINE * 5)
+
+    assert session.state == "LISTENING"
+
+
+def test_enter_listening_without_a_running_loop_changes_nothing() -> None:
+    session = make_session()
+    session.transition("NARRATING", "start")
+
+    with pytest.raises(RuntimeError):
+        session.enter_listening("barge_in")
+
+    assert session.state == "NARRATING"
+
+
+async def test_extend_and_suspend_outside_listening_are_noops() -> None:
+    session = make_session(listen_deadline_s=DEADLINE)
+    session.transition("NARRATING", "start")
+
+    session.extend_deadline()
+    session.suspend_deadline()
+    session.resume_deadline()
+    session.enter_listening("barge_in")
+    await settle(DEADLINE * 5)
+
+    assert session.state == "NARRATING"  # the earlier no-op suspend did not leave the deadline suspended
