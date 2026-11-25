@@ -540,7 +540,9 @@ class NarrationEngine:
         if not final_reply:
             raise EmptyReply("the language model returned no text")
 
-        # Only a real reply goes into the multi-turn history.
+        # The history keeps any non-empty text the client returns, and a reply stays in it even if speaking it fails.
+        # The fallback line the client yields when the model is unreachable is non-empty, so it is kept too; telling
+        # it apart from a real answer needs the client to say which it was.
         self._conversation_history.append({"role": "user", "content": clean_query})
         self._conversation_history.append({"role": "assistant", "content": final_reply})
         if len(self._conversation_history) > 12:
