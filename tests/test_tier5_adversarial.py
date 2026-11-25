@@ -75,7 +75,7 @@ def test_concurrency_rapid_multi_client_connect_burst() -> None:
 
 
 def test_concurrency_simultaneous_audio_streaming() -> None:
-    """Stress test: 8 clients streaming 24kHz audio frames simultaneously into the server."""
+    """Stress test: 8 clients streaming 24kHz audio frames at once. Only the microphone owner's frames are taken."""
     manager = ConnectionManager()
     app = create_app(connection_manager=manager)
 
@@ -108,13 +108,19 @@ def test_concurrency_simultaneous_audio_streaming() -> None:
                     ws.send_bytes(test_pcm)
 
             import time
-            expected_chunks = client_count * chunks_per_client
+            expected_chunks = chunks_per_client  # the first tab to send audio owns the microphone; the other seven are dropped
             for _ in range(50):
                 with chunk_lock:
                     if len(received_chunks) >= expected_chunks:
                         break
                 time.sleep(0.01)
 
+            # Frames from the other seven were sent before or after these, so let the sockets drain before counting.
+            for ws in websockets:
+                ws.send_json({"type": "set_cadence", "cadence": 1.1})
+            for ws in websockets:
+                while ws.receive_json().get("cadence") != 1.1:
+                    pass
             with chunk_lock:
                 assert len(received_chunks) == expected_chunks
 

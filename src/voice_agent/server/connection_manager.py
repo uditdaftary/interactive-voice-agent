@@ -4,7 +4,7 @@ Manages active client connections, session state synchronization,
 thread-safe broadcasting, and clean disconnection cleanup without memory leaks.
 """
 
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
+from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional, Union
 import asyncio
 import concurrent.futures
 import json
@@ -47,6 +47,10 @@ class ConnectionManager:
     ) -> None:
         self._lock = threading.RLock()
         self.active_connections: List[WebSocket] = []
+        # The connection that claimed the microphone and the audio. None means the oldest connection has them.
+        self._explicit_owner: Optional[WebSocket] = None
+        self._owner_listeners: List[Callable[[], None]] = []
+        self._ignored_logged: set[WebSocket] = set()
         self.tasks = TaskRegistry()
 
         if session is None:
@@ -93,10 +97,7 @@ class ConnectionManager:
 
     def disconnect(self, websocket: WebSocket) -> None:
         """Deregister a WebSocket client cleanly without memory leaks."""
-        with self._lock:
-            if websocket in self.active_connections:
-                self.active_connections.remove(websocket)
-            remaining = len(self.active_connections)
+        remaining = self._forget(websocket)
         logger.info(f"WebSocket client disconnected. Active connections: {remaining}")
         if remaining == 0:
             # Nobody is listening: stop speaking to an empty room. A client that connects later is told PAUSED.
@@ -107,6 +108,8 @@ class ConnectionManager:
         with self._lock:
             sockets = list(self.active_connections)
             self.active_connections.clear()
+            self._explicit_owner = None
+            self._ignored_logged.clear()
 
         for ws in sockets:
             try:
@@ -119,6 +122,85 @@ class ConnectionManager:
         """Current number of active WebSocket connections."""
         with self._lock:
             return len(self.active_connections)
+
+    # ========================================================================
+    # Owner connection
+    # ========================================================================
+
+    @property
+    def owner(self) -> Optional[WebSocket]:
+        """The one connection whose microphone, push-to-talk and playback reports count, and that gets the audio:
+        the connection that claimed it, else the oldest, so a tab without microphone permission still hears the
+        narration. None only when nobody is connected."""
+        with self._lock:
+            return self._owner_locked()
+
+    def _owner_locked(self) -> Optional[WebSocket]:
+        if self._explicit_owner is not None:
+            return self._explicit_owner
+        return self.active_connections[0] if self.active_connections else None
+
+    def is_owner(self, websocket: WebSocket) -> bool:
+        return self.owner is websocket
+
+    def claim_ownership(self, websocket: WebSocket, *, explicit: bool) -> bool:
+        """Offer `websocket` the microphone and the audio; True if it owns them afterwards.
+
+        An explicit claim (the user chose this tab as the microphone) always takes over. An implicit one (a tab
+        sent audio) counts only while nobody has claimed it yet: the first tab to send audio keeps it.
+        """
+        with self._lock:
+            if websocket not in self.active_connections:
+                return False
+            before = self._owner_locked()
+            if explicit or self._explicit_owner is None:
+                self._explicit_owner = websocket
+            owner = self._owner_locked()
+        if owner is not before:
+            self._owner_changed()
+        return owner is websocket
+
+    def add_owner_listener(self, listener: Callable[[], None]) -> None:
+        """Call `listener()` whenever the owner becomes a different connection."""
+        self._owner_listeners.append(listener)
+
+    def ignore_from_non_owner(self, websocket: WebSocket, what: str) -> None:
+        """Note that `what` from a connection that does not own the microphone was dropped. One INFO line per
+        connection: a second tab streams audio the whole time, and a line per frame would bury the log."""
+        with self._lock:
+            first = websocket not in self._ignored_logged
+            self._ignored_logged.add(websocket)
+        if first:
+            logger.info("Ignoring %s from a connection that is not the microphone owner; later ones are not logged.", what)
+
+    def _forget(self, websocket: WebSocket) -> int:
+        """Remove a connection, whether it left or was dropped after a failed send, and hand its ownership on to the
+        oldest one left. Returns how many connections remain."""
+        with self._lock:
+            before = self._owner_locked()
+            if websocket in self.active_connections:
+                self.active_connections.remove(websocket)
+            if self._explicit_owner is websocket:
+                self._explicit_owner = None
+            self._ignored_logged.discard(websocket)
+            after = self._owner_locked()
+            remaining = len(self.active_connections)
+        if after is not None and after is not before:
+            self._owner_changed()
+        return remaining
+
+    def _owner_changed(self) -> None:
+        """A different connection owns the microphone now. Whatever the old owner had started (a push-to-talk hold, a
+        half-recorded turn) was its own and is dropped; then every tab is told and the listeners react. Event loop only."""
+        if self.state in LISTENING_STATES:
+            self.session.release_deadline_hold()
+            self.clear_audio_turn()
+        self.broadcast_state_sync()
+        for listener in list(self._owner_listeners):
+            try:
+                listener()
+            except Exception:  # noqa: BLE001  # one broken listener must not keep the others from running; logged here
+                logger.exception("owner listener failed")
 
     # ========================================================================
     # Session State Accessors & Mutators
@@ -139,7 +221,7 @@ class ConnectionManager:
     def _announce_state(self, old: str, new: str, reason: str) -> None:
         """The one place a state change is broadcast. With nobody connected there is nobody to tell."""
         if self.connection_count:
-            self.broadcast_json_sync(self.get_state_sync_message())
+            self.broadcast_state_sync()
 
     @property
     def active_voice(self) -> str:
@@ -279,10 +361,11 @@ class ConnectionManager:
             if self._accumulator is not None:
                 self._accumulator.reset()
 
-    def get_state_sync_message(self) -> StateSyncMessage:
+    def get_state_sync_message(self, mic_owner: bool = True) -> StateSyncMessage:
         """Generate a StateSyncMessage snapshot from current session state."""
         with self._lock:
             return StateSyncMessage(
+                mic_owner=mic_owner,
                 state=self.session.state,
                 active_voice=self._active_voice,
                 mic_source=self._mic_source,
@@ -333,8 +416,23 @@ class ConnectionManager:
 
     async def send_state_sync(self, websocket: WebSocket) -> None:
         """Send current state sync snapshot to a specific client connection."""
-        msg = self.get_state_sync_message()
+        msg = self.get_state_sync_message(mic_owner=self.is_owner(websocket))
         await websocket.send_text(msg.model_dump_json())
+
+    async def broadcast_state(self) -> None:
+        """Send every connection the state snapshot, each with its own `mic_owner`."""
+        await self._send_snapshot(self.get_state_sync_message())
+
+    def broadcast_state_sync(self, loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
+        """`broadcast_state` from synchronous code. The snapshot is taken now and queued behind earlier messages, like
+        `broadcast_json_sync`, so a later change does not leak into a message about this one."""
+        snapshot = self.get_state_sync_message()
+        self._post(lambda: self._send_snapshot(snapshot), loop, "broadcast_state_sync")
+
+    async def _send_snapshot(self, snapshot: StateSyncMessage) -> None:
+        await self._fan_out(
+            lambda ws: ws.send_text(snapshot.model_copy(update={"mic_owner": self.is_owner(ws)}).model_dump_json())
+        )
 
     async def send_error(self, websocket: WebSocket, detail: str) -> None:
         """Tell one client its last message was rejected. `detail` must not echo the client's payload."""
@@ -366,8 +464,8 @@ class ConnectionManager:
         dead_set = {ws for ws in results if ws is not None}
 
         if dead_set:
-            with self._lock:
-                self.active_connections = [ws for ws in self.active_connections if ws not in dead_set]
+            for ws in dead_set:
+                self._forget(ws)
             await asyncio.gather(*[self._close_dropped(ws) for ws in dead_set])
 
     @staticmethod
@@ -439,7 +537,17 @@ class ConnectionManager:
         started after it: a state_sync reaches clients before the messages the new state causes. From another
         thread it is posted to the loop, in the order the loop receives it.
         """
-        target_loop = self._usable_loop(loop, "broadcast_json_sync")
+        self._post(lambda: self.broadcast_json(message), loop, "broadcast_json_sync")
+
+    def _post(
+        self,
+        make_coroutine: Callable[[], Coroutine[Any, Any, None]],
+        loop: Optional[asyncio.AbstractEventLoop],
+        caller: str,
+    ) -> None:
+        """Run a broadcast on the loop without waiting for it. The coroutine is made only once a loop is known to take
+        it, so a dropped message never leaves an unawaited coroutine behind."""
+        target_loop = self._usable_loop(loop, caller)
         if target_loop is None:
             return
         try:
@@ -447,9 +555,9 @@ class ConnectionManager:
         except RuntimeError:  # a thread with no loop of its own
             on_target_loop = False
         if on_target_loop:
-            self.tasks.spawn(self.broadcast_json(message), "broadcast")
+            self.tasks.spawn(make_coroutine(), "broadcast")
         else:
-            fut = asyncio.run_coroutine_threadsafe(self.broadcast_json(message), target_loop)
+            fut = asyncio.run_coroutine_threadsafe(make_coroutine(), target_loop)
             fut.add_done_callback(self._log_future_exception)
 
     def broadcast_bytes_sync(

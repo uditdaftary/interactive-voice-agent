@@ -156,7 +156,7 @@ class NarrationEngine:
         else:
             # LISTENING or REPLYING: the HUD takes a cursor_update to mean narration is running, so it is told
             # through the state snapshot (which carries the cursor) and keeps showing what the session is doing.
-            self.manager.broadcast_json_sync(self.manager.get_state_sync_message())
+            self.manager.broadcast_state_sync()
 
     def next_sentence(self) -> None:
         """Move to the start of the next sentence, wrapping at the end."""
@@ -196,7 +196,7 @@ class NarrationEngine:
             self._ensure_narration()
         if session.state == state_before:
             # No transition announced the new document and cursor.
-            self.manager.broadcast_json_sync(self.manager.get_state_sync_message())
+            self.manager.broadcast_state_sync()
         logger.info(f"Loaded document '{doc.title}' with {len(self.sentences)} sentences, {doc.total_words} words.")
 
     def start_narration(self) -> None:

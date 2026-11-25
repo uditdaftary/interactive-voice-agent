@@ -1,6 +1,7 @@
 """Broadcast fan-out survives stalled and broken clients, and says so (M5, L2)."""
 
 import asyncio
+import json
 import logging
 from typing import Any
 
@@ -100,7 +101,8 @@ async def test_broken_socket_dropped_and_logged_by_type(short_send_timeout: None
         await manager.broadcast_bytes(b"x")
 
     assert manager.active_connections == [healthy]
-    assert healthy.texts == ["hello"]
+    assert healthy.texts[0] == "hello"  # the broken socket was the oldest, so the survivor is also told it owns the audio
+    assert json.loads(healthy.texts[1])["mic_owner"] is True
     assert "RuntimeError" in caplog.text
     assert "Cannot call" not in caplog.text  # type name only, never the exception text
 
@@ -130,7 +132,8 @@ async def test_slow_client_does_not_delay_the_others(short_send_timeout: None) -
 
     await manager.broadcast_text("hello")
 
-    assert events == ["stalled send started", "healthy delivered", "stalled send abandoned"]
+    # The last delivery is the survivor being told it owns the audio now: the stalled client was the oldest.
+    assert events == ["stalled send started", "healthy delivered", "stalled send abandoned", "healthy delivered"]
 
 
 async def test_close_that_also_stalls_does_not_hang_the_broadcast(short_send_timeout: None) -> None:

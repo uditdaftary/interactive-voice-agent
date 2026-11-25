@@ -249,6 +249,10 @@ class StateSyncMessage(BaseProtocolMessage):
         default=0.0,
         description="Latest measured round-trip or drain latency in milliseconds",
     )
+    mic_owner: bool = Field(
+        default=True,
+        description="True when this connection owns the microphone and the audio; false for every other tab",
+    )
 
 
 class VADEventMessage(BaseProtocolMessage):
