@@ -277,7 +277,7 @@ def test_barge_in_from_paused_returns_to_paused() -> None:
 def test_speaking_extends_deadline() -> None:
     manager = ConnectionManager()
     manager.accumulator = SpeechTurnAccumulator(sample_rate=SAMPLE_RATE, silence_timeout_ms=60_000)
-    deadline_s = 0.4
+    deadline_s = 0.2
     app = create_app(
         connection_manager=manager,
         settings=replace(Settings(), barge_in_listen_s=deadline_s),
@@ -295,26 +295,24 @@ def test_speaking_extends_deadline() -> None:
         started = time.monotonic()
         while time.monotonic() - started < deadline_s * 2:
             ws.send_bytes(LOUD_20MS)
-            time.sleep(0.05)
+            time.sleep(0.04)
             assert manager.state == "LISTENING"
 
         # The user stopped talking: the deadline now runs out.
-        assert wait_until(lambda: manager.state != "LISTENING", timeout_s=deadline_s * 10)
+        assert wait_until(lambda: manager.state != "LISTENING", timeout_s=5)
 
 
 async def test_deadline_waits_while_stt_runs() -> None:
-    class SlowStt:
-        def transcribe(self, audio: bytes) -> str:
-            time.sleep(0.4)  # three deadlines long
-            return ""
-
-    manager = ConnectionManager(session=SessionState(listen_deadline_s=0.1, followup_window_s=0.1))
+    manager = ConnectionManager(session=SessionState(listen_deadline_s=0.05, followup_window_s=0.05))
     manager.session.enter_listening("barge_in")
+    stt = GatedStt("")
 
-    work = asyncio.create_task(process_stt_utterance(b"\x01\x00" * 1600, manager, SlowStt(), engine=None))
-    await asyncio.sleep(0.25)
-    assert manager.state == "LISTENING"  # the utterance is still with the recognizer
+    work = asyncio.create_task(process_stt_utterance(b"\x01\x00" * 1600, manager, stt, engine=None))
+    await asyncio.to_thread(stt.started.wait, 5)
+    await asyncio.sleep(0.15)  # three deadlines, with the utterance still at the recognizer
+    assert manager.state == "LISTENING"
 
+    stt.release.set()
     await work
     assert manager.state == "PAUSED"  # rejected transcript: back to where the session was
 
@@ -323,14 +321,14 @@ async def test_deadline_waits_while_the_stt_model_loads(monkeypatch: pytest.Monk
     """The first utterance builds the recognizer, which can take seconds. That time is not the user's to lose."""
     from voice_agent.server import websocket as websocket_module
 
-    load_s = 0.4
+    loaded = asyncio.Event()
 
     async def slow_load(app: Any) -> FakeStt:
-        await asyncio.sleep(load_s)
+        await loaded.wait()
         return FakeStt("")
 
     monkeypatch.setattr(websocket_module, "_ensure_stt_engine", slow_load)
-    manager = ConnectionManager(session=SessionState(listen_deadline_s=0.1, followup_window_s=0.1))
+    manager = ConnectionManager(session=SessionState(listen_deadline_s=0.05, followup_window_s=0.05))
     manager.accumulator = SpeechTurnAccumulator(sample_rate=SAMPLE_RATE, silence_timeout_ms=60_000)
     manager.session.enter_listening("barge_in")
     manager.accumulator.arm()
@@ -344,9 +342,10 @@ async def test_deadline_waits_while_the_stt_model_loads(monkeypatch: pytest.Monk
         '{"type": "voice_end"}', Socket(), manager  # type: ignore[arg-type]
     )
     work = asyncio.create_task(handle)
-    await asyncio.sleep(load_s * 0.6)  # six deadlines in, the model is still loading
+    await asyncio.sleep(0.15)  # three deadlines in, the model is still loading
     assert manager.state == "LISTENING"
 
+    loaded.set()
     await work
     assert manager.state == "PAUSED"  # empty transcript: back to where the session was
 
@@ -358,7 +357,7 @@ async def test_a_failed_stt_load_does_not_leave_the_deadline_suspended(monkeypat
         raise RuntimeError("no model")
 
     monkeypatch.setattr(websocket_module, "_ensure_stt_engine", failing_load)
-    manager = ConnectionManager(session=SessionState(listen_deadline_s=0.1, followup_window_s=0.1))
+    manager = ConnectionManager(session=SessionState(listen_deadline_s=0.05, followup_window_s=0.05))
     manager.session.enter_listening("barge_in")
 
     class Socket:
@@ -366,9 +365,8 @@ async def test_a_failed_stt_load_does_not_leave_the_deadline_suspended(monkeypat
 
     with pytest.raises(RuntimeError):
         await websocket_module._active_stt_engine(Socket(), manager, None)  # type: ignore[arg-type]
-    await asyncio.sleep(0.4)
 
-    assert manager.state == "PAUSED"  # the deadline still ran out
+    await wait_for(lambda: manager.state == "PAUSED")  # the deadline still ran out
 
 
 # --- the reply flow, through the session ---------------------------------------------------------------------------
@@ -581,7 +579,7 @@ async def test_each_app_owns_its_session_and_engine() -> None:
 
 def test_quiet_push_to_talk_is_answered_after_the_deadline_would_have_run_out() -> None:
     """Speech below the server's threshold never extends the deadline; the client's voice_end ends the turn."""
-    deadline_s = 0.15
+    deadline_s = 0.1
     manager = ConnectionManager()
     manager.accumulator = SpeechTurnAccumulator(sample_rate=SAMPLE_RATE, silence_timeout_ms=60_000)
     manager.stt_engine = FakeStt("what is arasaka")
@@ -596,13 +594,13 @@ def test_quiet_push_to_talk_is_answered_after_the_deadline_would_have_run_out() 
         ws.send_json({"type": "barge_in_trigger"})
         read_until_state(ws, "LISTENING")
         started = time.monotonic()
-        while time.monotonic() - started < deadline_s * 3:
+        while time.monotonic() - started < deadline_s * 2.5:
             ws.send_bytes(quiet)
             time.sleep(0.02)
             assert manager.state == "LISTENING"  # three deadlines of quiet speech later, still listening
 
         ws.send_json({"type": "voice_end"})
-        assert wait_until(lambda: engine.handle_user_interruption.called)
+        assert wait_until(lambda: engine.handle_user_interruption.called, timeout_s=5)
 
     engine.handle_user_interruption.assert_called_once_with("what is arasaka")
 

@@ -170,11 +170,24 @@ def test_listener_exception_logged_others_run(caplog: pytest.LogCaptureFixture) 
 
 # --- LISTENING deadline -----------------------------------------------------------------------------------------------
 
-DEADLINE = 0.05
+# Tests that expect the deadline to fire wait for the state change (`wait_for_state`) and finish as soon as it comes,
+# whatever the machine's speed. Only tests that expect it NOT to fire sleep, for `QUIET` and no longer.
+DEADLINE = 0.03
+QUIET = DEADLINE * 3
 
 
 async def settle(seconds: float) -> None:
     await asyncio.sleep(seconds)
+
+
+async def wait_for_state(session: SessionState, state: str, timeout_s: float = 5.0) -> None:
+    """Return as soon as the session enters `state`; a slow machine costs time only up to `timeout_s`."""
+    if session.state == state:
+        return
+    reached = asyncio.Event()
+    session.add_listener(lambda old, new, reason: reached.set() if new == state else None)
+    async with asyncio.timeout(timeout_s):
+        await reached.wait()
 
 
 async def test_deadline_returns_to_resume_to() -> None:
@@ -184,35 +197,31 @@ async def test_deadline_returns_to_resume_to() -> None:
     assert session.enter_listening("barge_in") is True
     assert session.state == "LISTENING"
 
-    await settle(DEADLINE * 5)
-
-    assert session.state == "NARRATING"
+    await wait_for_state(session, "NARRATING")
 
 
 async def test_deadline_resumes_to_paused_when_it_started_paused() -> None:
     session = make_session(listen_deadline_s=DEADLINE)
 
     session.enter_listening("push_to_talk")
-    await settle(DEADLINE * 5)
 
-    assert session.state == "PAUSED"
+    await wait_for_state(session, "PAUSED")
 
 
 async def test_extend_keeps_listening() -> None:
     # A long deadline against short extension steps: a busy machine can delay a step a long way without
     # the deadline legitimately running out in between.
-    deadline = 0.2
+    deadline = 0.15
     session = make_session(listen_deadline_s=deadline)
     session.transition("NARRATING", "start")
     session.enter_listening("barge_in")
 
-    for _ in range(15):  # 0.3 s in total, longer than the deadline
-        await settle(0.02)
+    for _ in range(8):  # 0.24 s in total, longer than the deadline
+        await settle(0.03)
         session.extend_deadline()
         assert session.state == "LISTENING"
 
-    await settle(deadline * 3)  # no more speech
-    assert session.state == "NARRATING"
+    await wait_for_state(session, "NARRATING")  # no more speech
 
 
 async def test_suspended_deadline_never_fires() -> None:
@@ -221,16 +230,15 @@ async def test_suspended_deadline_never_fires() -> None:
     session.enter_listening("barge_in")
 
     session.suspend_deadline()
-    await settle(DEADLINE * 3)
+    await settle(QUIET)
     assert session.state == "LISTENING"
 
     session.extend_deadline()  # speech while suspended does not re-arm either
-    await settle(DEADLINE * 3)
+    await settle(QUIET)
     assert session.state == "LISTENING"
 
     session.resume_deadline()  # re-arms the full duration
-    await settle(DEADLINE * 5)
-    assert session.state == "NARRATING"
+    await wait_for_state(session, "NARRATING")
 
 
 async def test_leaving_listening_cancels_timer() -> None:
@@ -239,7 +247,7 @@ async def test_leaving_listening_cancels_timer() -> None:
     session.enter_listening("barge_in")
 
     session.transition("REPLYING", "question")
-    await settle(DEADLINE * 5)
+    await settle(QUIET)
 
     assert session.state == "REPLYING"
 
@@ -251,9 +259,8 @@ async def test_reentering_listening_does_not_inherit_a_stale_suspension() -> Non
     session.transition("REPLYING", "question")
 
     session.enter_listening("barge_in")
-    await settle(DEADLINE * 5)
 
-    assert session.state == "PAUSED"  # resumed: the new LISTENING turn armed its own deadline
+    await wait_for_state(session, "PAUSED")  # the new LISTENING turn armed its own deadline
 
 
 async def test_followup_uses_followup_window() -> None:
@@ -262,9 +269,8 @@ async def test_followup_uses_followup_window() -> None:
     session.transition("REPLYING", "question")
 
     session.enter_listening("followup", followup=True)
-    await settle(DEADLINE * 5)
 
-    assert session.state == "NARRATING"
+    await wait_for_state(session, "NARRATING")
 
 
 async def test_barge_in_uses_the_listen_deadline_not_the_followup_window() -> None:
@@ -272,7 +278,7 @@ async def test_barge_in_uses_the_listen_deadline_not_the_followup_window() -> No
     session.transition("NARRATING", "start")
 
     session.enter_listening("barge_in")
-    await settle(DEADLINE * 5)
+    await settle(QUIET)
 
     assert session.state == "LISTENING"
 
@@ -295,22 +301,11 @@ async def test_extend_and_suspend_outside_listening_are_noops() -> None:
     session.suspend_deadline()
     session.resume_deadline()
     session.enter_listening("barge_in")
-    await settle(DEADLINE * 5)
 
-    assert session.state == "NARRATING"  # the earlier no-op suspend did not leave the deadline suspended
+    await wait_for_state(session, "NARRATING")  # the earlier no-op suspend did not leave the deadline suspended
 
 
 # --- holding the deadline for a client that records until it is done ------------------------------------------------
-
-
-async def wait_for_state(session: SessionState, state: str, timeout_s: float = 5.0) -> None:
-    """Return as soon as the session enters `state`; a slow machine costs time only up to `timeout_s`."""
-    if session.state == state:
-        return
-    reached = asyncio.Event()
-    session.add_listener(lambda old, new, reason: reached.set() if new == state else None)
-    async with asyncio.timeout(timeout_s):
-        await reached.wait()
 
 
 async def test_held_deadline_waits_for_the_release() -> None:
@@ -319,12 +314,12 @@ async def test_held_deadline_waits_for_the_release() -> None:
     session.enter_listening("barge_in")
 
     session.hold_deadline(30.0)
-    await settle(DEADLINE * 4)
+    await settle(QUIET)
     assert session.state == "LISTENING"
     session.extend_deadline()  # speech does not matter while held
     session.suspend_deadline()
     session.resume_deadline()
-    await settle(DEADLINE * 4)
+    await settle(QUIET)
     assert session.state == "LISTENING"
 
     session.release_deadline_hold()  # the normal deadline starts now
@@ -339,7 +334,7 @@ async def test_hold_is_bounded() -> None:
 
     session.hold_deadline(DEADLINE * 2)  # the cap, then the normal deadline on top of it
     await settle(DEADLINE)
-    assert session.state == "LISTENING"
+    assert session.state == "LISTENING"  # inside the cap
 
     await wait_for_state(session, "NARRATING")
 
