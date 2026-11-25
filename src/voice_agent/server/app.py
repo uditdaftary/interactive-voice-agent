@@ -368,8 +368,7 @@ def create_app(
     async def ask_question(body: AskRequest):
         """Trigger an ad-hoc voice question interruption with live web search grounding."""
         eng: NarrationEngine = app.state.narration_engine
-        mgr: ConnectionManager = app.state.connection_manager
-        mgr.tasks.spawn(eng.handle_user_interruption(body.query), "reply", replace=True)
+        eng.ask(body.query)
         return {"status": "ok", "query": body.query}
 
     @app.post("/api/narration/control", dependencies=[Depends(security.require_json_content_type)])

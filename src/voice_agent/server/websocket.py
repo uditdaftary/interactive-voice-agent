@@ -125,8 +125,8 @@ async def process_stt_utterance(
             latency_ms=latency_ms,
         )
         await manager.broadcast_json(msg)
-        if engine is not None and hasattr(engine, "handle_unrecognized_interruption"):
-            manager.tasks.spawn(engine.handle_unrecognized_interruption(), "reply", replace=True)
+        if engine is not None and hasattr(engine, "report_unrecognized"):
+            engine.report_unrecognized()
         elif manager.state in LISTENING_STATES:
             manager.session.resume("stt_rejected")
 
@@ -199,7 +199,7 @@ async def handle_client_text_message(
 
     elif isinstance(msg, QueryInterruptionMessage):
         if engine is not None:
-            manager.tasks.spawn(engine.handle_user_interruption(msg.query), "reply", replace=True)
+            engine.ask(msg.query)
         else:
             manager.trigger_barge_in()
             manager.session.transition("REPLYING", "question")

@@ -397,6 +397,16 @@ class ErrorMessage(BaseProtocolMessage):
     )
 
 
+class ReplyErrorMessage(BaseProtocolMessage):
+    """A reply could not be produced or spoken. The session carries on; nothing else about the failure is exposed."""
+
+    type: Literal["reply_error"] = "reply_error"
+    detail: str = Field(
+        ...,
+        description="The exception type name only, never its message",
+    )
+
+
 ServerMessage = Union[
     StateSyncMessage,
     VADEventMessage,
@@ -405,6 +415,7 @@ ServerMessage = Union[
     PromptEnvelopeMessage,
     TelemetryMessage,
     UserSpeechTranscriptMessage,
+    ReplyErrorMessage,
     ErrorMessage,
 ]
 

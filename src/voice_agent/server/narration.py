@@ -5,6 +5,7 @@ and real-time LLM query interruption with live internet web search grounding.
 """
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from typing import List, Optional, Tuple
@@ -26,6 +27,7 @@ from voice_agent.server.schemas import (
     CursorUpdateMessage,
     ErrorMessage,
     PromptEnvelopeMessage,
+    ReplyErrorMessage,
 )
 from voice_agent.settings import Settings, load_settings
 from voice_agent.tts.synthesizer import synthesize_sentence
@@ -41,6 +43,15 @@ SearchFn = Callable[[str, int], Awaitable[str]]
 async def _default_tts(text: str, voice_id: str, cadence: float) -> tuple[bytes | None, str]:
     # Resolves synthesize_sentence at call time so the module attribute stays patchable.
     return await synthesize_sentence(text, voice_id=voice_id, cadence=cadence)
+
+
+# Spoken when a reply fails or the user's speech was not understood. Neutral on purpose: no persona, no detail.
+REPLY_ERROR_LINE = "Something went wrong answering that."
+UNRECOGNIZED_LINE = "I didn't catch that."
+
+
+class EmptyReply(Exception):
+    """The language model finished without producing any text."""
 
 
 # Default resident narrative text (Cyberpunk 2077 / Edgerunners excerpt)
@@ -87,11 +98,8 @@ class NarrationEngine:
         self.document_title: str = "Night City: Santo Domingo Run"
         self.current_sentence_idx: int = 0
         self.current_word_idx: int = 0
-        self._lock = asyncio.Lock()
-        self._is_replying = False
         self._conversation_history: List[dict] = []
-        self._interruption_count: int = 0
-        self._listening_ended = asyncio.Event()  # set whenever the session leaves LISTENING
+        self._cue_pre_roll = False  # narration is restarting after an interruption: the HUD gets a cue first
 
         # The engine owns turn-taking timing, so it hands the configured waits to the session it drives.
         session = self.manager.session
@@ -101,8 +109,6 @@ class NarrationEngine:
 
     def _on_state_change(self, old: str, new: str, reason: str) -> None:
         """Keep the background tasks in step with the session state."""
-        if old == "LISTENING" and new != "LISTENING":
-            self._listening_ended.set()
         if new == "PAUSED" and not self.manager.session.resuming:
             # Pausing stops everything that speaks or listens, wherever the pause came from. (Returning to a
             # paused session after a reply or a deadline is not a pause: nothing is left to stop, and the
@@ -112,12 +118,14 @@ class NarrationEngine:
         elif new == "LISTENING":
             # A barge-in, from any source, silences narration; the deadline or the reply starts it again.
             self.manager.tasks.cancel("narration")
-            if old == "REPLYING" and reason == "barge_in":
-                # The user spoke over the answer: it stops, so nothing narrates under a reply that is still
-                # running. The reply's own follow-up window (reason "followup") and a replacement reply
-                # (which cancels the old one by name) are not barge-ins.
+            if reason == "barge_in":
+                # The user spoke: any reply stops, whatever state the session was in when it started, so
+                # nothing narrates or answers over them. The reply's own follow-up window (reason "followup")
+                # and a replacement reply (which cancels the old one by name) are not barge-ins.
                 self.manager.tasks.cancel("reply")
         elif new == "NARRATING":
+            # Coming back from a question or a listening window is announced to the HUD; a plain resume is not.
+            self._cue_pre_roll = old in ("LISTENING", "REPLYING")
             self._ensure_narration()
 
     def _ensure_narration(self) -> None:
@@ -154,6 +162,14 @@ class NarrationEngine:
     async def _narration_loop(self) -> None:
         """Main narration loop: synthesizes each sentence, streams audio, and steps cursor."""
         try:
+            if self._cue_pre_roll:
+                self._cue_pre_roll = False
+                # Queued behind the state_sync that started this loop, ahead of the first cursor_update.
+                await self.manager.broadcast_json(PromptEnvelopeMessage(
+                    state="NARRATING",
+                    context=self.sentences[self.current_sentence_idx % len(self.sentences)] if self.sentences else "",
+                    pre_roll_words=4,
+                ))
             while self.manager.state == "NARRATING":
                 if not self.sentences:
                     await asyncio.sleep(self.settings.idle_poll_s)
@@ -266,110 +282,186 @@ class NarrationEngine:
         )
         return [text for text, _ in scored]
 
+    # --- replies --------------------------------------------------------------------------------------------------
+
+    def ask(self, query: str) -> None:
+        """Answer `query` now: stop what is playing, take the session over and speak the answer as the `reply` task.
+
+        Synchronous on purpose. The state has changed when this returns, so nothing the caller does next (another
+        question, a pause, an audio frame) can see a half-started reply, and the messages the change causes are queued
+        ahead of everything the reply sends. A reply that is already running is replaced, and a transcription still
+        pending is dropped: this question is the newest turn.
+        """
+        self._begin_reply("question", barge_in=True)
+        self.manager.tasks.spawn(self._reply(query), "reply", replace=True)
+
     async def handle_user_interruption(self, query: str) -> None:
-        """Handle real-time barge-in question: grounds query with web search & book passages, queries LLM, speaks answer."""
-        async with self._lock:
-            # 1. Instantly terminate any background narration loop to avoid race conditions
-            await self.manager.tasks.cancel_and_wait("narration")
+        """`ask`, but the caller waits for the whole exchange: the answer spoken and the follow-up window open."""
+        self._begin_reply("question", barge_in=True)
+        await self._reply(query)
 
-            # 2. Instantaneous barge-in drain (< 50ms). The session broadcasts each state change itself.
-            self.manager.trigger_barge_in()
-            self.manager.session.transition("REPLYING", "question")
+    def report_unrecognized(self) -> None:
+        """Say that the speech was not understood, then go back to what the session was doing."""
+        self._begin_reply("unrecognized", barge_in=False)
+        self.manager.tasks.spawn(self._guarded(self._say_unrecognized()), "reply", replace=True)
 
-            current_context = self.sentences[self.current_sentence_idx] if self.sentences else ""
-            voice_id = self.manager.active_voice or "david-martinez"
-            cadence = self.manager.cadence or 1.0
+    def _begin_reply(self, reason: str, *, barge_in: bool) -> None:
+        tasks = self.manager.tasks
+        tasks.cancel("stt")  # the caller may itself be the stt task, which `cancel` leaves alone
+        tasks.cancel("narration")
+        if barge_in:
+            self.manager.announce_barge_in()
+        self.manager.session.transition("REPLYING", reason)
 
-            # 3. Retrieve relevant passages with BM25 & Gaussian proximity boost
-            scored_passages = self.search_document_passages_with_scores(
-                query,
-                max_passages=3,
-                current_sentence_idx=self.current_sentence_idx,
+    async def _reply(self, query: str) -> None:
+        await self._guarded(self._answer(query))
+
+    async def _guarded(self, body: Awaitable[None]) -> None:
+        """Run a reply body so that no way of ending it strands the session in REPLYING.
+
+        Success, and cancellation, leave the state to the body and to whoever cancelled it: a barge-in, a pause, a
+        replacement reply, a document load and a shutdown each already moved the session. Cancellation is not
+        an error and is never reported as one. Any other failure is logged, reported and spoken, and the session
+        is returned to what it was doing.
+        """
+        try:
+            await body
+        except Exception as exc:  # noqa: BLE001  # logged with its traceback, reported to the HUD, and the session is returned
+            logger.exception("Reply failed")
+            await self._report_failure(exc)
+
+    async def _report_failure(self, exc: Exception) -> None:
+        # Each step is on its own: a client that cannot be told, or a synthesizer that cannot speak, must not keep
+        # the session from being returned. Cancellation here propagates, and then the canceller owns the state.
+        try:
+            await self.manager.broadcast_json(ReplyErrorMessage(detail=type(exc).__name__))
+        except Exception:  # noqa: BLE001  # logged; the neutral line and the resume still follow
+            logger.exception("Could not tell the clients that the reply failed")
+        try:
+            await self._speak(REPLY_ERROR_LINE)
+        except Exception:  # noqa: BLE001  # logged; the resume still follows
+            logger.exception("Could not speak the reply-error line")
+        self.manager.session.resume("reply_error")
+
+    async def _speak(self, text: str, *, settle_s: float | None = None) -> None:
+        """Synthesize `text`, send it, and wait for it to play. The wait is an estimate, not an acknowledgement."""
+        voice_id = self.manager.active_voice or "david-martinez"
+        cadence = self.manager.cadence or 1.0
+        audio_bytes, _fmt = await self.tts(text, voice_id, cadence)
+        if audio_bytes:
+            await self.manager.broadcast_bytes(audio_bytes)
+        if settle_s is None:
+            settle_s = max(
+                self.settings.min_reply_playback_s,
+                len(text.split()) / (self.settings.reply_words_per_s * cadence),
             )
-            doc_passages = [text for text, _ in scored_passages]
-            best_doc_score = scored_passages[0][1] if scored_passages else 0.0
-            is_authoritative = best_doc_score >= 2.5
+        await asyncio.sleep(settle_s)
 
-            # 4. Live Internet Web Search Grounding (skipped if document passage has high BM25 confidence >= 2.5)
-            web_grounding = ""
-            if self.llm.web_search_enabled and not is_authoritative:
-                await self.manager.broadcast_json(PromptEnvelopeMessage(
-                    state="LISTENING",
-                    context=f"Searching web and document for: {query[:50]}...",
-                    query=query,
-                    reply="",
-                ))
-                web_grounding = await self.search(query, 3)
+    async def _say_unrecognized(self) -> None:
+        current_context = self.sentences[self.current_sentence_idx] if self.sentences else ""
+        await self.manager.broadcast_json(PromptEnvelopeMessage(
+            state="REPLYING",
+            context=current_context,
+            query="",
+            reply=UNRECOGNIZED_LINE,
+        ))
+        await self._speak(UNRECOGNIZED_LINE, settle_s=self.settings.unrecognized_pause_s)
+        # Back to what the session was doing; its state listener restarts narration if that was narrating.
+        self.manager.session.resume("reply_done")
 
-            # 5. Context Budgeting & ChatML Sanitization (enforces 2048-token limit for RTX 3050 4GB VRAM)
-            clean_query = sanitize_chatml(query)
-            clean_query = truncate_to_tokens(clean_query, max_tokens=256, from_end=False)
-            clean_current_context = sanitize_chatml(current_context)
-            clean_passages = [sanitize_chatml(p) for p in doc_passages]
-            clean_web_grounding = sanitize_chatml(web_grounding)
+    async def _answer(self, query: str) -> None:
+        """Ground the question, stream the answer, speak it and open the follow-up window. Raises on any failure."""
+        current_context = self.sentences[self.current_sentence_idx] if self.sentences else ""
+        voice_id = self.manager.active_voice or "david-martinez"
 
-            character_prompt = CHARACTER_PERSONA_PROMPTS.get(
-                voice_id,
-                (
-                    "You are an interactive conversational voice audiobook narrator. "
-                    "The user interrupted the book narration to ask you a question. "
-                    "Answer concisely, helpfully, and naturally in 1 to 3 spoken sentences. "
-                    "Use the provided book context and web search results when answering."
-                ),
-            )
+        # 1. Retrieve relevant passages with BM25 & Gaussian proximity boost
+        scored_passages = self.search_document_passages_with_scores(
+            query,
+            max_passages=3,
+            current_sentence_idx=self.current_sentence_idx,
+        )
+        doc_passages = [text for text, _ in scored_passages]
+        best_doc_score = scored_passages[0][1] if scored_passages else 0.0
+        is_authoritative = best_doc_score >= 2.5
 
-            # Calculate token allowances
-            system_tokens = estimate_tokens(character_prompt) + 30
-            output_headroom = 256  # Reserved for 3-sentence generation
-            max_context_budget = 2048
-            available_user_tokens = max(256, max_context_budget - system_tokens - output_headroom)
-            query_tokens = estimate_tokens(clean_query)
-            remaining_context_budget = max(100, available_user_tokens - query_tokens)
-
-            context_parts = []
-            if clean_passages:
-                if is_authoritative:
-                    header = "Authoritative Document Passages (Primary Source of Truth):\n"
-                else:
-                    header = "Passages from Document:\n"
-                context_parts.append(header + "\n".join(f"- {p}" for p in clean_passages))
-            if clean_current_context:
-                context_parts.append(f"Currently Reading Sentence: \"{clean_current_context}\"")
-            if clean_web_grounding:
-                context_parts.append(f"Live Internet Web Search Results:\n{clean_web_grounding}")
-
-            raw_context_block = "\n\n".join(context_parts)
-            context_block = truncate_to_tokens(raw_context_block, max_tokens=remaining_context_budget, from_end=False)
-
-            self._interruption_count += 1
-            current_turn = self._interruption_count
-
-            messages = [
-                {
-                    "role": "system",
-                    "content": character_prompt,
-                },
-            ]
-            # Inject up to 3 prior turns of conversational context for multi-turn dialogue
-            for prev_turn in self._conversation_history[-6:]:
-                messages.append(prev_turn)
-
-            messages.append({
-                "role": "user",
-                "content": f"{context_block}\n\nUser Question: {clean_query}",
-            })
-
-            # 6. Stream LLM tokens to Prompt Envelope
-            accumulated_reply = ""
-
+        # 2. Live Internet Web Search Grounding (skipped if document passage has high BM25 confidence >= 2.5)
+        web_grounding = ""
+        if self.llm.web_search_enabled and not is_authoritative:
             await self.manager.broadcast_json(PromptEnvelopeMessage(
                 state="REPLYING",
-                context=current_context,
+                context=f"Searching web and document for: {query[:50]}...",
                 query=query,
-                reply="Formulating answer...",
+                reply="",
             ))
+            web_grounding = await self.search(query, 3)
 
-            async for token in self.llm.stream_generate(messages, character_id=voice_id):
+        # 3. Context Budgeting & ChatML Sanitization (enforces 2048-token limit for RTX 3050 4GB VRAM)
+        clean_query = sanitize_chatml(query)
+        clean_query = truncate_to_tokens(clean_query, max_tokens=256, from_end=False)
+        clean_current_context = sanitize_chatml(current_context)
+        clean_passages = [sanitize_chatml(p) for p in doc_passages]
+        clean_web_grounding = sanitize_chatml(web_grounding)
+
+        character_prompt = CHARACTER_PERSONA_PROMPTS.get(
+            voice_id,
+            (
+                "You are an interactive conversational voice audiobook narrator. "
+                "The user interrupted the book narration to ask you a question. "
+                "Answer concisely, helpfully, and naturally in 1 to 3 spoken sentences. "
+                "Use the provided book context and web search results when answering."
+            ),
+        )
+
+        # Calculate token allowances
+        system_tokens = estimate_tokens(character_prompt) + 30
+        output_headroom = 256  # Reserved for 3-sentence generation
+        max_context_budget = 2048
+        available_user_tokens = max(256, max_context_budget - system_tokens - output_headroom)
+        query_tokens = estimate_tokens(clean_query)
+        remaining_context_budget = max(100, available_user_tokens - query_tokens)
+
+        context_parts = []
+        if clean_passages:
+            if is_authoritative:
+                header = "Authoritative Document Passages (Primary Source of Truth):\n"
+            else:
+                header = "Passages from Document:\n"
+            context_parts.append(header + "\n".join(f"- {p}" for p in clean_passages))
+        if clean_current_context:
+            context_parts.append(f"Currently Reading Sentence: \"{clean_current_context}\"")
+        if clean_web_grounding:
+            context_parts.append(f"Live Internet Web Search Results:\n{clean_web_grounding}")
+
+        raw_context_block = "\n\n".join(context_parts)
+        context_block = truncate_to_tokens(raw_context_block, max_tokens=remaining_context_budget, from_end=False)
+
+        messages = [
+            {
+                "role": "system",
+                "content": character_prompt,
+            },
+        ]
+        # Inject up to 3 prior turns of conversational context for multi-turn dialogue
+        for prev_turn in self._conversation_history[-6:]:
+            messages.append(prev_turn)
+
+        messages.append({
+            "role": "user",
+            "content": f"{context_block}\n\nUser Question: {clean_query}",
+        })
+
+        # 4. Stream LLM tokens to the prompt envelope
+        await self.manager.broadcast_json(PromptEnvelopeMessage(
+            state="REPLYING",
+            context=current_context,
+            query=query,
+            reply="Formulating answer...",
+        ))
+        accumulated_reply = ""
+        # The stream is closed here, whatever ends the loop: a cancelled or failed reply must not leave a
+        # connection to the model open until the generator is garbage collected.
+        async with contextlib.aclosing(self.llm.stream_generate(messages, character_id=voice_id)) as stream:
+            async for token in stream:
                 accumulated_reply += token
                 # Periodic telemetry update
                 await self.manager.broadcast_json(PromptEnvelopeMessage(
@@ -379,107 +471,27 @@ class NarrationEngine:
                     reply=accumulated_reply.strip(),
                 ))
 
-            if not accumulated_reply.strip():
-                if "johnny" in voice_id:
-                    final_reply = "Got it, samurai. Keep your eyes on the road and your chrome hot. Ready when you are."
-                elif "lucy" in voice_id:
-                    final_reply = "Understood. The signal is clear. Ready to continue our narrative, David."
-                elif "v-female" in voice_id:
-                    final_reply = "Copy that. Objectives locked and tactical feed active. Resuming mission."
-                elif "v-male" in voice_id or voice_id == "v":
-                    final_reply = "Understood choom. Keep your iron ready and stay frosty. Ready when you are."
-                else:
-                    final_reply = "Understood choomba! Chrome is spooled up and ready. Let's roll whenever you say!"
-            else:
-                final_reply = accumulated_reply.strip()
+        final_reply = accumulated_reply.strip()
+        if not final_reply:
+            raise EmptyReply("the language model returned no text")
 
-            # Record turns in multi-turn conversation history
-            self._conversation_history.append({"role": "user", "content": clean_query})
-            self._conversation_history.append({"role": "assistant", "content": final_reply})
-            if len(self._conversation_history) > 12:
-                self._conversation_history = self._conversation_history[-12:]
+        # Only a real reply goes into the multi-turn history.
+        self._conversation_history.append({"role": "user", "content": clean_query})
+        self._conversation_history.append({"role": "assistant", "content": final_reply})
+        if len(self._conversation_history) > 12:
+            self._conversation_history = self._conversation_history[-12:]
 
-            # 7. Synthesize LLM answer to speech audio and stream to client
-            audio_bytes, fmt = await self.tts(final_reply, voice_id, cadence)
-            if audio_bytes:
-                await self.manager.broadcast_bytes(audio_bytes)
+        # 5. Synthesize the answer to speech and stream it to the clients
+        await self._speak(final_reply)
 
-            # Estimate duration to let speech finish playing in client
-            reply_words = len(final_reply.split())
-            playback_delay = max(
-                self.settings.min_reply_playback_s,
-                reply_words / (self.settings.reply_words_per_s * cadence),
-            )
-            await asyncio.sleep(playback_delay)
-
-            # 8. Conversational Turn-Taking Window: leave comms open for follow-up before auto-resuming
-            self._listening_ended.clear()
-            self.manager.session.enter_listening("followup", followup=True)
-            await self.manager.broadcast_json(PromptEnvelopeMessage(
-                state="LISTENING",
-                context=current_context,
-                query=query,
-                reply=final_reply,
-            ))
-
-            # The session deadline ends this window (and a user who is speaking extends it), so wait for the
-            # session to leave LISTENING rather than counting polls. A newer question or a pause means someone
-            # else owns the session now.
-            await self._listening_ended.wait()
-            if self._interruption_count != current_turn or self.manager.state != "NARRATING":
-                return
-
-            # 9. The deadline resumed narration (its state listener restarted the loop): show the pre-roll cue
-            await self.manager.broadcast_json(PromptEnvelopeMessage(
-                state="NARRATING",
-                context=current_context,
-                query=query,
-                reply=final_reply,
-                pre_roll_words=4,
-            ))
-
-    async def handle_unrecognized_interruption(self) -> None:
-        """Handle cases where barge-in was triggered but speech could not be recognized."""
-        async with self._lock:
-            await self.manager.tasks.cancel_and_wait("narration")
-
-            voice_id = self.manager.active_voice or "david-martinez"
-            cadence = self.manager.cadence or 1.0
-            current_context = self.sentences[self.current_sentence_idx] if self.sentences else ""
-
-            if "johnny" in voice_id:
-                recovery_text = "Static on the comms, samurai. Didn't catch that. Resuming the run."
-            elif "lucy" in voice_id:
-                recovery_text = "Signal dropped in the subnet. Let's return to the narrative, David."
-            elif "v-female" in voice_id or "v-male" in voice_id or voice_id == "v":
-                recovery_text = "Comms were fuzzy, choom—didn't copy that. Getting back to the op."
-            else:
-                recovery_text = "Couldn't hear ya over the street noise, choombatta! Let's get right back to the story."
-
-            self.manager.session.transition("REPLYING", "unrecognized")
-            await self.manager.broadcast_json(PromptEnvelopeMessage(
-                state="REPLYING",
-                context=current_context,
-                query="",
-                reply=recovery_text,
-            ))
-
-            audio_bytes, fmt = await self.tts(recovery_text, voice_id, cadence)
-            if audio_bytes:
-                await self.manager.broadcast_bytes(audio_bytes)
-
-            await asyncio.sleep(self.settings.unrecognized_pause_s)
-
-            # Pre-roll resumption cue, but only if narration is what the session returns to
-            if self.manager.session.resume_to == "NARRATING":
-                await self.manager.broadcast_json(PromptEnvelopeMessage(
-                    state="NARRATING",
-                    context=current_context,
-                    query="",
-                    reply=recovery_text,
-                    pre_roll_words=4,
-                ))
-                await asyncio.sleep(self.settings.preroll_pause_s)
-
-            # Back to what the session was doing; the state listener restarts narration if that was narrating.
-            self.manager.session.resume("reply_done")
+        # 6. Conversational turn-taking window: leave comms open for a follow-up. The reply ends here; the session
+        # deadline closes the window, and a question asked inside it is a reply of its own.
+        self.manager.clear_audio_turn()
+        self.manager.session.enter_listening("followup", followup=True)
+        # Queued, not awaited: it must reach the clients after the state_sync that the line above announced.
+        self.manager.broadcast_json_sync(PromptEnvelopeMessage(
+            state="LISTENING",
+            context=current_context,
+            query=query,
+            reply=final_reply,
+        ))

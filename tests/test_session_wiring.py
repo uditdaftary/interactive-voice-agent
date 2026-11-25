@@ -13,7 +13,17 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from fakes import BlockingLLM, FakeLLM, FakeSearch, FakeStt, FakeTts, GatedStt, RecordingSocket, wait_until
+from fakes import (
+    BlockingLLM,
+    FakeLLM,
+    FakeSearch,
+    FakeStt,
+    FakeTts,
+    GatedStt,
+    RecordingSocket,
+    wait_for_state,
+    wait_until,
+)
 from voice_agent.orchestrator.state_machine import SessionState
 from voice_agent.server.app import create_app
 from voice_agent.server.connection_manager import ConnectionManager
@@ -354,7 +364,7 @@ async def test_question_while_narrating_resumes_narration() -> None:
 
     await engine.handle_user_interruption("who is lucy")
 
-    assert manager.state == "NARRATING"
+    await wait_for_state(manager.session, "NARRATING")  # the follow-up window closes, and narration goes on
     await wait_for(lambda: manager.tasks.get("narration") is not None)
     await manager.tasks.cancel_all()
 
@@ -377,7 +387,10 @@ async def test_unrecognized_utterance_returns_to_where_the_session_was() -> None
     engine = make_engine(manager, settings=Settings.fast())
     manager.session.transition("LISTENING", "push_to_talk")
 
-    await engine.handle_unrecognized_interruption()
+    engine.report_unrecognized()
+    reply = manager.tasks.get("reply")
+    assert reply is not None
+    await asyncio.wait([reply], timeout=5)
 
     assert manager.state == "PAUSED"
 
@@ -392,7 +405,7 @@ async def test_transcript_is_routed_through_a_tracked_reply_task() -> None:
 
     assert reply is not None
     await reply
-    assert manager.state == "PAUSED"
+    await wait_for_state(manager.session, "PAUSED")  # the follow-up window closes back to where the session was
 
 
 async def test_shutdown_leaves_no_tasks() -> None:
@@ -419,7 +432,7 @@ async def test_transcript_is_dropped_when_the_session_left_listening(transcript:
     manager = ConnectionManager()
     engine = MagicMock()
     engine.handle_user_interruption = AsyncMock()
-    engine.handle_unrecognized_interruption = AsyncMock()
+    engine.report_unrecognized = MagicMock()
     stt = GatedStt(transcript)
     manager.session.enter_listening("barge_in")
 
@@ -430,7 +443,7 @@ async def test_transcript_is_dropped_when_the_session_left_listening(transcript:
 
     assert await work is None
     engine.handle_user_interruption.assert_not_called()
-    engine.handle_unrecognized_interruption.assert_not_called()
+    engine.report_unrecognized.assert_not_called()
     assert manager.tasks.get("reply") is None
     assert manager.state == left_for
 
@@ -621,19 +634,19 @@ async def test_barge_in_then_deadline_resume_arrives_in_order() -> None:
 
 
 @pytest.mark.parametrize("resting", ["NARRATING", "PAUSED"])
-async def test_unrecognized_speech_cues_narration_only_when_narration_resumes(resting: str) -> None:
+async def test_unrecognized_speech_resumes_to_where_the_session_was(resting: str) -> None:
     manager = ConnectionManager()
     engine = make_engine(manager, settings=Settings.fast())
-    socket = await connected(manager)
     if resting == "NARRATING":
         engine.start_narration()
         await wait_for(lambda: manager.tasks.get("narration") is not None)
     manager.trigger_barge_in()
 
-    await engine.handle_unrecognized_interruption()
-    await asyncio.sleep(0.05)
+    engine.report_unrecognized()
+    reply = manager.tasks.get("reply")
+    assert reply is not None
+    await asyncio.wait([reply], timeout=5)
 
-    cues = [m for m in socket.messages("prompt_envelope") if m["state"] == "NARRATING"]
-    assert bool(cues) == (resting == "NARRATING")
     assert manager.state == resting
+    assert (manager.tasks.get("narration") is not None) == (resting == "NARRATING")
     await manager.tasks.cancel_all()

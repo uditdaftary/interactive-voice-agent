@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from fakes import FakeLLM, FakeSearch, FakeTts
+from fakes import FakeLLM, FakeSearch, FakeTts, wait_for_state
 from voice_agent.server.app import create_app
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.narration import NarrationEngine
@@ -34,7 +34,7 @@ async def test_engine_uses_injected_tts_and_search(cancel_narration) -> None:
     assert [query for query, _ in search.calls] == ["who is lucy"]
     # The search result reached the prompt the LLM saw.
     assert search.result in llm.calls[0][-1]["content"]
-    assert manager.state == "PAUSED"  # asked while paused, so the session returns to paused
+    await wait_for_state(manager.session, "PAUSED")  # asked while paused: the follow-up window ends back there
 
 
 async def test_search_seam_is_skipped_when_web_search_is_off(cancel_narration) -> None:

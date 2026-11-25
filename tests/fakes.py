@@ -53,6 +53,16 @@ class FakeTts:
         return [text for text, _, _ in self.calls]
 
 
+async def wait_for_state(session: Any, state: str, timeout_s: float = 5.0) -> None:
+    """Return as soon as `session` is in `state`, woken by its own listener rather than by polling."""
+    if session.state == state:
+        return
+    reached = asyncio.Event()
+    session.add_listener(lambda old, new, reason: reached.set() if new == state else None)
+    async with asyncio.timeout(timeout_s):
+        await reached.wait()
+
+
 class FailingTts(FakeTts):
     """A synthesizer that raises for the texts in `fail_on` (for every text when `fail_on` is None).
 

@@ -19,7 +19,6 @@ def test_defaults_match_legacy_literals() -> None:
     assert s.min_reply_playback_s == 2.0
     assert s.reply_words_per_s == 2.2
     assert s.followup_window_s == 2.5
-    assert s.preroll_pause_s == 0.8
     assert s.unrecognized_pause_s == 2.0
     assert s.words_per_s == 2.5
     assert s.min_sentence_s == 1.2
@@ -66,7 +65,6 @@ def test_fast_zeroes_timings() -> None:
         "inter_sentence_pause_s",
         "min_reply_playback_s",
         "followup_window_s",
-        "preroll_pause_s",
         "unrecognized_pause_s",
         "min_sentence_s",
     ):
