@@ -180,6 +180,8 @@ def test_websocket_binary_pcm_ignored_when_not_listening() -> None:
 
             # Send harmless action to verify connection is alive
             ws.send_json({"type": "set_cadence", "cadence": 1.2})
+            late_stop = ws.receive_json()  # the voice_end is answered with where the session is
+            assert late_stop["type"] == "state_sync" and late_stop["state"] == "PAUSED"
             resp = ws.receive_json()
             assert resp["type"] == "state_sync"
             assert resp["cadence"] == 1.2

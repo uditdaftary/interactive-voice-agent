@@ -211,7 +211,11 @@ async def handle_client_text_message(
     elif isinstance(msg, VoiceEndMessage):
         # Whatever happens to the turn, the client is done recording: the hold ends and the normal deadline starts.
         manager.session.release_deadline_hold()
-        if manager.state in LISTENING_STATES and not manager.session.turn_claimed:
+        if manager.state not in LISTENING_STATES:
+            # The turn ended before the client's Stop (silence, a typed question, a navigation). The client is waiting
+            # on a state change that already happened, so tell it where the session is now.
+            await manager.send_state_sync(websocket)
+        elif not manager.session.turn_claimed:
             acc = getattr(manager, "accumulator", None)
             utterance = acc.flush() if acc is not None else None
             submit_turn(websocket, manager, engine, stt_engine, utterance, getattr(msg, "fallback_query", None))

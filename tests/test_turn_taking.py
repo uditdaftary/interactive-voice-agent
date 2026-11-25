@@ -48,9 +48,15 @@ def silence(seconds: float) -> bytes:
 
 
 class StubSocket:
-    """What the turn code needs of a WebSocket: the app it belongs to."""
+    """What the turn code needs of a WebSocket: the app it belongs to, and somewhere to send a message."""
 
     app = object()
+
+    def __init__(self) -> None:
+        self.sent: list[dict[str, Any]] = []
+
+    async def send_text(self, text: str) -> None:
+        self.sent.append(json.loads(text))
 
 
 def quick_manager(deadline_s: float = 0.03) -> ConnectionManager:
@@ -323,6 +329,48 @@ async def test_slow_stt_in_the_followup_window_gives_one_reply_and_never_starts_
     await manager.tasks.cancel_all()
 
 
+# --- a Stop that arrives after the turn is over ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("resting", ["NARRATING", "PAUSED", "REPLYING"])
+async def test_a_voice_end_after_the_turn_is_over_is_answered_with_the_state(resting: str) -> None:
+    """The client shows "Transcribing" after Stop and clears it on the next state change; none may be coming."""
+    manager = ConnectionManager()
+    llm = BlockingLLM()
+    engine = make_engine(manager, llm=llm)
+    if resting == "NARRATING":
+        engine.start_narration()
+    elif resting == "REPLYING":
+        engine.ask("who is lucy")
+        async with asyncio.timeout(5):
+            await llm.started.wait()
+    client = StubSocket()
+
+    await handle_client_text_message('{"type": "voice_end"}', client, manager, engine, FakeStt("never used"))  # type: ignore[arg-type]
+
+    assert [message["type"] for message in client.sent] == ["state_sync"]
+    assert client.sent[0]["state"] == resting
+    assert manager.state == resting  # and nothing else happened
+    await manager.tasks.cancel_all()
+
+
+async def test_a_voice_end_during_transcription_is_left_to_the_turn_in_flight() -> None:
+    manager = ConnectionManager()
+    engine = make_engine(manager, llm=BlockingLLM())
+    stt = GatedStt("spoken question")
+    manager.session.enter_listening("barge_in")
+    submit(manager, engine, stt)
+    await stt.wait_started()
+    client = StubSocket()
+
+    await handle_client_text_message('{"type": "voice_end"}', client, manager, engine, stt)  # type: ignore[arg-type]
+
+    assert client.sent == []  # still LISTENING: the transcript and the reply will say what became of the turn
+    assert len(stt.inputs) == 1
+    stt.release.set()
+    await manager.tasks.cancel_all()
+
+
 # --- a turn without audio ------------------------------------------------------------------------------------------------
 
 
@@ -336,9 +384,11 @@ async def test_an_empty_voice_end_returns_to_where_the_session_was_at_once(resti
         engine.start_narration()
     manager.trigger_barge_in()  # the default deadline is seconds away
     assert manager.state == "LISTENING"
+    client = StubSocket()
 
-    await handle_client_text_message('{"type": "voice_end"}', StubSocket(), manager, engine, stt)  # type: ignore[arg-type]
+    await handle_client_text_message('{"type": "voice_end"}', client, manager, engine, stt)  # type: ignore[arg-type]
 
+    assert client.sent == []  # the turn is ending now: the state change that follows tells the client
     assert manager.state == resting
     assert stt.calls == []
     assert manager.tasks.get("stt") is None
