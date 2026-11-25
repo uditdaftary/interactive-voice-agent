@@ -271,3 +271,18 @@ async def test_cancel_never_cancels_the_calling_task() -> None:
     assert reached_the_end.is_set()
     assert other.cancelled()  # a different task of the same name is still cancelled
     await registry.cancel_all()
+
+
+def test_cancel_works_without_a_running_loop() -> None:
+    registry = TaskRegistry()
+    loop = asyncio.new_event_loop()
+    try:
+        task = loop.create_task(sleeper(), name="narration")
+        registry._tasks.append(task)
+
+        registry.cancel("narration")  # a synchronous teardown, after the test's loop has stopped
+
+        loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
+        assert task.cancelled()
+    finally:
+        loop.close()
