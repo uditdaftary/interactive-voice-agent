@@ -11,7 +11,7 @@ import threading
 import time
 from collections.abc import AsyncGenerator, Callable, Collection, Sequence
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 
@@ -228,10 +228,15 @@ class GatedStt:
 
 
 class RecordingSocket:
-    """Stands in for a WebSocket: records every text frame the manager sends it, in arrival order."""
+    """Stands in for a WebSocket: records every text frame the manager sends it, in arrival order.
+
+    `frames` is the type of every message and "blob" for every binary frame, in the order they arrived together.
+    """
 
     def __init__(self) -> None:
         self.texts: list[str] = []
+        self.blobs: list[bytes] = []
+        self.frames: list[str] = []
         self._arrived = asyncio.Event()
 
     async def accept(self) -> None:
@@ -239,10 +244,13 @@ class RecordingSocket:
 
     async def send_text(self, text: str) -> None:
         self.texts.append(text)
+        self.frames.append(json.loads(text)["type"])
         self._arrived.set()
 
     async def send_bytes(self, data: bytes) -> None:
-        return None
+        self.blobs.append(data)
+        self.frames.append("blob")
+        self._arrived.set()
 
     async def close(self, code: int = 1000) -> None:
         return None
@@ -265,3 +273,65 @@ class RecordingSocket:
             while not condition():
                 self._arrived.clear()
                 await self._arrived.wait()
+
+
+class PlayedClip(NamedTuple):
+    segment_id: int
+    generation: int
+    gap_s: float
+    data: bytes
+
+
+class PlayerSocket(RecordingSocket):
+    """A tab that plays audio: `clips` lists every clip it was sent, with the announcement that came before it.
+
+    It reports a clip finished the way the browser does, with a `playback_done` message that goes through the real
+    handler: at once for every clip when `auto_ack` is set, otherwise when the test calls `ack`.
+    """
+
+    def __init__(self, manager: Any = None, *, auto_ack: bool = False) -> None:
+        super().__init__()
+        self.manager = manager
+        self.auto_ack = auto_ack
+        self.clips: list[PlayedClip] = []
+        self.unacked: list[PlayedClip] = []
+        self._announced: dict[str, Any] | None = None
+        self._acks: set[asyncio.Task[None]] = set()
+
+    async def send_text(self, text: str) -> None:
+        await super().send_text(text)
+        message = json.loads(text)
+        if message["type"] == "audio_segment":
+            self._announced = message
+
+    async def send_bytes(self, data: bytes) -> None:
+        await super().send_bytes(data)
+        assert self._announced is not None, "a clip arrived without the audio_segment that announces it"
+        clip = PlayedClip(self._announced["segment_id"], self._announced["generation"], self._announced["gap_s"], data)
+        self._announced = None
+        self.clips.append(clip)
+        self.unacked.append(clip)
+        if self.auto_ack:
+            task = asyncio.get_running_loop().create_task(self.ack(clip))
+            self._acks.add(task)
+            task.add_done_callback(self._acks.discard)
+
+    async def ack(self, clip: PlayedClip | None = None, *, segment_id: int | None = None, generation: int | None = None) -> None:
+        """Report a clip played: the oldest unacknowledged one, or `clip`. `segment_id` and `generation` override what
+        is reported, to send a report that is wrong."""
+        from voice_agent.server.websocket import handle_client_text_message
+
+        if clip is None:
+            clip = self.unacked[0]
+        if clip in self.unacked:
+            self.unacked.remove(clip)
+        report = {
+            "type": "playback_done",
+            "segment_id": clip.segment_id if segment_id is None else segment_id,
+            "generation": clip.generation if generation is None else generation,
+        }
+        await handle_client_text_message(json.dumps(report), self, self.manager)
+
+    async def wait_for_clips(self, count: int, timeout_s: float = 5.0) -> None:
+        await self.wait_until(lambda: len(self.clips) >= count, timeout_s)
+

@@ -152,13 +152,14 @@ def test_concurrency_abrupt_client_drops_during_active_broadcast() -> None:
             # Server attempts broadcasts - must not crash or deadlock
             for i in range(5):
                 asyncio.run(manager.broadcast_json({"type": "telemetry", "seq": i}))
-                asyncio.run(manager.broadcast_bytes(b"\x00\x00" * 240))
+                asyncio.run(manager.send_audio(b"\x00\x00" * 240))  # to the owner: ws_stay, the oldest connection
 
             # ws_stay must have received all broadcasts
             for i in range(5):
                 json_msg = ws_stay.receive_json()
                 assert json_msg["type"] == "telemetry"
                 assert json_msg["seq"] == i
+                assert ws_stay.receive_json()["type"] == "audio_segment"
                 bytes_msg = ws_stay.receive_bytes()
                 assert len(bytes_msg) == 480
 

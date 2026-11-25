@@ -14,7 +14,10 @@ from fastapi import WebSocket
 from pydantic import BaseModel
 
 from voice_agent.orchestrator.state_machine import SessionState, SessionStateName
+from voice_agent.server.playback import PlaybackTracker
 from voice_agent.server.schemas import (
+    AudioSegmentMessage,
+    AudioStopMessage,
     BargeInEventMessage,
     ErrorMessage,
     StateSyncMessage,
@@ -52,6 +55,10 @@ class ConnectionManager:
         self._owner_listeners: List[Callable[[], None]] = []
         self._ignored_logged: set[WebSocket] = set()
         self.tasks = TaskRegistry()
+        # Audio: one clip at a time goes out, each announced just before its blob; `_generation` orders everything
+        # audible (see `stop_audio`).
+        self.playback = PlaybackTracker()
+        self._audio_lock = asyncio.Lock()
 
         if session is None:
             # Defaults only: the NarrationEngine applies the configured durations when it attaches.
@@ -323,6 +330,7 @@ class ConnectionManager:
             cb = self._barge_in_callback
             if self._accumulator is not None:
                 self._accumulator.reset(preserve_pre_roll=True)
+        self.playback.drop_all()  # whatever was being waited for was flushed with the audio
 
         event = BargeInEventMessage(
             latency_ms=latency_ms,
@@ -353,6 +361,64 @@ class ConnectionManager:
         self.tasks.cancel("stt")
         self.session.enter_listening("barge_in")
         return event
+
+    def stop_audio(self) -> None:
+        """Stop all audio now: bump the generation, drop every segment still outstanding (their waiters are released
+        with False) and tell every tab with `audio_stop`, so the old owner stops too. The caller cancels whatever
+        was producing the audio. A barge-in does the same through its own event. Call it on the event loop.
+
+        The message takes its place in the same queue as the clips, so it reaches the browser before any clip sent
+        after the stop, and a clip handed over before the stop but not yet sent is never sent (see `send_audio`).
+        """
+        with self._lock:
+            self._generation += 1
+            generation = self._generation
+        self.playback.drop_all()
+        if self.connection_count:
+            self._post(lambda: self._send_stop(generation), None, "stop_audio")
+
+    async def _send_stop(self, generation: int) -> None:
+        async with self._audio_lock:
+            message = AudioStopMessage(generation=generation).model_dump_json()
+            await self._fan_out(lambda ws: ws.send_text(message))
+
+    async def send_audio(self, data: bytes, *, gap_s: float = 0.0) -> Optional[int]:
+        """Send one clip to the owner, announced by an `audio_segment` right before it, and return its segment id.
+        None when nobody owns the audio (the caller paces by an estimate) or the send failed.
+
+        The pair is sent to the end even if the caller is cancelled in the middle: a clip announced without its blob
+        would be paired with the next blob, and a clip of the old generation that is sent anyway is dropped by the
+        browser. `gap_s` is the silence the browser adds before the clip.
+
+        The clip belongs to the generation current when this is called. If audio is stopped before it is sent, it is
+        dropped and None is returned: sending it under the newer generation would play it after the stop.
+        """
+        if self.owner is None:
+            return None
+        generation = self.generation
+        return await asyncio.shield(self.tasks.spawn(self._send_audio(data, gap_s, generation), "audio"))
+
+    async def _send_audio(self, data: bytes, gap_s: float, generation: int) -> Optional[int]:
+        async with self._audio_lock:
+            owner = self.owner
+            if owner is None or generation != self.generation:
+                return None
+            segment_id = self.playback.register(generation, owner)
+            announcement = AudioSegmentMessage(segment_id=segment_id, generation=generation, gap_s=gap_s)
+            try:
+                await asyncio.wait_for(self._send_clip(owner, announcement.model_dump_json(), data), SEND_TIMEOUT_S)
+            except Exception as exc:  # noqa: BLE001  # the owner is gone or stalled: dropped and logged here
+                logger.info("Dropping WebSocket client after failed audio send: %s", type(exc).__name__)
+                self.playback.forget(segment_id)
+                self._forget(owner)
+                await self._close_dropped(owner)
+                return None
+            return segment_id
+
+    @staticmethod
+    async def _send_clip(owner: WebSocket, announcement: str, data: bytes) -> None:
+        await owner.send_text(announcement)
+        await owner.send_bytes(data)
 
     def clear_audio_turn(self) -> None:
         """Empty the accumulator, pre-roll included. For the start of the follow-up window: what the microphone
@@ -497,10 +563,6 @@ class ConnectionManager:
 
         await self.broadcast_text(payload_text)
 
-    async def broadcast_bytes(self, data: bytes) -> None:
-        """Broadcast raw binary PCM audio frame to all active clients."""
-        await self._fan_out(lambda ws: ws.send_bytes(data))
-
     @staticmethod
     def _log_future_exception(fut: Any) -> None:
         try:
@@ -558,17 +620,6 @@ class ConnectionManager:
             self.tasks.spawn(make_coroutine(), "broadcast")
         else:
             fut = asyncio.run_coroutine_threadsafe(make_coroutine(), target_loop)
-            fut.add_done_callback(self._log_future_exception)
-
-    def broadcast_bytes_sync(
-        self,
-        data: bytes,
-        loop: Optional[asyncio.AbstractEventLoop] = None,
-    ) -> None:
-        """Thread-safe synchronous binary broadcast helper for background audio threads."""
-        target_loop = self._usable_loop(loop, "broadcast_bytes_sync")
-        if target_loop is not None:
-            fut = asyncio.run_coroutine_threadsafe(self.broadcast_bytes(data), target_loop)
             fut.add_done_callback(self._log_future_exception)
 
 

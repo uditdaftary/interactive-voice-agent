@@ -20,6 +20,7 @@ from voice_agent.stt.accumulator import MAX_UTTERANCE_S
 from voice_agent.server.schemas import (
     BargeInTriggerMessage,
     PlaybackControlMessage,
+    PlaybackDoneMessage,
     QueryInterruptionMessage,
     SelectVoiceMessage,
     SetCadenceMessage,
@@ -221,6 +222,11 @@ async def handle_client_text_message(
                 web_search_enabled=msg.web_search_enabled,
             )
         await manager.broadcast_state()
+
+    elif isinstance(msg, PlaybackDoneMessage):
+        # Only the owner is sent audio, so only the owner can have finished playing it.
+        if _owns_microphone(manager, websocket, "playback_done"):
+            manager.playback.acknowledge(websocket, msg.segment_id, msg.generation)
 
     elif isinstance(msg, VoiceEndMessage):
         if not _owns_microphone(manager, websocket, "voice_end"):

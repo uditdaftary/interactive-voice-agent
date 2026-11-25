@@ -106,6 +106,19 @@ class NarrationEngine:
         session.listen_deadline_s = self.settings.barge_in_listen_s
         session.followup_window_s = self.settings.followup_window_s
         session.add_listener(self._on_state_change)
+        self.manager.add_owner_listener(self._on_owner_change)
+
+    def _on_owner_change(self) -> None:
+        """The audio goes to a different tab now. What the old one was playing is stopped either way."""
+        state = self.manager.state
+        if state == "NARRATING":
+            # The new owner has not heard the sentence that is playing: it starts again for them.
+            self.manager.stop_audio()
+            self.manager.tasks.cancel("narration")
+            self._ensure_narration()
+        elif state == "REPLYING":
+            # The clip being waited for went to the old owner: the wait ends and the turn goes on.
+            self.manager.stop_audio()
 
     def _on_state_change(self, old: str, new: str, reason: str) -> None:
         """Keep the background tasks in step with the session state."""
@@ -115,6 +128,7 @@ class NarrationEngine:
             # reply may be the very task finishing.)
             for name in ("narration", "reply", "stt"):
                 self.manager.tasks.cancel(name)
+            self.manager.stop_audio()
         elif new == "LISTENING":
             # A barge-in, from any source, silences narration; the deadline or the reply starts it again.
             self.manager.tasks.cancel("narration")
@@ -145,6 +159,7 @@ class NarrationEngine:
         self.manager.update_cursor(sentence_idx=sentence_idx, word_offset=0)
         state = self.manager.state
         if state == "NARRATING":
+            self.manager.stop_audio()  # the clips queued for the sentence being left
             self._ensure_narration()  # the new loop announces the sentence itself
         elif state == "PAUSED":
             self.manager.broadcast_json_sync(CursorUpdateMessage(
@@ -178,6 +193,7 @@ class NarrationEngine:
             return
         session = self.manager.session
         self.manager.tasks.cancel("narration")
+        self.manager.stop_audio()  # whatever is playing, a clip or an answer, is about the old document
         self.sentences = list(doc.sentences)
         self._bm25_index = BM25Index.from_sentences(self.sentences)
         self.document_title = doc.title
@@ -262,9 +278,11 @@ class NarrationEngine:
                 if self.manager.state != "NARRATING":
                     break
 
-                # 3. Broadcast audio frame to all connected clients
+                # 3. Send the clip to the owner connection
                 if audio_bytes:
-                    await self.manager.broadcast_bytes(audio_bytes)
+                    segment_id = await self.manager.send_audio(audio_bytes)
+                    if segment_id is not None:
+                        self.manager.playback.forget(segment_id)  # paced by the estimate below
 
                 # 4. Stream word cursor highlighting across sentence duration
                 words = sentence_text.split()
@@ -414,7 +432,9 @@ class NarrationEngine:
         cadence = self.manager.cadence or 1.0
         audio_bytes, _fmt = await self.tts(text, voice_id, cadence)
         if audio_bytes:
-            await self.manager.broadcast_bytes(audio_bytes)
+            segment_id = await self.manager.send_audio(audio_bytes)
+            if segment_id is not None:
+                self.manager.playback.forget(segment_id)  # waited for by the estimate below
         if settle_s is None:
             settle_s = max(
                 self.settings.min_reply_playback_s,
