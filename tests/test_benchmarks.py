@@ -80,7 +80,8 @@ def test_atomic_ring_buffer_drain_latency_benchmark() -> None:
 
 def test_end_to_end_barge_in_latency_benchmark() -> None:
     """Benchmark verifying median end-to-end barge-in latency from speech detection to buffer drain is < 50ms."""
-    iterations = 1000
+    # The bound is on the median, which 100 runs pin down as well as 1,000 do; each run builds a bridge, so the count sets the cost.
+    iterations = 100
     e2e_latencies_ms = []
 
     for _ in range(iterations):
