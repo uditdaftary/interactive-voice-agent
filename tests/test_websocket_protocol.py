@@ -15,6 +15,8 @@ Validates:
 7. Defensive handling of malformed client payloads without dropping connection.
 """
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -46,7 +48,7 @@ def test_websocket_handshake_and_initial_state_sync(isolated_app) -> None:
             # 1. First message must be initial state_sync
             init_msg = ws.receive_json()
             assert init_msg["type"] == "state_sync"
-            assert init_msg["state"] == "NARRATING"
+            assert init_msg["state"] == "PAUSED"
             assert init_msg["active_voice"] == "david-martinez"
             assert init_msg["mic_source"] == "browser"
             assert init_msg["cadence"] == 1.0
@@ -129,25 +131,35 @@ def test_client_set_cadence_action(isolated_app) -> None:
 
 
 def test_client_playback_control_pause_and_resume(isolated_app) -> None:
-    """Test playback_control toggles state between PAUSED and NARRATING."""
+    """Test playback_control toggles state between NARRATING and PAUSED."""
     app, manager = isolated_app
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
             _ = ws.receive_json()
 
+            def next_state_sync() -> dict:
+                # Narration traffic (cursor updates, audio) shares the socket once narration runs.
+                for _ in range(200):
+                    frame = ws.receive()
+                    if frame.get("text") is not None and json.loads(frame["text"])["type"] == "state_sync":
+                        return json.loads(frame["text"])
+                raise AssertionError("no state_sync")
+
+            # Resume playback (the session starts paused)
+            ws.send_json({"type": "playback_control", "action": "resume"})
+            resp_resume = next_state_sync()
+            assert resp_resume["state"] == "NARRATING"
+            assert manager.state == "NARRATING"
+
             # Pause playback
             ws.send_json({"type": "playback_control", "action": "pause"})
-            resp_pause = ws.receive_json()
-            assert resp_pause["type"] == "state_sync"
+            resp_pause = next_state_sync()
             assert resp_pause["state"] == "PAUSED"
             assert manager.state == "PAUSED"
 
-            # Resume playback
-            ws.send_json({"type": "playback_control", "action": "resume"})
-            resp_resume = ws.receive_json()
-            assert resp_resume["type"] == "state_sync"
-            assert resp_resume["state"] == "NARRATING"
-            assert manager.state == "NARRATING"
+            # Pausing a paused session still answers the request
+            ws.send_json({"type": "playback_control", "action": "pause"})
+            assert next_state_sync()["state"] == "PAUSED"
 
 
 def test_bidirectional_binary_pcm_audio_streaming(isolated_app) -> None:

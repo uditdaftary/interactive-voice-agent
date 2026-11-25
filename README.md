@@ -119,6 +119,7 @@ Settings are read from environment variables (see `.env.example`; the app does n
 | `VOICE_AGENT_TTS_PRIMARY` | `edge` | `edge`, `pyttsx3` or `pocket`; the other backends are the fallbacks |
 | `VOICE_AGENT_STT_BACKEND` | `whisper` | `whisper` or `moonshine`; the server still transcribes with Whisper (see below) |
 | `VOICE_AGENT_MOONSHINE_MODEL_DIR` | `models/stt/moonshine-tiny-en-int8` | Folder with the Moonshine model files |
+| `VOICE_AGENT_BARGE_IN_LISTEN_S` | `8.0` | Seconds the app waits for you after an interruption before it goes back to what it was doing; extended while you speak |
 
 The provider, model, voice, cadence and microphone source can also be changed at runtime from the UI or with `POST /api/config`.
 

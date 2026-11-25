@@ -183,7 +183,7 @@ def test_websocket_arms_the_accumulator_only_while_listening() -> None:
 
     with TestClient(app) as client, client.websocket_connect("/ws") as ws:
         ws.receive_json()
-        # NARRATING: audio only refreshes the pre-roll.
+        # Not listening: audio only refreshes the pre-roll.
         for _ in range(20):
             ws.send_bytes(LOUD_20MS)
         assert wait_until(lambda: len(acc._pre_roll_buffer) == 20)
@@ -199,8 +199,9 @@ def test_websocket_arms_the_accumulator_only_while_listening() -> None:
         assert wait_until(lambda: buffered_bytes(acc)["session"] == 10 * len(LOUD_20MS))
         assert acc.is_speaking
 
-        # Back to NARRATING: the half-built turn is dropped at once, with no further audio frame needed.
-        manager.set_state("NARRATING")
+        # Back to the resting state: the half-built turn is dropped at once, with no further audio frame needed.
+        ws.send_json({"type": "playback_control", "action": "pause"})
+        assert ws.receive_json()["state"] == "PAUSED"
         assert buffered_bytes(acc)["session"] == 0
         assert buffered_bytes(acc)["speech"] == 0
         assert not acc.is_speaking
@@ -216,7 +217,7 @@ def test_websocket_arms_the_accumulator_only_while_listening() -> None:
 def test_non_listening_states_never_capture(silent_state: str) -> None:
     manager = ConnectionManager()
     manager.accumulator = SpeechTurnAccumulator(sample_rate=SAMPLE_RATE)
-    manager.set_state(silent_state)
+    assert manager.session.transition(silent_state, "test")
     app = create_app(connection_manager=manager, llm_client=FakeLLM(), tts=FakeTts(), search=FakeSearch())
     acc: SpeechTurnAccumulator = manager.accumulator
 
@@ -235,7 +236,9 @@ def listening_manager() -> tuple[ConnectionManager, SpeechTurnAccumulator]:
     manager = ConnectionManager()
     acc = SpeechTurnAccumulator(sample_rate=SAMPLE_RATE, silence_timeout_ms=60_000)
     manager.accumulator = acc
-    manager.set_state("LISTENING")
+    manager.session.transition("NARRATING", "test")  # so every way out of LISTENING below is a legal edge
+    manager.session.transition("LISTENING", "test")
+    acc.arm()  # the websocket handler arms on the first frame heard while LISTENING
     for _ in range(5):
         acc.feed(QUIET_20MS)
     for _ in range(5):
@@ -250,7 +253,7 @@ def test_leaving_listening_clears_the_turn_before_any_further_frame(next_state: 
     """Stale audio must not be transcribed together with the next question (spec section 8)."""
     manager, acc = listening_manager()
 
-    manager.set_state(next_state)  # no audio frame arrives after this line
+    assert manager.session.transition(next_state, "test")  # no audio frame arrives after this line
 
     sizes = buffered_bytes(acc)
     assert sizes["session"] == 0
@@ -258,16 +261,16 @@ def test_leaving_listening_clears_the_turn_before_any_further_frame(next_state: 
     assert not acc.is_speaking
 
 
-def test_leaving_listening_from_the_barge_in_trigger_clears_the_turn_too() -> None:
+async def test_leaving_listening_from_the_barge_in_trigger_clears_the_turn_too() -> None:
     manager = ConnectionManager()
     acc = SpeechTurnAccumulator(sample_rate=SAMPLE_RATE, silence_timeout_ms=60_000)
     manager.accumulator = acc
-    manager.trigger_barge_in()  # enters LISTENING without going through set_state
+    manager.trigger_barge_in()  # enters LISTENING through the barge-in path, not a bare transition
     for _ in range(6):
         acc.feed(LOUD_20MS)
     assert buffered_bytes(acc)["session"] > 0
 
-    manager.set_state("REPLYING")
+    manager.session.transition("REPLYING", "test")
 
     assert buffered_bytes(acc)["session"] == 0
     assert not acc.is_speaking
@@ -276,8 +279,8 @@ def test_leaving_listening_from_the_barge_in_trigger_clears_the_turn_too() -> No
 def test_the_next_turn_starts_from_nothing() -> None:
     """After the clear, a new turn holds only the audio heard since."""
     manager, acc = listening_manager()
-    manager.set_state("REPLYING")
-    manager.set_state("LISTENING")
+    manager.session.transition("REPLYING", "test")
+    manager.session.transition("LISTENING", "test")
     acc.arm()
     fresh = tone(0.02, 40)
 
@@ -289,18 +292,17 @@ def test_the_next_turn_starts_from_nothing() -> None:
 def test_staying_within_listening_keeps_the_turn() -> None:
     manager, acc = listening_manager()
 
-    manager.set_state("BARGE_IN")
-    manager.set_state("LISTENING")
+    manager.session.transition("LISTENING", "again")  # already there: not an exit, so nothing is dropped
 
     assert buffered_bytes(acc)["session"] == 10 * len(LOUD_20MS)
     assert acc.is_speaking
 
 
-def test_set_state_does_not_create_an_accumulator() -> None:
+def test_changing_state_does_not_create_an_accumulator() -> None:
     """The accumulator is built lazily on first audio; changing state must not allocate one."""
     manager = ConnectionManager()
 
-    manager.set_state("LISTENING")
-    manager.set_state("NARRATING")
+    manager.session.transition("LISTENING", "test")
+    manager.session.transition("PAUSED", "test")
 
     assert manager._accumulator is None

@@ -16,6 +16,7 @@ from voice_agent.server.connection_manager import (
     default_connection_manager,
 )
 from voice_agent.server.security import origin_allowed
+from voice_agent.stt.accumulator import MAX_UTTERANCE_S
 from voice_agent.server.schemas import (
     BargeInTriggerMessage,
     PlaybackControlMessage,
@@ -42,6 +43,18 @@ async def _ensure_stt_engine(app: Any) -> Any:
     return await ensure_stt_engine(app)
 
 
+async def _active_stt_engine(websocket: WebSocket, manager: ConnectionManager, stt_engine: Optional[Any]) -> Any:
+    """The STT engine to use. The first utterance builds it, which loads a model for seconds, so the LISTENING
+    deadline is held until it is ready."""
+    if stt_engine:
+        return stt_engine
+    manager.session.suspend_deadline()
+    try:
+        return await _ensure_stt_engine(websocket.app)
+    finally:
+        manager.session.resume_deadline()
+
+
 async def process_stt_utterance(
     utterance: bytes,
     manager: ConnectionManager,
@@ -61,18 +74,27 @@ async def process_stt_utterance(
             )
             await manager.broadcast_json(msg)
             if engine is not None and hasattr(engine, "handle_user_interruption"):
-                asyncio.create_task(engine.handle_user_interruption(clean_text))  # noqa: RUF006  # S2.1
+                manager.tasks.spawn(engine.handle_user_interruption(clean_text), "reply", replace=True)
             return clean_text
         return None
 
     start_t = time.perf_counter()
+    # The LISTENING deadline must not run out while the utterance is with the recognizer.
+    manager.session.suspend_deadline()
     try:
         transcript = await asyncio.to_thread(stt_engine.transcribe, utterance)
     except Exception as exc:  # noqa: BLE001  # S3.3 RC4
         logger.warning(f"STT transcription failed: {exc}")
         transcript = ""
+    finally:
+        manager.session.resume_deadline()
 
     latency_ms = round((time.perf_counter() - start_t) * 1000.0, 2)
+    if manager.state not in LISTENING_STATES:
+        # The user paused, or typed a question, while the recognizer worked. Answering now would speak to
+        # someone who has moved on, and would start a reply from a session that is not listening.
+        logger.debug("Dropping a transcript: the session left LISTENING during transcription (now %s)", manager.state)
+        return None
     clean_text = transcript.strip() if transcript else ""
 
     if not clean_text and fallback_query and fallback_query.strip():
@@ -86,7 +108,7 @@ async def process_stt_utterance(
             latency_ms=latency_ms,
         )
         if engine is not None and hasattr(engine, "handle_user_interruption"):
-            asyncio.create_task(engine.handle_user_interruption(clean_text))  # noqa: RUF006  # S2.1
+            manager.tasks.spawn(engine.handle_user_interruption(clean_text), "reply", replace=True)
         await manager.broadcast_json(msg)
         return clean_text
     else:
@@ -102,10 +124,9 @@ async def process_stt_utterance(
         )
         await manager.broadcast_json(msg)
         if engine is not None and hasattr(engine, "handle_unrecognized_interruption"):
-            asyncio.create_task(engine.handle_unrecognized_interruption())  # noqa: RUF006  # S2.1
-        elif manager.state in ("LISTENING", "BARGE_IN"):
-            manager.set_state("NARRATING")
-            await manager.broadcast_json(manager.get_state_sync_message())
+            manager.tasks.spawn(engine.handle_unrecognized_interruption(), "reply", replace=True)
+        elif manager.state in LISTENING_STATES:
+            manager.session.resume("stt_rejected")
 
     return None
 
@@ -137,12 +158,10 @@ async def handle_client_text_message(
         await manager.broadcast_json(sync_msg)
 
     elif isinstance(msg, BargeInTriggerMessage):
-        if engine is not None:
-            engine.pause_narration()
-        barge_in_event = manager.trigger_barge_in()
-        await manager.broadcast_json(barge_in_event)
-        sync_msg = manager.get_state_sync_message()
-        await manager.broadcast_json(sync_msg)
+        # Narration stops at once. The client records until it sends voice_end, and quiet speech never registers
+        # with the server, so the deadline waits for that message, but no longer than one utterance can last.
+        manager.trigger_barge_in()
+        manager.session.hold_deadline(MAX_UTTERANCE_S)
 
     elif isinstance(msg, SetCadenceMessage):
         manager.set_cadence(msg.cadence)
@@ -150,12 +169,17 @@ async def handle_client_text_message(
         await manager.broadcast_json(sync_msg)
 
     elif isinstance(msg, PlaybackControlMessage):
+        state_before = manager.state
         if msg.action in ("pause", "stop"):
-            manager.set_state("PAUSED")
             if engine is not None:
                 engine.pause_narration()
+            else:
+                manager.session.transition("PAUSED", "pause")
         elif msg.action in ("resume", "start"):
-            manager.set_state("NARRATING")
+            if engine is not None:
+                engine.start_narration()
+            else:
+                manager.session.transition("NARRATING", "resume")
         elif msg.action == "next":
             if engine is not None and getattr(engine, "sentences", None):
                 engine.current_sentence_idx = (engine.current_sentence_idx + 1) % max(1, len(engine.sentences))
@@ -167,20 +191,16 @@ async def handle_client_text_message(
                 engine.current_word_idx = 0
                 manager.update_cursor(engine.current_sentence_idx, 0)
 
-        sync_msg = manager.get_state_sync_message()
-        await manager.broadcast_json(sync_msg)
-
-        if msg.action in ("resume", "start") and engine is not None:
-            engine.start_narration()
+        if manager.state == state_before:
+            # No transition happened, so the state listener announced nothing; still answer the request.
+            await manager.broadcast_json(manager.get_state_sync_message())
 
     elif isinstance(msg, QueryInterruptionMessage):
         if engine is not None:
-            asyncio.create_task(engine.handle_user_interruption(msg.query))  # noqa: RUF006  # S2.1
+            manager.tasks.spawn(engine.handle_user_interruption(msg.query), "reply", replace=True)
         else:
-            barge_in_event = manager.trigger_barge_in()
-            await manager.broadcast_json(barge_in_event)
-            manager.set_state("REPLYING")
-            await manager.broadcast_json(manager.get_state_sync_message())
+            manager.trigger_barge_in()
+            manager.session.transition("REPLYING", "question")
 
     elif isinstance(msg, UpdateLLMConfigMessage):
         if engine is not None and getattr(engine, "llm", None) is not None:
@@ -195,12 +215,13 @@ async def handle_client_text_message(
         await manager.broadcast_json(sync_msg)
 
     elif isinstance(msg, VoiceEndMessage):
-        if manager.state in ("LISTENING", "BARGE_IN"):
+        if manager.state in LISTENING_STATES:
+            manager.session.release_deadline_hold()
             acc = getattr(manager, "accumulator", None)
             utterance = acc.flush() if acc is not None else None
             fb = getattr(msg, "fallback_query", None)
             if utterance:
-                active_stt = stt_engine or await _ensure_stt_engine(websocket.app)
+                active_stt = await _active_stt_engine(websocket, manager, stt_engine)
                 await process_stt_utterance(
                     utterance, manager, active_stt, engine, fallback_query=fb
                 )
@@ -214,7 +235,7 @@ async def handle_client_text_message(
                 )
                 await manager.broadcast_json(out_msg)
                 if engine is not None and hasattr(engine, "handle_user_interruption"):
-                    asyncio.create_task(engine.handle_user_interruption(clean_fb))  # noqa: RUF006  # S2.1
+                    manager.tasks.spawn(engine.handle_user_interruption(clean_fb), "reply", replace=True)
 
 
 async def _handle_frame(
@@ -238,12 +259,14 @@ async def _handle_frame(
             if manager.state in LISTENING_STATES:
                 acc.arm()
                 utterance = acc.feed(pcm_data)
+                if acc.is_speaking:
+                    manager.session.extend_deadline()  # the user is talking: the wait must not end on them
                 if utterance:
-                    active_stt = stt_engine or await _ensure_stt_engine(websocket.app)
+                    active_stt = await _active_stt_engine(websocket, manager, stt_engine)
                     await process_stt_utterance(utterance, manager, active_stt, engine)
             else:
                 # Disarmed, the accumulator only refreshes its pre-roll (so initial consonants are never lost):
-                # an hour of narration must not buffer an hour of microphone. `set_state` already dropped any
+                # an hour of narration must not buffer an hour of microphone. the session's state listener already dropped any
                 # half-built turn when LISTENING ended; disarming here also covers an accumulator that was
                 # created (armed) while the session was not listening.
                 acc.disarm()

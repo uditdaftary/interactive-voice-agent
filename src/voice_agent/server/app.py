@@ -170,6 +170,7 @@ async def lifespan(app: FastAPI):
         engine.pause_narration()
     manager: Optional[ConnectionManager] = getattr(app.state, "connection_manager", None)
     if manager is not None:
+        await manager.tasks.cancel_all()
         await manager.disconnect_all()
 
 
@@ -189,7 +190,7 @@ def create_app(
 
     Args:
         ui_dir: Path to static dashboard UI directory. Defaults to project `ui/`.
-        connection_manager: Custom ConnectionManager instance. Defaults to default singleton.
+        connection_manager: Custom ConnectionManager instance. Defaults to a new one, so apps never share a session.
         narration_engine: Custom NarrationEngine instance. Defaults to new instance.
         stt_engine: Custom STT engine (any object with a `transcribe` method). Defaults to the connection manager's engine,
             else one is built on first use.
@@ -219,7 +220,9 @@ def create_app(
     resolved_settings = settings if settings is not None else load_settings()
     app.state.settings = resolved_settings
 
-    manager = connection_manager if connection_manager is not None else default_connection_manager
+    # Each app owns its manager, because the manager owns the session and the engine hooks into it. Apps that
+    # shared one would stack listeners, and the first engine to attach would run everyone's narration.
+    manager = connection_manager if connection_manager is not None else ConnectionManager()
     app.state.connection_manager = manager
 
     engine = (
@@ -365,7 +368,8 @@ def create_app(
     async def ask_question(body: AskRequest):
         """Trigger an ad-hoc voice question interruption with live web search grounding."""
         eng: NarrationEngine = app.state.narration_engine
-        asyncio.create_task(eng.handle_user_interruption(body.query))  # noqa: RUF006  # S2.1
+        mgr: ConnectionManager = app.state.connection_manager
+        mgr.tasks.spawn(eng.handle_user_interruption(body.query), "reply", replace=True)
         return {"status": "ok", "query": body.query}
 
     @app.post("/api/narration/control", dependencies=[Depends(security.require_json_content_type)])
@@ -374,6 +378,7 @@ def create_app(
         action = body.action
         eng: NarrationEngine = app.state.narration_engine
         mgr: ConnectionManager = app.state.connection_manager
+        state_before = mgr.state
 
         if action in ("resume", "start"):
             eng.start_narration()
@@ -388,7 +393,9 @@ def create_app(
             eng.current_word_idx = 0
             mgr.update_cursor(eng.current_sentence_idx, 0)
 
-        await mgr.broadcast_json(mgr.get_state_sync_message())
+        if mgr.state == state_before:
+            # No transition happened, so the state listener announced nothing; still answer the request.
+            await mgr.broadcast_json(mgr.get_state_sync_message())
         return {"status": "ok", "state": mgr.state, "current_sentence_idx": eng.current_sentence_idx}
 
     @app.post("/api/transcribe")
@@ -446,8 +453,8 @@ def create_app(
     return app
 
 
-# Module-level default application instance for uvicorn
-app = create_app()
+# Module-level default application instance for uvicorn. It is the one app backed by the shared default manager.
+app = create_app(connection_manager=default_connection_manager)
 
 
 def run(host: str = "127.0.0.1", port: int = 8000, reload: bool = False) -> None:

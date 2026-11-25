@@ -157,8 +157,8 @@ def test_websocket_turn_accumulator_automatic_speech_segmentation() -> None:
             mock_engine.handle_user_interruption.assert_called_once_with("query via auto pause")
 
 
-def test_websocket_binary_pcm_ignored_when_narrating() -> None:
-    """Test audio frames received when state is NARRATING do not trigger transcription."""
+def test_websocket_binary_pcm_ignored_when_not_listening() -> None:
+    """Test audio frames received when the session is not LISTENING do not trigger transcription."""
     manager = ConnectionManager()
     manager.stt_engine = FakeStt("should not transcribe")
 
@@ -171,9 +171,9 @@ def test_websocket_binary_pcm_ignored_when_narrating() -> None:
         with client.websocket_connect("/ws") as ws:
             _ = ws.receive_json()  # Handshake
 
-            assert manager.state == "NARRATING"
+            assert manager.state == "PAUSED"
 
-            # Send speech audio while NARRATING
+            # Send speech audio while not listening
             speech_chunk = (np.ones(3200, dtype=np.int16) * 10000).tobytes()
             ws.send_bytes(speech_chunk)
 

@@ -17,8 +17,7 @@ def cancel_narration():
     engines: list[NarrationEngine] = []
     yield engines.append
     for engine in engines:
-        if engine._narration_task is not None:
-            engine._narration_task.cancel()
+        engine.manager.tasks.cancel("narration")
 
 
 async def test_engine_uses_injected_tts_and_search(cancel_narration) -> None:
@@ -35,7 +34,7 @@ async def test_engine_uses_injected_tts_and_search(cancel_narration) -> None:
     assert [query for query, _ in search.calls] == ["who is lucy"]
     # The search result reached the prompt the LLM saw.
     assert search.result in llm.calls[0][-1]["content"]
-    assert manager.state == "NARRATING"
+    assert manager.state == "PAUSED"  # asked while paused, so the session returns to paused
 
 
 async def test_search_seam_is_skipped_when_web_search_is_off(cancel_narration) -> None:

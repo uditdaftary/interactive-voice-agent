@@ -20,12 +20,11 @@ Coverage:
 import asyncio
 import json
 from typing import List
-from unittest.mock import MagicMock
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from fakes import FakeLLM, FakeSearch, FakeStt, FakeTts
+from fakes import FakeLLM, FakeSearch, FakeStt, FakeTts, wait_until
 from voice_agent.audio.hybrid import HybridMicrophoneBridge
 from voice_agent.audio.loopback import VirtualAudioDevice
 from voice_agent.audio.ring_buffer import AudioRingBuffer
@@ -265,8 +264,6 @@ def test_e2e_automatic_virtual_loopback_fallback(e2e_system) -> None:
 def test_e2e_barge_in_interruption_pipeline(e2e_system) -> None:
     """Test speech onset triggers atomic ring buffer drain and WebSocket barge-in broadcast."""
     app = e2e_system["app"]
-    manager = e2e_system["manager"]
-    bridge: HybridMicrophoneBridge = e2e_system["bridge"]
     ring_buffer: AudioRingBuffer = e2e_system["ring_buffer"]
 
     # Fill ring buffer with active speech audio (e.g. 2 seconds = 48,000 samples)
@@ -274,20 +271,7 @@ def test_e2e_barge_in_interruption_pipeline(e2e_system) -> None:
     ring_buffer.write(active_audio)
     assert ring_buffer.size == 48000
 
-    barge_in_broadcasts = []
-
-    def on_barge_in_event(event):
-        barge_in_broadcasts.append(event)
-        # Broadcast barge-in event and state_sync to WebSocket client
-        barge_msg = manager.trigger_barge_in(
-            flushed_samples=event.flushed_samples,
-            latency_ms=event.drain_latency_ms,
-        )
-        safe_broadcast_json(manager, barge_msg)
-        safe_broadcast_json(manager, manager.get_state_sync_message())
-
-    bridge.add_barge_in_callback(on_barge_in_event)
-
+    # The fixture's bridge callback calls manager.trigger_barge_in, which announces the barge-in and the new state.
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
             _ = ws.receive_json()  # Handshake
@@ -321,7 +305,6 @@ def test_e2e_voice_barge_in_stt_transcription(e2e_system) -> None:
     """Test full voice barge-in pipeline: speech audio -> VAD onset -> LISTENING -> STT -> LLM prompt envelope -> resumption cue -> NARRATING."""
     app = e2e_system["app"]
     manager: ConnectionManager = e2e_system["manager"]
-    bridge: HybridMicrophoneBridge = e2e_system["bridge"]
     ring_buffer: AudioRingBuffer = e2e_system["ring_buffer"]
 
     # Fill ring buffer with active speech audio (e.g. 2 seconds = 48,000 samples)
@@ -335,23 +318,31 @@ def test_e2e_voice_barge_in_stt_transcription(e2e_system) -> None:
     app.state.stt_engine = mock_stt
 
     engine: NarrationEngine = app.state.narration_engine
-    engine.start_narration = MagicMock()
 
-    # Wire bridge barge-in callback to broadcast barge_in and state_sync
-    def on_barge_in_event(event):
-        barge_msg = manager.trigger_barge_in(
-            flushed_samples=event.flushed_samples,
-            latency_ms=event.drain_latency_ms,
-        )
-        safe_broadcast_json(manager, barge_msg)
-        safe_broadcast_json(manager, manager.get_state_sync_message())
-
-    bridge.add_barge_in_callback(on_barge_in_event)
-
+    # The fixture's bridge callback calls manager.trigger_barge_in, which announces the barge-in and the new state.
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
             _ = ws.receive_json()  # Handshake state_sync
-            assert manager.state == "NARRATING"
+            assert manager.state == "PAUSED"
+
+            states_seen: list[str] = []  # every state_sync, in order, including those skipped over
+
+            def next_message(message_type: str, **expected) -> dict:
+                """The next JSON message of `message_type` (with the given fields); narration traffic is skipped."""
+                for _ in range(2000):
+                    frame = ws.receive()
+                    if frame.get("text") is None:
+                        continue
+                    payload = json.loads(frame["text"])
+                    if payload.get("type") == "state_sync":
+                        states_seen.append(payload["state"])
+                    if payload.get("type") == message_type and all(payload.get(k) == v for k, v in expected.items()):
+                        return payload
+                raise AssertionError(f"no {message_type} {expected}")
+
+            # Start narration, so the speech below interrupts it.
+            ws.send_json({"type": "playback_control", "action": "resume"})
+            next_message("state_sync", state="NARRATING")
 
             # 1. Send speech audio frames while NARRATING to trigger VAD barge-in
             t = np.linspace(0, 0.03, 720, endpoint=False)
@@ -360,15 +351,12 @@ def test_e2e_voice_barge_in_stt_transcription(e2e_system) -> None:
             ws.send_bytes(loud_sine)
             ws.send_bytes(loud_sine)  # Speech onset detected here
 
-            # 2. Verify state changes: NARRATING -> BARGE_IN -> LISTENING
-            msg_barge = ws.receive_json()
-            assert msg_barge["type"] == "barge_in"
+            # 2. Verify state changes: NARRATING -> LISTENING
+            msg_barge = next_message("barge_in")
             assert msg_barge["flushed_samples"] == 48000
             assert ring_buffer.size == 0
 
-            msg_state = ws.receive_json()
-            assert msg_state["type"] == "state_sync"
-            assert msg_state["state"] == "LISTENING"
+            next_message("state_sync", state="LISTENING")
 
             # 3. Stream spoken speech during LISTENING
             t_spk = np.linspace(0, 0.2, 3200, endpoint=False)
@@ -379,8 +367,7 @@ def test_e2e_voice_barge_in_stt_transcription(e2e_system) -> None:
             ws.send_json({"type": "voice_end"})
 
             # 5. Verify user_speech_transcript message received containing 'arasaka'
-            msg_transcript = ws.receive_json()
-            assert msg_transcript["type"] == "user_speech_transcript"
+            msg_transcript = next_message("user_speech_transcript")
             assert "arasaka" in msg_transcript["transcript"].lower()
             assert msg_transcript["is_final"] is True
 
@@ -389,11 +376,13 @@ def test_e2e_voice_barge_in_stt_transcription(e2e_system) -> None:
             resumption_cue_received = False
             replies: list[str] = []
 
-            for _ in range(40):
+            for _ in range(2000):
                 frame = ws.receive()
-                if "text" in frame:
+                if frame.get("text") is not None:
                     payload = json.loads(frame["text"])
                     p_type = payload.get("type")
+                    if p_type == "state_sync":
+                        states_seen.append(payload["state"])
                     if p_type == "prompt_envelope":
                         received_prompt_envelope = True
                         replies.append(payload.get("reply", ""))
@@ -409,8 +398,9 @@ def test_e2e_voice_barge_in_stt_transcription(e2e_system) -> None:
             assert "Arasaka is a megacorporation." in replies
             assert "Arasaka is a megacorporation." in engine.tts.texts
 
-            # 7. Verify returns to NARRATING state
-            final_state = ws.receive_json()
-            assert final_state["type"] == "state_sync"
-            assert final_state["state"] == "NARRATING"
+            # 7. Verify the session went LISTENING -> REPLYING -> LISTENING (follow-up window) -> NARRATING
+            if states_seen[-1:] != ["NARRATING"]:
+                next_message("state_sync", state="NARRATING")
+            assert states_seen[-4:] == ["LISTENING", "REPLYING", "LISTENING", "NARRATING"]
+            assert wait_until(lambda: manager.tasks.get("narration") is not None)
 

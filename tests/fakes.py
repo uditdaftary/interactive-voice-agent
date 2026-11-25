@@ -90,6 +90,25 @@ class FakeLLM:
             self.web_search_enabled = bool(kwargs["web_search_enabled"])
 
 
+class BlockingLLM(FakeLLM):
+    """A stream that never produces a token until released."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def stream_generate(  # type: ignore[override]  # the base yields tokens; this one waits first
+        self,
+        messages: list[dict[str, str]],
+        character_id: str | None = None,
+    ) -> AsyncGenerator[str, None]:
+        self.calls.append(messages)
+        self.started.set()
+        await self.release.wait()
+        yield "never"
+
+
 class FakeWhisper:
     """Stands in for `faster_whisper.WhisperModel`: patch the class with an instance, and calling it builds the model.
 

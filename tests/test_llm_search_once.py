@@ -37,8 +37,7 @@ async def test_one_search_per_question(monkeypatch: pytest.MonkeyPatch) -> None:
     try:
         await engine.handle_user_interruption("who is the narrator")
     finally:
-        if engine._narration_task is not None:
-            engine._narration_task.cancel()
+        engine.manager.tasks.cancel("narration")
 
     assert len(search.calls) == 1
     assert sync_calls == []  # the old scripted answer's second, blocking search is gone

@@ -6,6 +6,7 @@ the narration loop without real sleeps.
 """
 
 import dataclasses
+import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -34,16 +35,8 @@ class Settings:
     min_reply_playback_s: float = 2.0
     reply_words_per_s: float = 2.2  # divisor, like words_per_s
     followup_window_s: float = 2.5
-    followup_poll_s: float = 0.1
     preroll_pause_s: float = 0.8
     unrecognized_pause_s: float = 2.0
-
-    @property
-    def followup_poll_count(self) -> int:
-        """Polls in the follow-up window. 2.5 s / 0.1 s gives the legacy 25."""
-        if self.followup_poll_s <= 0:
-            return 0
-        return round(self.followup_window_s / self.followup_poll_s)
 
     @classmethod
     def fast(cls) -> "Settings":
@@ -56,7 +49,6 @@ class Settings:
             min_reply_playback_s=0.0,
             reply_words_per_s=float("inf"),
             followup_window_s=0.0,
-            followup_poll_s=0.0,
             preroll_pause_s=0.0,
             unrecognized_pause_s=0.0,
         )
@@ -71,6 +63,10 @@ class Settings:
     stt_backend: str = "whisper"
     moonshine_model_dir: str = "models/stt/moonshine-tiny-en-int8"
 
+    # Turn-taking: how long the session waits for the user after a barge-in before returning to what it was
+    # doing. It is extended while the user is heard speaking. (`followup_window_s` is the wait after a reply.)
+    barge_in_listen_s: float = 8.0
+
 
 def _one_of(env_name: str, raw: str | None, default: str, names: tuple[str, ...]) -> str:
     """Case-insensitive, stored lower case. Any other name fails here, at load, not at the first use."""
@@ -80,6 +76,18 @@ def _one_of(env_name: str, raw: str | None, default: str, names: tuple[str, ...]
     if name not in names:
         raise ValueError(f"{env_name} must be one of {', '.join(names)}; got {raw!r}")
     return name
+
+
+def _positive_seconds(raw: str | None, default: float, variable: str) -> float:
+    if raw is None:
+        return default
+    try:
+        seconds = float(raw)
+    except ValueError:
+        raise ValueError(f"{variable} must be a number of seconds; got {raw!r}") from None
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError(f"{variable} must be greater than zero; got {raw!r}")
+    return seconds
 
 
 def _env_bool(raw: str | None, default: bool) -> bool:
@@ -102,4 +110,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         tts_primary=_one_of("VOICE_AGENT_TTS_PRIMARY", source.get("VOICE_AGENT_TTS_PRIMARY"), defaults.tts_primary, TTS_BACKEND_NAMES),
         stt_backend=_one_of("VOICE_AGENT_STT_BACKEND", source.get("VOICE_AGENT_STT_BACKEND"), defaults.stt_backend, STT_BACKEND_NAMES),
         moonshine_model_dir=source.get("VOICE_AGENT_MOONSHINE_MODEL_DIR", defaults.moonshine_model_dir),
+        barge_in_listen_s=_positive_seconds(
+            source.get("VOICE_AGENT_BARGE_IN_LISTEN_S"), defaults.barge_in_listen_s, "VOICE_AGENT_BARGE_IN_LISTEN_S"
+        ),
     )
