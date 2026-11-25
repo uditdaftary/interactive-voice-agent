@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - S3.1: httpx streaming LLM client with typed outcomes and a neutral offline line, think-block filter, fenced prompts, local intents, Ollama setup; removed scripted lore answers (D2, H6, H7, M12, M13, N3, N9, L13, L14).
 - S3.2: STT/TTS backend protocols, judged Whisper output, configurable initial prompt, pyttsx3 on one dedicated thread with whole-word gender match (a fresh engine per utterance: a reused pyttsx3 engine stalls); removed the Google STT fallback, the mock STT engine and the synthetic TTS tier (M16, L9, L10, L12).
 - S1: same-origin and host checks, validated request bodies, bounded spine-ordered parsing, robust broadcast and WS error replies (H3, H4, H5, M5, M8, M9, M10, M14, N5, N7, L2, L3).
+- S4.2: optional Pocket TTS and Moonshine STT backends behind `pocket` and `moonshine` extras; deleted the vendored game-mod TTS workers (H9).
 
 ---
 
