@@ -3,6 +3,7 @@ no task is orphaned, and the clients hear about it in the right order."""
 
 import asyncio
 import gc
+import json
 import logging
 import warnings
 from dataclasses import replace
@@ -10,6 +11,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from fastapi.testclient import TestClient
 
 from fakes import (
     BlockingLLM,
@@ -19,7 +21,9 @@ from fakes import (
     RecordingSocket,
     StreamingLLM,
     wait_for_state,
+    wait_until,
 )
+from voice_agent.server.app import create_app
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.narration import REPLY_ERROR_LINE, UNRECOGNIZED_LINE, NarrationEngine
 from voice_agent.settings import Settings
@@ -499,3 +503,99 @@ async def test_starting_from_paused_is_not_cued() -> None:
 
     assert ("prompt_envelope", "NARRATING") not in socket.seen()
     await manager.tasks.cancel_all()
+
+
+# --- a resume while a reply is in progress -------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("resting", ["NARRATING", "PAUSED"])
+async def test_a_resume_during_a_reply_changes_nothing_and_the_reply_finishes(
+    resting: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Every tab sends resume when its socket opens, so a second tab must not cut off an answer or talk over it."""
+    manager = ConnectionManager()
+    llm = BlockingLLM()
+    tts = FakeTts()
+    engine = make_engine(manager, llm=llm, tts=tts)
+    if resting == "NARRATING":
+        await start_narrating(engine, tts)
+    engine.ask("who is lucy")
+    reply = manager.tasks.get("reply")
+    assert reply is not None
+    async with asyncio.timeout(5):
+        await llm.started.wait()
+    states: list[str] = []
+    manager.session.add_listener(lambda old, new, why: states.append(new))
+
+    with caplog.at_level(logging.DEBUG, logger="voice_agent.server.narration"):
+        engine.start_narration()
+
+    assert states == []  # no transition
+    assert manager.state == "REPLYING"
+    assert manager.tasks.get("narration") is None  # nothing narrates under the answer
+    assert manager.tasks.get("reply") is reply  # and the answer is not cut off
+    assert any("reply" in record.getMessage() for record in caplog.records if record.levelno == logging.DEBUG)
+
+    llm.release.set()
+    await asyncio.wait([reply], timeout=5)
+    assert not reply.cancelled() and reply.exception() is None
+    await wait_for_state(manager.session, resting)
+    assert states == ["LISTENING", resting]  # the follow-up window, then back to what it was doing
+    assert (manager.tasks.get("narration") is not None) == (resting == "NARRATING")
+    await manager.tasks.cancel_all()
+
+
+async def test_a_resume_while_listening_still_narrates() -> None:
+    manager = ConnectionManager()
+    tts = FakeTts()
+    engine = make_engine(manager, tts=tts)
+    await start_narrating(engine, tts)
+    manager.trigger_barge_in()
+    assert manager.state == "LISTENING"
+
+    engine.start_narration()  # how a user stops waiting
+
+    assert manager.state == "NARRATING"
+    assert manager.tasks.get("narration") is not None
+    await manager.tasks.cancel_all()
+
+
+def test_the_endpoints_ignore_a_resume_during_a_reply_and_report_the_state() -> None:
+    manager = ConnectionManager()
+    app = create_app(
+        connection_manager=manager, settings=Settings.fast(), llm_client=BlockingLLM(), tts=FakeTts(), search=FakeSearch()
+    )
+
+    def state_syncs_until_cadence(ws: Any, cadence: float) -> list[dict[str, Any]]:
+        """The state snapshots up to the one a set_cadence marker produces (audio frames are skipped)."""
+        ws.send_json({"type": "set_cadence", "cadence": cadence})
+        snapshots: list[dict[str, Any]] = []
+        for _ in range(500):
+            frame = ws.receive()
+            if "text" not in frame:
+                continue
+            message = json.loads(frame["text"])
+            if message["type"] == "state_sync":
+                snapshots.append(message)
+                if message["cadence"] == cadence:
+                    return snapshots
+        raise AssertionError("the marker never arrived")
+
+    with TestClient(app) as client, client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "playback_control", "action": "resume"})  # narrating, so a resume would be legal
+        assert wait_until(lambda: manager.state == "NARRATING")
+        assert client.post("/api/ask", json={"query": "who is lucy"}).status_code == 200
+        assert wait_until(lambda: manager.state == "REPLYING")
+        state_syncs_until_cadence(ws, 1.3)  # drain everything up to here
+
+        rest = client.post("/api/narration/control", json={"action": "resume"})
+        assert rest.status_code == 200
+        assert rest.json()["state"] == "REPLYING"
+
+        ws.send_json({"type": "playback_control", "action": "resume"})
+        snapshots = state_syncs_until_cadence(ws, 1.7)  # everything before the marker has been answered
+
+        assert manager.state == "REPLYING"
+        assert manager.tasks.get("narration") is None
+        assert len(snapshots) >= 2  # the resume was answered with the real state, before the marker's own
+        assert {snapshot["state"] for snapshot in snapshots} == {"REPLYING"}

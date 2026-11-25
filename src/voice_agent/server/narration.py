@@ -200,7 +200,15 @@ class NarrationEngine:
         logger.info(f"Loaded document '{doc.title}' with {len(self.sentences)} sentences, {doc.total_words} words.")
 
     def start_narration(self) -> None:
-        """Start or resume background narration loop. Refused (and logged) from a state that may not narrate."""
+        """Start or resume background narration loop. Refused (and logged) from a state that may not narrate.
+
+        Ignored while a reply is in progress: the reply returns the session to what it was doing when it ends, and
+        resuming now would run narration under the answer. Every tab sends a resume when its socket opens, so a second
+        tab must not be able to cut an answer off. (From LISTENING it still works: that is how a user stops waiting.)
+        """
+        if self.manager.state == "REPLYING":
+            logger.debug("Resume ignored: a reply is in progress and will return the session to what it was doing")
+            return
         if not self.manager.session.transition("NARRATING", "resume"):
             return
         self._ensure_narration()  # the state listener starts it on a change; this covers a loop that has since ended
