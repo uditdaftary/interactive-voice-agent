@@ -1389,6 +1389,7 @@
       this.pendingSegment = null;    // the announcement for the blob that comes next
       this.stoppedBefore = 0;        // clips of a generation below this are dead
       this.audioEpoch = 0;           // counts stops, so a clip being decoded while one happens can tell
+      this.clipChain = Promise.resolve();  // the clip being decoded and scheduled, and every one queued behind it
       // Only one tab holds the microphone and hears the audio; the server says which in every state_sync.
       this.isMicOwner = true;
       this.resumeOnFirstSync = false;  // set when the socket opens: see onConnected
@@ -1593,11 +1594,22 @@
     // the server asked for, and the server is told with playback_done when it has finished playing. A clip that is
     // stopped, or that a stop made stale while it was being decoded, is never reported: the server drops those by
     // generation. A clip that cannot be decoded is reported, so the session goes on instead of waiting for it.
-    async handleBinaryAudio(arrayBuffer) {
+    //
+    // Clips are decoded and scheduled one at a time, in the order they arrived. decodeAudioData calls made together
+    // finish in any order, and a clip that finished first would be scheduled ahead of an earlier one: after an unlock,
+    // when everything held back continues at once, that is a sentence heard out of order.
+    handleBinaryAudio(arrayBuffer) {
       const segment = this.pendingSegment;
       this.pendingSegment = null;
       const epoch = this.audioEpoch;
       const isStale = () => this.audioEpoch !== epoch || (segment !== null && segment.generation < this.stoppedBefore);
+      this.clipChain = this.clipChain
+        .then(() => this.scheduleClip(arrayBuffer, segment, isStale))
+        .catch((err) => console.warn("Audio clip error:", err));
+      return this.clipChain;
+    }
+
+    async scheduleClip(arrayBuffer, segment, isStale) {
       if (isStale()) return;
 
       this.initAudioContext();
