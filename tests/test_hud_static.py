@@ -26,6 +26,8 @@ REMOVED = [
     # Claims the page made about the model and the machine, true or not: the server says which provider it uses.
     "Qwen 3.5",
     "ZERO-CLOUD",
+    # The preview text went to the server whatever the server allowed.
+    "fallback_query: existingVal",
     # A fixed 3 s retry: the wait now grows from 1 s to 30 s.
     "reconnectInterval",
     # Assigned to when the server's document arrives: a const makes that throw, and the catch hid it.
@@ -36,3 +38,7 @@ REMOVED = [
 @pytest.mark.parametrize("text", REMOVED)
 def test_hud_has_no_simulation_second_server_or_invented_number(text: str) -> None:
     assert text not in HUD_SOURCE
+
+
+def test_hud_labels_the_online_speech_preview() -> None:
+    assert "Preview (uses an online service)" in HUD_SOURCE

@@ -805,21 +805,27 @@
     }
   }
 
+  // The browser's own speech recognition is an online service: Chrome sends the audio to a third party. It runs only
+  // when the server's latest state_sync says web_speech_preview is true; a missing field, an older server and a lost
+  // connection all mean false.
+  let webSpeechPreview = false;
+  const SPEECH_PREVIEW_LABEL = 'Preview (uses an online service): ';
+
+  function setWebSpeechPreview(allowed) {
+    webSpeechPreview = allowed === true;
+    if (!webSpeechPreview) stopSpeechPreview();
+  }
+
   function initSpeechRecognition() {
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRec) {
-      console.warn("Web Speech API not supported in this browser. Falling back to text prompt.");
+      console.warn("Web Speech API not supported in this browser, so there is no live preview.");
       return null;
     }
     const recognizer = new SpeechRec();
     recognizer.continuous = false;
     recognizer.interimResults = true;
     recognizer.lang = 'en-US';
-
-    recognizer.onstart = () => {
-      isVoiceListening = true;
-      updateBargeInButtonUI(true);
-    };
 
     recognizer.onresult = (event) => {
       let finalTranscript = '';
@@ -839,22 +845,54 @@
       if (ticker) {
         ticker.style.display = 'flex';
         const textEl = document.getElementById('speech-ticker-text');
-        if (textEl) textEl.innerText = fullTranscript || 'Listening to your voice...';
+        if (textEl) textEl.textContent = fullTranscript ? SPEECH_PREVIEW_LABEL + fullTranscript : 'Listening to your voice...';
       }
     };
 
     recognizer.onerror = (event) => {
       console.warn("Speech recognition notice:", event.error);
-      // Non-fatal preview notice; server-side STT continues recording via WebSocket PCM stream
+      // Non-fatal preview notice; the server keeps recording the PCM stream
     };
 
     recognizer.onend = () => {
-      // Do not kill voice barge-in session if browser Web Speech API times out;
-      // server-side Faster-Whisper continues buffering 16kHz PCM audio
-      if (isVoiceListening) {
-        try { recognizer.start(); } catch(e) {}
+      // The browser ends a recognition after a pause. The turn goes on, so the preview does too, if it is still allowed.
+      if (isVoiceListening && webSpeechPreview) {
+        try { recognizer.start(); } catch (e) { console.warn("Speech preview did not restart:", e); }
       }
     };
+
+    return recognizer;
+  }
+
+  function startSpeechPreview() {
+    if (!webSpeechPreview) return;
+    if (!speechRecognizer) speechRecognizer = initSpeechRecognition();
+    if (!speechRecognizer) return;
+    try {
+      speechRecognizer.start();
+    } catch (e) {
+      console.warn("Speech preview did not start, trying once more:", e);
+      try { speechRecognizer.abort(); } catch (err) { console.warn("Speech preview did not stop:", err); }
+      setTimeout(() => {
+        if (!webSpeechPreview || !isVoiceListening) return;
+        try { speechRecognizer.start(); } catch (err) { console.warn("Speech preview did not start:", err); }
+      }, 80);
+    }
+  }
+
+  function stopSpeechPreview() {
+    if (!speechRecognizer) return;
+    try { speechRecognizer.abort(); } catch (e) { console.warn("Speech preview did not stop:", e); }
+  }
+
+  // A turn that cannot go on, because the connection dropped: leave the listening state so the button does not stay stuck.
+  function abandonVoiceTurn() {
+    if (!isVoiceListening) return;
+    isVoiceListening = false;
+    stopSpeechPreview();
+    updateBargeInButtonUI(false);
+    const ticker = document.getElementById('speech-ticker');
+    if (ticker) ticker.style.display = 'none';
   }
 
   function updateBargeInButtonUI(listening) {
@@ -913,27 +951,8 @@
       if (textEl) textEl.innerText = '🔴 RECORDING: Speak your question, then click STOP...';
     }
 
-    // 4. Initialize and trigger Speech Recognition (optional browser preview)
-    if (!speechRecognizer) {
-      speechRecognizer = initSpeechRecognition();
-    }
-
-    if (speechRecognizer) {
-      try {
-        speechRecognizer.start();
-      } catch (e) {
-        try { speechRecognizer.stop(); } catch(err) {}
-        setTimeout(() => {
-          try { speechRecognizer.start(); } catch(err) {}
-        }, 80);
-      }
-    } else {
-      const input = document.getElementById('interruption-query-input');
-      if (input) {
-        input.focus();
-        input.placeholder = "Speak aloud or type your question here...";
-      }
-    }
+    // 4. The browser's live preview, only when the server allows it
+    startSpeechPreview();
   }
 
   function stopDirectVoiceBargeIn() {
@@ -941,25 +960,22 @@
     isVoiceListening = false;
     updateBargeInButtonUI(false);
 
-    if (speechRecognizer) {
-      try { speechRecognizer.stop(); } catch(e) {}
-    }
+    stopSpeechPreview();
 
     const input = document.getElementById('interruption-query-input');
-    const existingVal = input ? input.value.trim() : '';
+    const previewText = input ? input.value.trim() : '';
 
     const tickerText = document.getElementById('speech-ticker-text');
     if (tickerText) {
-      tickerText.innerText = '⚡ Transcribing voice via Faster-Whisper...';
+      tickerText.innerText = '⚡ Transcribing...';
     }
 
-    // Send voice_end over WebSocket to flush server accumulator and transcribe immediately
+    // Send voice_end over WebSocket to flush server accumulator and transcribe immediately. The preview text goes along
+    // as a fallback only when the preview was allowed, so text typed into the box is never taken for speech.
     if (wsClient && wsClient.isConnected) {
-      wsClient.send({ type: 'voice_end', fallback_query: existingVal });
-    } else {
-      if (existingVal.length > 0) {
-        submitInterruptionQuery(existingVal);
-      }
+      const voiceEnd = { type: 'voice_end' };
+      if (webSpeechPreview && previewText) voiceEnd.fallback_query = previewText;
+      wsClient.send(voiceEnd);
     }
   }
 
@@ -1337,6 +1353,8 @@
     requestAnimationFrame(renderBargeInCanvas);
   }
 
+  const TURN_STATES = new Set(['LISTENING', 'REPLYING', 'BARGE_IN']);
+
   // --- HUD WEBSOCKET & DUAL-MODE CLIENT ---
   // A lost connection is retried after 1 s, then after twice as long each time up to 30 s, and the wait starts over at
   // 1 s once a connection opens.
@@ -1531,6 +1549,8 @@
       this.resumeOnFirstSync = false;
       updateWsStatusUI(false);
       renderStatus(null);
+      setWebSpeechPreview(false);
+      abandonVoiceTurn();
       this.stopBrowserMicCapture();
 
       if (!this.reconnectTimer) {
@@ -1696,6 +1716,7 @@
 
     handleStateSync(msg) {
       renderStatus(msg);
+      setWebSpeechPreview(msg.web_speech_preview);
       if (this.resumeOnFirstSync) {
         this.resumeOnFirstSync = false;
         if (msg.state === 'PAUSED') {
@@ -1706,6 +1727,7 @@
         this.setMicOwner(msg.mic_owner);
       }
       if (msg.state) {
+        const stateBefore = currentState;
         currentState = msg.state;
         if (msg.state === 'NARRATING') {
           isPlaying = true;
@@ -1723,6 +1745,12 @@
           // leave "Transcribing..." on screen until the next voice turn.
           const speechTicker = document.getElementById('speech-ticker');
           if (speechTicker) speechTicker.style.display = 'none';
+          // Nor the question: it was spoken or typed for the turn that has just ended. Only a sync that closes a turn
+          // clears it, since one arrives for many other reasons while the user may be typing.
+          if (TURN_STATES.has(stateBefore)) {
+            const queryBox = document.getElementById('interruption-query-input');
+            if (queryBox) queryBox.value = '';
+          }
         }
       }
       if (msg.active_voice) {
