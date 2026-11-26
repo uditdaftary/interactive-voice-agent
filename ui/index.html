@@ -1098,13 +1098,14 @@
     return chips;
   }
 
-  // The failure being shown, if any. `settledState` is the state the session was left in by the failure itself: the
-  // server reports a failure first and moves the session after, so the first state_sync that follows is that move and
-  // not a recovery. The line clears on a later state_sync with a different state, or when it is dismissed.
+  // The failure being shown, if any. The server reports a failure while the session is in the failed state and moves it
+  // after, so the line must outlive that move. `arrivedIn` is the state the failure arrived in; the first state_sync
+  // with a different state is the move, and its state becomes `settledState`. A sync that only changes a status and
+  // keeps the state is neither. The line clears on a later state_sync that leaves `settledState`, or when dismissed.
   let statusError = null;
 
   function showStatusError(text, { clearOnConnect = false } = {}) {
-    statusError = { text: String(text).slice(0, 200), settledState: null, clearOnConnect };
+    statusError = { text: String(text).slice(0, 200), arrivedIn: currentState, settledState: null, clearOnConnect };
     renderStatusError();
   }
 
@@ -1156,7 +1157,7 @@
     }
     if (statusError && sync && typeof sync.state === 'string') {
       if (statusError.settledState === null) {
-        statusError.settledState = sync.state;
+        if (sync.state !== statusError.arrivedIn) statusError.settledState = sync.state;
       } else if (sync.state !== statusError.settledState) {
         statusError = null;
       }
