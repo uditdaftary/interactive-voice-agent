@@ -577,6 +577,15 @@
 
   let activeVoice = VOICES[2]; // Default to David Martinez
 
+  // An element with fixed styling and text set as text, never parsed as markup.
+  function textElement(tag, className, text, style) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (style) node.style.cssText = style;
+    node.textContent = text;
+    return node;
+  }
+
   function renderVoiceRoster() {
     const tbody = document.getElementById('voice-roster-body');
     if (!tbody) return;
@@ -587,21 +596,25 @@
       if (v.active) tr.className = 'selected';
       tr.onclick = () => selectVoice(v.id);
 
-      tr.innerHTML = `
-        <td style="padding-left:18px;">
-          <span style="display:block; width:8px; height:8px; background:${v.active ? 'var(--high)' : 'transparent'}; border:${v.active ? 'none' : '1px solid var(--ink-3)'};"></span>
-        </td>
-        <td>
-          <div style="display:flex; align-items:center; gap:8px;">
-            <strong style="font-weight:600; color:${v.active ? 'var(--high)' : 'var(--ink)'};">${v.name}</strong>
-            <span class="persona-tag">${v.role}</span>
-          </div>
-          <div class="persona-quote">"${v.quote}"</div>
-        </td>
-        <td class="mono mute">${v.timbre}</td>
-        <td class="mono num">${v.sr}</td>
-        <td class="mono num" style="text-align:right; padding-right:18px; color:${v.active ? 'var(--high)' : 'var(--ink-2)'};">${v.wpm}</td>
-      `;
+      // Every cell is built with textContent: a voice name or a quote is data, and must show as written.
+      const marker = textElement('td', '', '', 'padding-left:18px;');
+      marker.append(textElement('span', '', '',
+        `display:block; width:8px; height:8px; background:${v.active ? 'var(--high)' : 'transparent'}; border:${v.active ? 'none' : '1px solid var(--ink-3)'};`));
+
+      const persona = document.createElement('td');
+      const heading = textElement('div', '', '', 'display:flex; align-items:center; gap:8px;');
+      heading.append(
+        textElement('strong', '', v.name, `font-weight:600; color:${v.active ? 'var(--high)' : 'var(--ink)'};`),
+        textElement('span', 'persona-tag', v.role));
+      persona.append(heading, textElement('div', 'persona-quote', `"${v.quote}"`));
+
+      tr.append(
+        marker,
+        persona,
+        textElement('td', 'mono mute', v.timbre),
+        textElement('td', 'mono num', v.sr),
+        textElement('td', 'mono num', v.wpm,
+          `text-align:right; padding-right:18px; color:${v.active ? 'var(--high)' : 'var(--ink-2)'};`));
       tbody.appendChild(tr);
     });
 
@@ -1016,43 +1029,29 @@
     }, 300);
   }
 
+  // A state marker: the dot, then the text, which is set as text and never parsed as markup.
+  function setPill(pill, className, text) {
+    pill.className = className;
+    pill.replaceChildren(document.createElement('i'), text);
+  }
+
+  // The class of the marker and the word the barge-in panel shows, for each state the server reports.
+  const STATE_PILLS = new Map([
+    ['NARRATING', ['narrating', 'ARMED']],
+    ['BARGE_IN', ['bargein', 'FLUSHED']],
+    ['LISTENING', ['listening', 'LISTENING']],
+    ['REPLYING', ['replying', 'REPLYING']],
+    ['PAUSED', ['paused', 'PAUSED']],
+  ]);
+
   function updateStateUI() {
     const headPill = document.getElementById('header-state-pill');
     const bargePill = document.getElementById('bargein-status-pill');
+    const known = STATE_PILLS.get(currentState);
 
-    if (headPill) headPill.innerHTML = `<i></i>${currentState}`;
-
-    if (currentState === 'NARRATING') {
-      if (headPill) headPill.className = 'state-pill narrating';
-      if (bargePill) {
-        bargePill.className = 'state-pill narrating';
-        bargePill.innerHTML = `<i></i>ARMED`;
-      }
-    } else if (currentState === 'BARGE_IN') {
-      if (headPill) headPill.className = 'state-pill bargein';
-      if (bargePill) {
-        bargePill.className = 'state-pill bargein';
-        bargePill.innerHTML = `<i></i>FLUSHED`;
-      }
-    } else if (currentState === 'LISTENING') {
-      if (headPill) headPill.className = 'state-pill listening';
-      if (bargePill) {
-        bargePill.className = 'state-pill listening';
-        bargePill.innerHTML = `<i></i>LISTENING`;
-      }
-    } else if (currentState === 'REPLYING') {
-      if (headPill) headPill.className = 'state-pill replying';
-      if (bargePill) {
-        bargePill.className = 'state-pill replying';
-        bargePill.innerHTML = `<i></i>REPLYING`;
-      }
-    } else if (currentState === 'PAUSED') {
-      if (headPill) headPill.className = 'state-pill paused';
-      if (bargePill) {
-        bargePill.className = 'state-pill paused';
-        bargePill.innerHTML = `<i></i>PAUSED`;
-      }
-    }
+    // A state this page does not know is shown as it came, with the marker it already had.
+    if (headPill) setPill(headPill, known ? `state-pill ${known[0]}` : headPill.className, String(currentState));
+    if (bargePill && known) setPill(bargePill, `state-pill ${known[0]}`, known[1]);
   }
 
   // The server sends null for a latency it did not measure, and that is shown as such, never as a number.
@@ -1169,11 +1168,9 @@
     const pill = document.getElementById('ws-status-pill');
     if (!pill) return;
     if (connected) {
-      pill.className = 'state-pill connected';
-      pill.innerHTML = '<i></i>Connected';
+      setPill(pill, 'state-pill connected', 'Connected');
     } else {
-      pill.className = 'state-pill offline';
-      pill.innerHTML = '<i></i>Disconnected, retrying';
+      setPill(pill, 'state-pill offline', 'Disconnected, retrying');
     }
   }
 
