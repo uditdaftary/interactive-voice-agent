@@ -11,15 +11,16 @@ from voice_agent.settings import Settings
 
 logger = logging.getLogger(__name__)
 
-# Spoken whenever no model answer is available. The HUD shows the cause separately (`LLMClient.status`).
+# Spoken when there is no model answer and no passage of the book to read instead. The HUD shows the cause
+# separately (`LLMClient.status`).
 OFFLINE_LINE = "My language model is offline. Check the model settings."
 
 # ok: reply streamed. offline: nothing listening. auth: 401/403. error: any other failure or an empty reply.
 # interrupted: the stream broke (or the consumer cancelled) after partial output.
 LlmOutcome = Literal["ok", "offline", "auth", "error", "interrupted"]
 
-# "builtin" is the documented no-model mode: no request is made and the offline line is spoken.
-_NO_MODEL_PROVIDERS = frozenset({"builtin", "local-builtin", "native", "none"})
+# "none" is the no-model mode: no request is made, and the server reads the closest passage of the book instead.
+_NO_MODEL_PROVIDERS = frozenset({"none"})
 
 # A 30 s read covers a cold model load; only a refused or unroutable connect counts as offline.
 _TIMEOUT = httpx.Timeout(connect=2.0, read=30.0, write=10.0, pool=2.0)
@@ -564,8 +565,9 @@ def _delta_content(data: str) -> str:
 class LLMClient:
     """OpenAI-compatible streaming chat client (Ollama by default) with typed outcomes.
 
-    `stream_generate` never raises. When nothing usable came back it yields `OFFLINE_LINE` once, and
-    `status` says why, so the caller can show the cause while the user hears one neutral sentence.
+    `stream_generate` never raises. When nothing usable came back it yields nothing, and `status` (set once the
+    stream has ended) says why; the caller decides what the user hears. After a broken stream the text that did
+    arrive was yielded, and `status` is "interrupted".
     """
 
     def __init__(
@@ -712,7 +714,5 @@ class LLMClient:
 
             if outcome != "ok":
                 logger.warning("LLM %s at %s: %s", outcome, self.base_url, detail)
-                if not spoke:
-                    yield OFFLINE_LINE
         finally:
             self.status = outcome

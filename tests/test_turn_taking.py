@@ -274,7 +274,7 @@ async def test_pause_then_a_new_barge_in_never_answers_the_old_question() -> Non
     await stt_finished(manager.tasks.get("stt"))
     async with asyncio.timeout(5):
         await llm.started.wait()
-    assert [call[-1]["content"].rsplit("User Question: ", 1)[-1] for call in llm.calls] == ["new question"]
+    assert [call[-1]["content"].rsplit("Question: ", 1)[-1] for call in llm.calls] == ["new question"]
     await manager.tasks.cancel_all()
 
 

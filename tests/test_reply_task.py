@@ -24,6 +24,7 @@ from fakes import (
     wait_for_state,
     wait_until,
 )
+from voice_agent.llm.client import OFFLINE_LINE
 from voice_agent.server.app import create_app
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.narration import REPLY_ERROR_LINE, UNRECOGNIZED_LINE, NarrationEngine
@@ -607,3 +608,169 @@ def test_the_endpoints_ignore_a_resume_during_a_reply_and_report_the_state() -> 
         assert manager.tasks.get("narration") is None
         assert len(snapshots) >= 2  # the resume was answered with the real state, before the marker's own
         assert {snapshot["state"] for snapshot in snapshots} == {"REPLYING"}
+
+
+# --- no usable model answer: the book is read instead -------------------------------------------------------------------
+
+BOOK = [
+    "Arasaka is a megacorporation headquartered in Night City with towers of glass.",
+    "Lucy walked home along the wet pavement of the old market street.",
+    "David repaired the broken shuttle engine until the morning light came.",
+    "Nobody spoke about the weather at the harbour that quiet evening.",
+    "The ferry left at dawn carrying lanterns, crates, and a sleeping dog.",
+    "A violin played somewhere above the stairwell as the lamps flickered.",
+]
+NOT_AUTHORITATIVE = "who is lucy"  # matches, but weakly: the web is searched too
+AUTHORITATIVE = "megacorporation arasaka headquartered"
+NO_MATCH = "zzzz qqqq"
+
+
+def book_engine(llm: Any, tts: FakeTts, search: FakeSearch | None = None) -> NarrationEngine:
+    return NarrationEngine(
+        ConnectionManager(),
+        llm_client=llm,
+        initial_sentences=BOOK,
+        settings=Settings.fast(),
+        tts=tts,
+        search=search if search is not None else FakeSearch(),
+    )
+
+
+async def ask_and_wait(engine: NarrationEngine, query: str) -> PlayerSocket:
+    socket = await connected(engine.manager)
+    engine.ask(query)
+    await finished(engine.manager)
+    await delivered()
+    return socket
+
+
+def closest_passage(engine: NarrationEngine, query: str) -> str:
+    return engine.search_document_passages(query, 1, current_sentence_idx=engine.current_sentence_idx)[0]
+
+
+@pytest.mark.parametrize("status", ["offline", "auth", "error"])
+async def test_with_no_model_answer_the_closest_passage_is_read(status: str) -> None:
+    tts = FakeTts()
+    llm = StreamingLLM(tokens=())
+    llm.status = status
+    engine = book_engine(llm, tts)
+
+    socket = await ask_and_wait(engine, NOT_AUTHORITATIVE)
+
+    spoken = "From the text: " + closest_passage(engine, NOT_AUTHORITATIVE)
+    assert tts.texts == [spoken]
+    assert [m["reply"] for m in socket.messages("prompt_envelope") if m["state"] == "LISTENING"] == [spoken]  # and it is shown
+    assert socket.messages("state_sync")[-1]["llm_status"] == status
+    assert engine._conversation_history == []
+    assert len(llm.calls) == 1  # the model was asked first
+    await engine.manager.tasks.cancel_all()
+
+
+async def test_with_no_model_answer_and_no_passage_the_offline_line_is_spoken() -> None:
+    tts = FakeTts()
+    llm = StreamingLLM(tokens=())
+    llm.status = "offline"
+    engine = book_engine(llm, tts)
+
+    await ask_and_wait(engine, NO_MATCH)
+
+    assert tts.texts == [OFFLINE_LINE]  # never "From the text: " with nothing after it
+    assert engine._conversation_history == []
+    await engine.manager.tasks.cancel_all()
+
+
+async def test_the_no_model_provider_reads_the_passage_without_a_request() -> None:
+    tts = FakeTts()
+    search = FakeSearch()
+    llm = StreamingLLM()
+    llm.provider = "none"
+    llm.web_search_enabled = True
+    engine = book_engine(llm, tts, search)
+
+    socket = await ask_and_wait(engine, NOT_AUTHORITATIVE)
+
+    assert tts.texts == ["From the text: " + closest_passage(engine, NOT_AUTHORITATIVE)]
+    assert llm.calls == []
+    assert search.calls == []  # nothing would read the web results
+    assert socket.messages("state_sync")[-1]["llm_status"] == "none"
+    assert engine._conversation_history == []
+    await engine.manager.tasks.cancel_all()
+
+
+async def test_the_no_model_provider_with_no_passage_speaks_the_offline_line() -> None:
+    tts = FakeTts()
+    llm = StreamingLLM()
+    llm.provider = "none"
+    engine = book_engine(llm, tts)
+
+    await ask_and_wait(engine, NO_MATCH)
+
+    assert tts.texts == [OFFLINE_LINE]
+    await engine.manager.tasks.cancel_all()
+
+
+async def test_a_broken_stream_speaks_the_partial_text_and_is_not_remembered() -> None:
+    tts = FakeTts()
+    llm = StreamingLLM(tokens=("The ferry ", "left at"))
+    llm.status = "interrupted"
+    engine = book_engine(llm, tts)
+
+    socket = await ask_and_wait(engine, NOT_AUTHORITATIVE)
+
+    assert tts.texts == ["The ferry left at"]  # what arrived, with nothing appended
+    assert engine._conversation_history == []
+    assert socket.messages("state_sync")[-1]["llm_status"] == "interrupted"
+    await engine.manager.tasks.cancel_all()
+
+
+async def test_only_answers_the_model_finished_are_remembered() -> None:
+    tts = FakeTts()
+    llm = StreamingLLM(tokens=("A real answer.",))
+    engine = book_engine(llm, tts)
+    await ask_and_wait(engine, NOT_AUTHORITATIVE)
+    assert engine._conversation_history == [
+        {"role": "user", "content": NOT_AUTHORITATIVE},
+        {"role": "assistant", "content": "A real answer."},
+    ]
+
+    # The model then goes away: the next question is answered from the book and leaves the history as it was.
+    llm.tokens, llm.status = [], "offline"
+    engine.ask(AUTHORITATIVE)
+    await finished(engine.manager)
+
+    assert len(engine._conversation_history) == 2
+    assert OFFLINE_LINE not in str(engine._conversation_history)
+    await engine.manager.tasks.cancel_all()
+
+
+async def test_the_prompt_holds_the_fenced_passages_and_web_results_with_the_question_last() -> None:
+    llm = StreamingLLM()
+    llm.web_search_enabled = True
+    search = FakeSearch("- A web page: Lucy is a netrunner.")
+    engine = book_engine(llm, FakeTts(), search)
+
+    await ask_and_wait(engine, NOT_AUTHORITATIVE)
+
+    user = llm.calls[0][-1]["content"]
+    assert '<book_passages authoritative="false">' in user
+    assert closest_passage(engine, NOT_AUTHORITATIVE) in user
+    assert "<web_results>" in user and "Lucy is a netrunner." in user
+    assert user.rstrip().endswith("Question: " + NOT_AUTHORITATIVE)
+    assert llm.calls[0][0]["role"] == "system"
+    assert search.calls == [(NOT_AUTHORITATIVE, 3)]
+    await engine.manager.tasks.cancel_all()
+
+
+async def test_an_authoritative_passage_skips_the_web() -> None:
+    llm = StreamingLLM()
+    llm.web_search_enabled = True
+    search = FakeSearch()
+    engine = book_engine(llm, FakeTts(), search)
+
+    await ask_and_wait(engine, AUTHORITATIVE)
+
+    user = llm.calls[0][-1]["content"]
+    assert '<book_passages authoritative="true">' in user
+    assert "<web_results>" not in user
+    assert search.calls == []
+    await engine.manager.tasks.cancel_all()

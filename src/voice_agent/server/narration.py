@@ -16,14 +16,11 @@ from voice_agent.cursor.tracker import CursorPosition, CursorTracker
 from voice_agent.document.parser import DocumentContent
 from voice_agent.llm.client import (
     CHARACTER_PERSONA_PROMPTS,
+    OFFLINE_LINE,
     LLMClient,
     search_web,
 )
-from voice_agent.orchestrator.context import (
-    estimate_tokens,
-    sanitize_chatml,
-    truncate_to_tokens,
-)
+from voice_agent.llm.prompt import build_messages
 from voice_agent.server.connection_manager import ConnectionManager, Statuses
 from voice_agent.server.schemas import (
     CursorUpdateMessage,
@@ -43,6 +40,18 @@ SearchFn = Callable[[str, int], Awaitable[str]]
 # Spoken when a reply fails or the user's speech was not understood. Neutral on purpose: no persona, no detail.
 REPLY_ERROR_LINE = "Something went wrong answering that."
 UNRECOGNIZED_LINE = "I didn't catch that."
+# Read before the closest passage of the book when no model answered.
+FROM_THE_TEXT = "From the text: "
+
+# The book is the primary source, and the web is not searched, when its best passage scores at least this much.
+AUTHORITATIVE_SCORE = 2.5
+HISTORY_MESSAGES = 12  # six question and answer pairs
+DEFAULT_PERSONA_PROMPT = (
+    "You are an interactive conversational voice audiobook narrator. "
+    "The user interrupted the book narration to ask you a question. "
+    "Answer concisely, helpfully, and naturally in 1 to 3 spoken sentences. "
+    "Use the provided book context and web search results when answering."
+)
 
 
 # After an interruption, a pause or a change of owner, a sentence that was partly spoken starts again this many words
@@ -624,134 +633,85 @@ class NarrationEngine:
         self.manager.session.resume("reply_done")
 
     async def _answer(self, query: str) -> None:
-        """Ground the question, stream the answer, speak it and open the follow-up window. Raises on any failure."""
+        """Answer the question and open the follow-up window. Raises on any failure.
+
+        The question is grounded in the book (and the web, when the book is not authoritative) and put to the model.
+        When the model gives no text, the closest passage of the book is read out instead, or the offline line when
+        there is none.
+        """
         current_context = self.sentences[self.current_sentence_idx] if self.sentences else ""
         voice_id = self.manager.active_voice or "david-martinez"
-
-        # 1. Retrieve relevant passages with BM25 & Gaussian proximity boost
-        scored_passages = self.search_document_passages_with_scores(
-            query,
-            max_passages=3,
-            current_sentence_idx=self.current_sentence_idx,
+        scored = self.search_document_passages_with_scores(
+            query, max_passages=3, current_sentence_idx=self.current_sentence_idx
         )
-        doc_passages = [text for text, _ in scored_passages]
-        best_doc_score = scored_passages[0][1] if scored_passages else 0.0
-        is_authoritative = best_doc_score >= 2.5
+        passages = [text for text, _ in scored]
+        authoritative = bool(scored) and scored[0][1] >= AUTHORITATIVE_SCORE
 
-        # 2. Live Internet Web Search Grounding (skipped if document passage has high BM25 confidence >= 2.5)
-        web_grounding = ""
-        if self.llm.web_search_enabled and not is_authoritative:
-            await self.manager.broadcast_json(PromptEnvelopeMessage(
-                state="REPLYING",
-                context=f"Searching web and document for: {query[:50]}...",
-                query=query,
-                reply="",
-            ))
-            web_grounding = await self.search(query, 3)
+        has_model = self.llm.provider != "none"
+        web_results = ""
+        if has_model and self.llm.web_search_enabled and not authoritative:
+            await self._announce(query, f"Searching web and document for: {query[:50]}...", "")
+            web_results = await self.search(query, 3)
 
-        # 3. Context Budgeting & ChatML Sanitization (enforces 2048-token limit for RTX 3050 4GB VRAM)
-        clean_query = sanitize_chatml(query)
-        clean_query = truncate_to_tokens(clean_query, max_tokens=256, from_end=False)
-        clean_current_context = sanitize_chatml(current_context)
-        clean_passages = [sanitize_chatml(p) for p in doc_passages]
-        clean_web_grounding = sanitize_chatml(web_grounding)
+        reply = ""
+        if has_model:
+            messages = build_messages(
+                system_prompt=CHARACTER_PERSONA_PROMPTS.get(voice_id, DEFAULT_PERSONA_PROMPT),
+                history=self._conversation_history,
+                question=query,
+                passages=passages,
+                current_sentence=current_context,
+                web_results=web_results,
+                authoritative=authoritative,
+            )
+            await self._announce(query, current_context, "Formulating answer...")
+            reply = await self._stream_reply(messages, query, current_context, voice_id)
 
-        character_prompt = CHARACTER_PERSONA_PROMPTS.get(
-            voice_id,
-            (
-                "You are an interactive conversational voice audiobook narrator. "
-                "The user interrupted the book narration to ask you a question. "
-                "Answer concisely, helpfully, and naturally in 1 to 3 spoken sentences. "
-                "Use the provided book context and web search results when answering."
-            ),
-        )
+        status = self.llm.status if has_model else "none"
+        if not reply and status != "ok":
+            # No model, or one that gave nothing usable: read the book's closest passage rather than a canned line.
+            passage = passages[0].strip() if passages else ""
+            spoken = FROM_THE_TEXT + passage if passage else OFFLINE_LINE
+            await self._announce(query, current_context, spoken)
+        elif not reply:
+            raise EmptyReply("the language model returned no text")
+        else:
+            spoken = reply
+            # Only a real answer is remembered: an offline line or a half-finished reply would be sent back to the model
+            # as something it had said, and a small model may repeat it.
+            if status == "ok":
+                self._remember(query, reply)
+        await self._speak_then_listen(query, current_context, spoken)
 
-        # Calculate token allowances
-        system_tokens = estimate_tokens(character_prompt) + 30
-        output_headroom = 256  # Reserved for 3-sentence generation
-        max_context_budget = 2048
-        available_user_tokens = max(256, max_context_budget - system_tokens - output_headroom)
-        query_tokens = estimate_tokens(clean_query)
-        remaining_context_budget = max(100, available_user_tokens - query_tokens)
+    async def _announce(self, query: str, context: str, reply: str) -> None:
+        await self.manager.broadcast_json(PromptEnvelopeMessage(state="REPLYING", context=context, query=query, reply=reply))
 
-        context_parts = []
-        if clean_passages:
-            if is_authoritative:
-                header = "Authoritative Document Passages (Primary Source of Truth):\n"
-            else:
-                header = "Passages from Document:\n"
-            context_parts.append(header + "\n".join(f"- {p}" for p in clean_passages))
-        if clean_current_context:
-            context_parts.append(f"Currently Reading Sentence: \"{clean_current_context}\"")
-        if clean_web_grounding:
-            context_parts.append(f"Live Internet Web Search Results:\n{clean_web_grounding}")
-
-        raw_context_block = "\n\n".join(context_parts)
-        context_block = truncate_to_tokens(raw_context_block, max_tokens=remaining_context_budget, from_end=False)
-
-        messages = [
-            {
-                "role": "system",
-                "content": character_prompt,
-            },
-        ]
-        # Inject up to 3 prior turns of conversational context for multi-turn dialogue
-        for prev_turn in self._conversation_history[-6:]:
-            messages.append(prev_turn)
-
-        messages.append({
-            "role": "user",
-            "content": f"{context_block}\n\nUser Question: {clean_query}",
-        })
-
-        # 4. Stream LLM tokens to the prompt envelope
-        await self.manager.broadcast_json(PromptEnvelopeMessage(
-            state="REPLYING",
-            context=current_context,
-            query=query,
-            reply="Formulating answer...",
-        ))
-        accumulated_reply = ""
+    async def _stream_reply(self, messages: list[dict[str, str]], query: str, context: str, voice_id: str) -> str:
+        """The model's text, shown to the HUD as it arrives. The status is read once the stream has ended, and the HUD is
+        told only if it changed: never once per token."""
+        reply = ""
         # The stream is closed here, whatever ends the loop: a cancelled or failed reply must not leave a
         # connection to the model open until the generator is garbage collected.
         async with contextlib.aclosing(self.llm.stream_generate(messages, character_id=voice_id)) as stream:
             async for token in stream:
-                accumulated_reply += token
-                # Periodic telemetry update
-                await self.manager.broadcast_json(PromptEnvelopeMessage(
-                    state="REPLYING",
-                    context=current_context,
-                    query=query,
-                    reply=accumulated_reply.strip(),
-                ))
-
-        # The stream ran to its end (a cancelled reply never gets here, so a barge-in is not reported as a model failure).
+                reply += token
+                await self._announce(query, context, reply.strip())
+        # Not reached by a cancelled reply, so a barge-in is not reported as a model failure.
         self._llm_status = self.llm.status
         self.manager.refresh_statuses()
+        return reply.strip()
 
-        final_reply = accumulated_reply.strip()
-        if not final_reply:
-            raise EmptyReply("the language model returned no text")
+    def _remember(self, question: str, answer: str) -> None:
+        self._conversation_history.append({"role": "user", "content": question})
+        self._conversation_history.append({"role": "assistant", "content": answer})
+        del self._conversation_history[:-HISTORY_MESSAGES]
 
-        # The history keeps any non-empty text the client returns, and a reply stays in it even if speaking it fails.
-        # The fallback line the client yields when the model is unreachable is non-empty, so it is kept too; telling
-        # it apart from a real answer needs the client to say which it was.
-        self._conversation_history.append({"role": "user", "content": clean_query})
-        self._conversation_history.append({"role": "assistant", "content": final_reply})
-        if len(self._conversation_history) > 12:
-            self._conversation_history = self._conversation_history[-12:]
+    async def _speak_then_listen(self, query: str, context: str, spoken: str) -> None:
+        await self._speak(spoken)
 
-        # 5. Synthesize the answer to speech and stream it to the clients
-        await self._speak(final_reply)
-
-        # 6. Conversational turn-taking window: leave comms open for a follow-up. The reply ends here; the session
+        # Conversational turn-taking window: leave comms open for a follow-up. The reply ends here; the session
         # deadline closes the window, and a question asked inside it is a reply of its own.
         self.manager.clear_audio_turn()
         self.manager.session.enter_listening("followup", followup=True)
         # Queued, not awaited: it must reach the clients after the state_sync that the line above announced.
-        self.manager.broadcast_json_sync(PromptEnvelopeMessage(
-            state="LISTENING",
-            context=current_context,
-            query=query,
-            reply=final_reply,
-        ))
+        self.manager.broadcast_json_sync(PromptEnvelopeMessage(state="LISTENING", context=context, query=query, reply=spoken))
