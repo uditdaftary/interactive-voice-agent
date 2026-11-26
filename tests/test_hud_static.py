@@ -23,6 +23,9 @@ REMOVED = [
     "0.04",
     "generateSimulatedFFTBins",
     "-14.2 dB",
+    # Claims the page made about the model and the machine, true or not: the server says which provider it uses.
+    "Qwen 3.5",
+    "ZERO-CLOUD",
     # A fixed 3 s retry: the wait now grows from 1 s to 30 s.
     "reconnectInterval",
     # Assigned to when the server's document arrives: a const makes that throw, and the catch hid it.

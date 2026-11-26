@@ -355,7 +355,7 @@
     </div>
     <div class="diag-cell">
       <span class="label">ACTIVE LLM ENGINE</span>
-      <span class="val num">Qwen 3.5 4B GGUF</span>
+      <span class="val num" id="diag-llm-engine">not reported</span>
     </div>
   </section>
 
@@ -363,11 +363,6 @@
   <!-- FOOTER STATUS                              -->
   <!-- ========================================== -->
   <footer class="footer-bar">
-    <div>
-      <span>OFFLINE RUNTIME: <strong style="color:var(--ink);">100% ZERO-CLOUD LOCAL EXECUTION</strong></span>
-      <span style="margin: 0 8px;">|</span>
-      <span>SPECS: 16GB RAM / 4-8GB VRAM</span>
-    </div>
     <div>
       <span>DESIGN LANGUAGE: <strong style="color:var(--ink);">KGCR CATALOG SHEET</strong> (0px Square / Archivo / Martian Mono)</span>
     </div>
@@ -1119,10 +1114,19 @@
     return text.charAt(0).toUpperCase() + text.slice(1);
   }
 
+  // The provider the server says it is using, or that it has not said.
+  function providerLabel(sync) {
+    const provider = sync ? sync.llm_provider : null;
+    if (typeof provider !== 'string' || !provider) return 'not reported';
+    return provider === 'none' ? 'No model' : provider;
+  }
+
   // Draws the chips from the latest state_sync (null when there is none: the server is away, so nothing is known), and
   // clears the error line when a sync shows the session has moved on.
   let renderedChips = '';
   function renderStatus(sync) {
+    const engine = document.getElementById('diag-llm-engine');
+    if (engine) engine.textContent = providerLabel(sync);
     const row = document.getElementById('status-row');
     const chips = statusChips(sync);
     // Redrawn only when it changed: the row is a live region, and a state_sync arrives for many reasons.
