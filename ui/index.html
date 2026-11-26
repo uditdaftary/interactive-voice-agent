@@ -2365,10 +2365,12 @@
   }
 
   // --- AD-HOC VOICE & TEXT INTERRUPTION WITH WEB SEARCH GROUNDING ---
-  async function submitInterruptionQuery(overrideQuery) {
+  function submitInterruptionQuery() {
     const input = document.getElementById('interruption-query-input');
-    const query = (overrideQuery || (input ? input.value : '')).trim();
+    const query = (input ? input.value : '').trim();
     if (!query) return;
+    // The question stays in the box until there is a server to take it.
+    if (!requireConnection()) return;
 
     if (input) input.value = '';
 
@@ -2387,23 +2389,11 @@
       const qEl = envelope.querySelector('div:nth-child(3) span:last-child');
       if (qEl) qEl.innerText = `"${query}"`;
       const rEl = envelope.querySelector('div:nth-child(4) span:last-child');
-      if (rEl) rEl.innerText = `[Searching live web via DuckDuckGo & formulating response...]`;
+      if (rEl) rEl.innerText = `[Formulating a response...]`;
     }
 
-    // 3. Send over WebSocket if connected, otherwise call /api/ask
-    if (wsClient && wsClient.isConnected) {
-      wsClient.send({ type: 'query_interruption', query: query });
-    } else {
-      try {
-        await fetch(`${getApiBaseUrl()}/api/ask`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: query })
-        });
-      } catch (err) {
-        console.warn("REST ask error:", err);
-      }
-    }
+    // 3. The server answers over the socket
+    wsClient.send({ type: 'query_interruption', query: query });
   }
 
   // Expose controller API for testing and programmatic automation
