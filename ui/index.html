@@ -492,7 +492,7 @@
   }
 
   // --- STORY DATASET ---
-  const STORY_PARAGRAPHS = [
+  let STORY_PARAGRAPHS = [
     "Chapter 1: Arrival in the Megabuilding.",
     "The rain drummed ceaselessly against the reinforced plasteel windows of Watson.",
     "Neon reflections in deep crimson and cyan bled across the flooded pavement below.",
@@ -2204,7 +2204,9 @@
           renderNarrativeStream();
         }
       }
-    } catch (e) {}
+    } catch (e) {
+      console.warn("Could not load the document from the server:", e);
+    }
   }
 
   // --- MODEL & LIVE WEB SEARCH CONFIG MODAL ---
