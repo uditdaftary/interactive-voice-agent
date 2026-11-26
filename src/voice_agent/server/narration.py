@@ -506,15 +506,8 @@ class NarrationEngine:
         if not self.sentences or not query.strip():
             return []
 
-        # Cyberpunk voice recognition alias normalization
-        query_norm = query.lower()
-        if "arakas" in query_norm:
-            query_norm += " arasaka"
-        if "sande" in query_norm and "sandevistan" not in query_norm:
-            query_norm += " sandevistan"
-
         scored = self._bm25_index.search(
-            query=query_norm,
+            query=query,
             top_k=max_passages,
             current_sentence_idx=current_sentence_idx,
         )

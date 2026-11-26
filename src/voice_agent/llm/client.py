@@ -218,171 +218,10 @@ def sanitize_web_snippet(text: str) -> str:
     return text
 
 
-# Comprehensive 50+ Stopword Set
-DEFAULT_STOPWORDS = {
-    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are",
-    "as", "at", "be", "because", "been", "before", "being", "below", "between", "both", "but",
-    "by", "can", "could", "did", "do", "does", "doing", "down", "during", "each", "few", "for",
-    "from", "further", "had", "has", "have", "having", "he", "her", "here", "hers", "herself",
-    "him", "himself", "his", "how", "i", "if", "in", "into", "is", "it", "its", "itself", "just",
-    "me", "more", "most", "my", "myself", "no", "nor", "not", "of", "off", "on", "once", "only",
-    "or", "other", "our", "ours", "ourselves", "out", "over", "own", "same", "she", "should", "so",
-    "some", "such", "tell", "than", "that", "the", "their", "theirs", "them", "themselves", "then",
-    "there", "these", "they", "this", "those", "through", "to", "too", "under", "until", "up",
-    "very", "was", "we", "were", "what", "when", "where", "which", "while", "who", "whom", "why",
-    "will", "with", "would", "you", "your", "yours", "yourself", "yourselves"
-}
-
-# Cyberpunk Universe Anchoring Entities and Concepts
-CYBERPUNK_CHARACTERS = {
-    "lucy", "david", "rebecca", "maine", "kiwi", "dorio", "smasher",
-    "silverhand", "johnny", "arasaka", "yorinobu", "saburo", "takemura",
-    "panam", "judy", "alt cunningham", "kerry", "river"
-}
-
-CYBERPUNK_LORE = {
-    "relic", "blackwall", "sandevistan", "soulkiller", "cyberpsychosis",
-    "cyberware", "netrunner", "edgerunner", "braindance", "trauma team",
-    "militech", "kang tao", "night city"
-}
-
-# Question Title Patterns for Heavy Filtering Penalty (-20)
-INTERROGATIVE_PREFIXES = (
-    "how ", "why ", "can someone ", "what is ", "who was ", "who is ",
-    "what was ", "what are ", "where is ", "where was ", "when did ",
-    "how did ", "why did ", "what did ", "who did ", "did ", "can anyone ",
-    "is it ", "could someone "
-)
-
-# Predicate & Factual Clause Scoring Markers (+8 bonus)
-PREDICATE_FACT_MARKERS = (
-    "killed by", "stole", "invented", "developed", "destroyed", "died",
-    "shot", "caused by", "biochip", "construct", "ai", "subroutine",
-    "syndrome", "condition", "flatlined", "murdered by", "founded",
-    "cyberware", "weapons", "night city", "edgerunner", "rockerboy", "netrunner"
-)
-
-# Definition Markers (+8 bonus)
-DEFINITION_MARKERS = (
-    "is a", "is an", "is the", "known as", "deuteragonist", "protagonist",
-    "megacorporation", "mercenary", "character in", "specializing in",
-    "corporation", "co-lead"
-)
-
-# Forum and Social Junk Filters
-FORUM_JUNK_MARKERS = (
-    "reddit", "forum", "posted by", "view comments", "upvotes",
-    "discussion thread", "threads", "community", "replies"
-)
-
-# Irrelevant Paleontology/Music Disambiguation Filters
-DISAMBIGUATION_FILTERS = (
-    "hominid", "fossil", "australopithecus", "skeleton",
-    "paleoanthropolog", "album", "song", "track listing", "discography"
-)
-
-
-def extract_query_tokens(query: str, stopwords: Optional[set] = None) -> List[str]:
-    """Extract clean query terms using regex word boundaries, filtering out stopwords."""
-    if not query:
-        return []
-    stops = stopwords if stopwords is not None else DEFAULT_STOPWORDS
-    query_clean = query.lower()
-    raw_tokens = re.findall(r'\b[a-z0-9_-]{2,}\b', query_clean)
-    filtered = [t for t in raw_tokens if t not in stops]
-    tokens = filtered if filtered else raw_tokens
-    # Handle common Cyberpunk voice recognition typos
-    if ("arakas" in query_clean or "arakasa" in query_clean) and "arasaka" not in tokens:
-        tokens.append("arasaka")
-    if "sande" in query_clean and "sandevistan" not in tokens:
-        tokens.append("sandevistan")
-    return tokens
-
-
-def anchor_search_query(query: str) -> str:
-    """Normalize query typos and anchor Cyberpunk universe characters and concepts."""
-    if not query or not query.strip():
-        return ""
-    search_q = query
-    query_lower = query.lower()
-
-    # Normalize voice recognition typos for Cyberpunk world lore
-    if "arakas" in query_lower:
-        search_q = re.sub(r'arakas[a-z]*', 'arasaka', search_q, flags=re.IGNORECASE)
-        query_lower = search_q.lower()
-    if "sande" in query_lower and "sandevistan" not in query_lower:
-        search_q = re.sub(r'\bsande\b', 'sandevistan', search_q, flags=re.IGNORECASE)
-        query_lower = search_q.lower()
-
-    if "cyberpunk" not in query_lower and "edgerunners" not in query_lower:
-        anchored = False
-        multi_word_anchors = ("alt cunningham", "trauma team", "kang tao", "night city")
-        for phrase in multi_word_anchors:
-            if phrase in query_lower:
-                search_q = f"{search_q} Cyberpunk"
-                anchored = True
-                break
-
-        if not anchored:
-            tokens = set(re.findall(r'\b[a-z0-9_-]{2,}\b', query_lower))
-            single_word_anchors = (CYBERPUNK_CHARACTERS | CYBERPUNK_LORE) - set(multi_word_anchors)
-            if tokens & single_word_anchors:
-                search_q = f"{search_q} Cyberpunk"
-
-    return search_q
-
-
-def score_candidate_sentence(sent: str, query_terms: List[str]) -> int:
-    """Score candidate sentence from web search for relevance, factual density, and interrogative penalties."""
-    s_lower = sent.lower().strip()
-    clean_sent = re.sub(r'^[^\w]+', '', sent.strip()).strip()
-    if not clean_sent:
-        return -999
-
-    # Filter out irrelevant hominid/fossil/album/song disambiguations
-    if any(dis in s_lower for dis in DISAMBIGUATION_FILTERS):
-        return -999
-
-    # MUST match at least one query term
-    matching_terms = [qt for qt in query_terms if qt in s_lower]
-    if not matching_terms:
-        return 0
-
-    # 1. Base matching score: 5 points per non-stopword query term
-    score = len(matching_terms) * 5
-
-    # 2. Predicate / factual clause markers (+8 points base + bonus for multiple markers)
-    pred_matches = [m for m in PREDICATE_FACT_MARKERS if m in s_lower]
-    if pred_matches:
-        score += 8 + min(6, (len(pred_matches) - 1) * 2)
-
-    # 3. Definition markers (+8 points)
-    if any(marker in s_lower for marker in DEFINITION_MARKERS):
-        score += 8
-
-    # 4. Interrogative sentence penalty (-20 score)
-    # Applied if sentence ends in ? or starts with question patterns
-    is_question = (
-        sent.strip().endswith('?')
-        or sent.strip().rstrip('.!').endswith('?')
-        or s_lower.startswith(INTERROGATIVE_PREFIXES)
-    )
-    if is_question:
-        score -= 20
-
-    # 5. Forum junk and reddit headers penalty (-15 score)
-    if any(junk in s_lower for junk in FORUM_JUNK_MARKERS):
-        score -= 15
-
-    # 6. Short fragments (< 25 characters) penalty (-15 score)
-    if len(clean_sent) < 25:
-        score -= 15
-
-    return score
-
-
 def search_web_sync(query: str, max_results: int = 8) -> str:
-    """Execute live internet web search to ground interruption queries with multi-query fallback."""
+    """Search the web once, for the user's own words, and return the results as bullet lines ("" when there are none).
+
+    Blocking: call it through `search_web`. The query is sent as spoken or typed; nothing is added to it."""
     if not query or not query.strip():
         return ""
 
@@ -392,41 +231,20 @@ def search_web_sync(query: str, max_results: int = 8) -> str:
         logger.warning("Failed to import DDGS: %s", imp_err)
         return ""
 
-    # Generate candidate queries in descending specificity
-    primary_q = anchor_search_query(query)
-    candidates = [primary_q]
-
-    tokens = extract_query_tokens(query)
-    if tokens:
-        kw_lore = " ".join(tokens)
-        if "cyberpunk" not in kw_lore.lower():
-            kw_lore = f"{kw_lore} Cyberpunk"
-        if kw_lore not in candidates:
-            candidates.append(kw_lore)
-        kw_plain = " ".join(tokens)
-        if kw_plain not in candidates:
-            candidates.append(kw_plain)
-    if query not in candidates:
-        candidates.append(query)
-
-    for search_q in candidates:
-        try:
-            results = list(DDGS().text(search_q, max_results=max_results))
-            if results:
-                lines = []
-                for r in results:
-                    title = sanitize_web_snippet(r.get("title", ""))
-                    body = sanitize_web_snippet(r.get("body", ""))
-                    if title or body:
-                        lines.append(f"- {title}: {body}")
-                if lines:
-                    return "\n".join(lines)
-        except Exception as exc:  # noqa: BLE001  # S3.3 RC4
-            logger.warning("Live web search failed for query %r: %s", search_q, exc)
-            continue
-
-    logger.warning("Live web search failed across candidate queries %s", candidates)
-    return ""
+    try:
+        results = list(DDGS().text(query, max_results=max_results))
+    except Exception as exc:  # noqa: BLE001  # S3.3 RC4
+        logger.warning("Live web search failed for query %r: %s", query, exc)
+        return ""
+    lines = []
+    for result in results:
+        title = sanitize_web_snippet(result.get("title", ""))
+        body = sanitize_web_snippet(result.get("body", ""))
+        if title or body:
+            lines.append(f"- {title}: {body}")
+    if not lines:
+        logger.warning("Live web search found nothing for query %r", query)
+    return "\n".join(lines)
 
 
 async def search_web(query: str, max_results: int = 8) -> str:

@@ -774,3 +774,17 @@ async def test_an_authoritative_passage_skips_the_web() -> None:
     assert "<web_results>" not in user
     assert search.calls == []
     await engine.manager.tasks.cancel_all()
+
+
+async def test_the_question_reaches_the_web_search_and_the_book_unchanged() -> None:
+    """No world is assumed: nothing is appended to the web query, and a misheard name is not mapped to a character."""
+    llm = StreamingLLM()
+    llm.web_search_enabled = True
+    search = FakeSearch()
+    engine = book_engine(llm, FakeTts(), search)
+
+    await ask_and_wait(engine, "who is johnny")
+
+    assert search.calls == [("who is johnny", 3)]
+    assert engine.search_document_passages("who is in arakas tower") == []  # "arakas" is not rewritten to "arasaka"
+    await engine.manager.tasks.cancel_all()
