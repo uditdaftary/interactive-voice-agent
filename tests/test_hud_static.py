@@ -19,6 +19,8 @@ REMOVED = [
     # One server: the page is served by the app, so there is no second port and no `file:` address.
     "8080",
     "localhost:8000",
+    # A fixed 3 s retry: the wait now grows from 1 s to 30 s.
+    "reconnectInterval",
     # Assigned to when the server's document arrives: a const makes that throw, and the catch hid it.
     "const STORY_PARAGRAPHS",
 ]

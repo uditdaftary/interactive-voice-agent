@@ -1260,12 +1260,17 @@
   }
 
   // --- HUD WEBSOCKET & DUAL-MODE CLIENT ---
+  // A lost connection is retried after 1 s, then after twice as long each time up to 30 s, and the wait starts over at
+  // 1 s once a connection opens.
+  const RECONNECT_FIRST_MS = 1000;
+  const RECONNECT_MAX_MS = 30000;
+
   class HUDWebSocketClient {
     constructor() {
       this.ws = null;
       this.isConnected = false;
       this.reconnectTimer = null;
-      this.reconnectInterval = 3000;
+      this.reconnectDelayMs = RECONNECT_FIRST_MS;
       this.micSource = 'browser';
       this.audioContext = null;
       this.gainNode = null;
@@ -1389,25 +1394,29 @@
       const url = this.getWsUrl();
 
       try {
-        this.ws = new WebSocket(url);
-        this.ws.binaryType = 'arraybuffer';
+        // Every handler ignores a socket that is no longer this.ws, so a late event from an old one cannot reach the
+        // state of the current one.
+        const ws = new WebSocket(url);
+        this.ws = ws;
+        ws.binaryType = 'arraybuffer';
 
-        this.ws.onopen = () => {
-          this.onConnected();
+        ws.onopen = () => {
+          if (this.ws === ws) this.onConnected();
         };
 
-        this.ws.onmessage = (event) => {
-          this.onMessage(event);
+        ws.onmessage = (event) => {
+          if (this.ws === ws) this.onMessage(event);
         };
 
-        this.ws.onclose = () => {
-          this.onDisconnected();
+        ws.onclose = () => {
+          if (this.ws === ws) this.onDisconnected();
         };
 
-        this.ws.onerror = () => {
-          // Handled gracefully, onclose will manage reconnection
+        ws.onerror = () => {
+          // onclose follows and schedules the retry.
         };
       } catch (e) {
+        console.warn("Could not open the WebSocket:", e);
         this.onDisconnected();
       }
     }
@@ -1421,6 +1430,7 @@
       this.stoppedBefore = 0;
       this.pendingSegment = null;
       updateWsStatusUI(true);
+      this.reconnectDelayMs = RECONNECT_FIRST_MS;
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
@@ -1446,10 +1456,13 @@
       this.stopBrowserMicCapture();
 
       if (!this.reconnectTimer) {
+        const delay = this.reconnectDelayMs;
+        this.reconnectDelayMs = Math.min(delay * 2, RECONNECT_MAX_MS);
+        console.info(`Disconnected from the server. Retrying in ${delay} ms.`);
         this.reconnectTimer = setTimeout(() => {
           this.reconnectTimer = null;
           this.connect();
-        }, this.reconnectInterval);
+        }, delay);
       }
     }
 
