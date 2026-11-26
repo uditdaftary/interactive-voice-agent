@@ -1388,7 +1388,7 @@
       // stop (audio_stop, or a barge_in) names the generation the audio is in from then on: nothing older may play.
       this.pendingSegment = null;    // the announcement for the blob that comes next
       this.stoppedBefore = 0;        // clips of a generation below this are dead
-      this.audioEpoch = 0;           // counts stops, so a clip being decoded while one happens can tell
+      this.audioEpoch = 0;           // counts this tab's own stops, which have no generation, so a clip being decoded can tell
       this.clipChain = Promise.resolve();  // the clip being decoded and scheduled, and every one queued behind it
       // Only one tab holds the microphone and hears the audio; the server says which in every state_sync.
       this.isMicOwner = true;
@@ -1451,7 +1451,6 @@
     // Stops the clips for which shouldStop(clip) holds. Stopping a source also fires its onended, so each clip is marked
     // first: a clip that was cut off must never be reported as played.
     stopClips(shouldStop) {
-      this.audioEpoch++;
       this.activeAudioSources = this.activeAudioSources.filter((clip) => {
         if (!shouldStop(clip)) return true;
         clip.stopped = true;
@@ -1466,14 +1465,18 @@
       }
     }
 
-    // This tab's own stop, for a click that does not wait for the server. A clip the server has sent but this tab has
-    // not received yet is ended by the server's audio_stop when that arrives.
+    // This tab's own stop, for a click that does not wait for the server. It has no generation, so it ends every clip
+    // received so far, one still being decoded included. A clip the server has sent but this tab has not received yet
+    // is ended by the server's audio_stop when that arrives.
     stopAllAudio() {
+      this.audioEpoch++;
       this.stopClips(() => true);
     }
 
     // The server stopped audio: from `generation` on, only clips of that generation or a later one may play. Clips
-    // arrive in order after the stop, so this ends exactly what was queued before it.
+    // arrive in order after the stop, so this ends exactly what was queued before it. It is a statement about
+    // generations only: a clip being decoded is dropped when the stop is newer than the clip's own generation, and not
+    // for a stop that is older, which would lose a clip nobody has stopped and leave the server waiting for its report.
     stopAudioBefore(generation) {
       if (!Number.isInteger(generation)) {
         this.stopAllAudio();
@@ -1602,7 +1605,11 @@
       const segment = this.pendingSegment;
       this.pendingSegment = null;
       const epoch = this.audioEpoch;
-      const isStale = () => this.audioEpoch !== epoch || (segment !== null && segment.generation < this.stoppedBefore);
+      const stoppedAtArrival = this.stoppedBefore;
+      // A clip is announced with its generation, so a stop of the server's matters only if it is newer than that. One
+      // that was not announced cannot be told apart, so any newer stop ends it.
+      const isStale = () => this.audioEpoch !== epoch ||
+        (segment !== null ? segment.generation < this.stoppedBefore : this.stoppedBefore > stoppedAtArrival);
       this.clipChain = this.clipChain
         .then(() => this.scheduleClip(arrayBuffer, segment, isStale))
         .catch((err) => console.warn("Audio clip error:", err));
