@@ -515,10 +515,11 @@ async def test_starting_from_paused_is_not_cued() -> None:
 
 
 @pytest.mark.parametrize("resting", ["NARRATING", "PAUSED"])
-async def test_a_resume_during_a_reply_changes_nothing_and_the_reply_finishes(
+async def test_a_resume_during_a_reply_lets_it_finish_and_narration_follows_it(
     resting: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Every tab sends resume when its socket opens, so a second tab must not cut off an answer or talk over it."""
+    """Every tab sends resume when its socket opens, so a second tab must not cut off an answer or talk over it. The
+    resume is not lost either, even from a paused session: the reply ends in narration (#90)."""
     manager = ConnectionManager()
     llm = BlockingLLM()
     tts = FakeTts()
@@ -538,6 +539,7 @@ async def test_a_resume_during_a_reply_changes_nothing_and_the_reply_finishes(
 
     assert states == []  # no transition
     assert manager.state == "REPLYING"
+    assert manager.session.resume_to == "NARRATING"  # whatever the session was doing before the question
     assert manager.tasks.get("narration") is None  # nothing narrates under the answer
     assert manager.tasks.get("reply") is reply  # and the answer is not cut off
     assert any("reply" in record.getMessage() for record in caplog.records if record.levelno == logging.DEBUG)
@@ -545,9 +547,9 @@ async def test_a_resume_during_a_reply_changes_nothing_and_the_reply_finishes(
     llm.release.set()
     await asyncio.wait([reply], timeout=5)
     assert not reply.cancelled() and reply.exception() is None
-    await wait_for_state(manager.session, resting)
-    assert states == ["LISTENING", resting]  # the follow-up window, then back to what it was doing
-    assert (manager.tasks.get("narration") is not None) == (resting == "NARRATING")
+    await wait_for_state(manager.session, "NARRATING")
+    assert states == ["LISTENING", "NARRATING"]  # the follow-up window, then narration
+    assert manager.tasks.get("narration") is not None
     await manager.tasks.cancel_all()
 
 

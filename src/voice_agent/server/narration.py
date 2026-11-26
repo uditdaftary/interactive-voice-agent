@@ -297,14 +297,20 @@ class NarrationEngine:
     def start_narration(self) -> None:
         """Start or resume background narration loop. Refused (and logged) from a state that may not narrate.
 
-        Ignored while a reply is in progress: the reply returns the session to what it was doing when it ends, and
-        resuming now would run narration under the answer. Every tab sends a resume when its socket opens, so a second
-        tab must not be able to cut an answer off. (From LISTENING it still works: that is how a user stops waiting.)
+        While a question is open (LISTENING or REPLYING) the session returns to narration when it ends, whatever it was
+        doing before the question, so a resume from a paused session still takes effect. From LISTENING it narrates at
+        once: that is how a user stops waiting. A reply that is in progress is not cut off: it ends, and narration
+        follows it. (Every tab sends a resume when its socket opens, so a second tab must not be able to cut an answer
+        off.)
         """
-        if self.manager.state == "REPLYING":
-            logger.debug("Resume ignored: a reply is in progress and will return the session to what it was doing")
+        session = self.manager.session
+        state = session.state
+        if state in ("LISTENING", "REPLYING"):
+            session.set_resume_to("NARRATING")
+        if state == "REPLYING":
+            logger.debug("Resume during a reply: the reply goes on and narration follows it")
             return
-        if not self.manager.session.transition("NARRATING", "resume"):
+        if not session.transition("NARRATING", "resume"):
             return
         self._ensure_narration()  # the state listener starts it on a change; this covers a loop that has since ended
         logger.info("Narration started/resumed.")

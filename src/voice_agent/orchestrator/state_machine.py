@@ -182,6 +182,16 @@ class SessionState:
                 logger.exception("state listener failed on %s -> %s (%s)", old, to, reason)
         return True
 
+    def set_resume_to(self, target: Literal["NARRATING", "PAUSED"]) -> None:
+        """Change where LISTENING or REPLYING returns to, for a user who asks for narration while a question is open.
+
+        Only meaningful in those two states; elsewhere `resume_to` is recorded when the session leaves them, so it is
+        left alone."""
+        if self._state in ("LISTENING", "REPLYING"):
+            self._resume_to = target
+        else:
+            logger.debug("set_resume_to(%s) ignored in %s", target, self._state)
+
     def resume(self, reason: str) -> bool:
         """Leave LISTENING or REPLYING for `resume_to`. From any other state it does nothing: a late
         resume (a reply that ends after the user paused) must not undo the pause."""
