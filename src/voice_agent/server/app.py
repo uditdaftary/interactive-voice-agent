@@ -25,7 +25,7 @@ from voice_agent.server.connection_manager import (
     default_connection_manager,
 )
 from voice_agent.server import security
-from voice_agent.server.narration import NarrationEngine, SearchFn, TtsFn
+from voice_agent.server.narration import NarrationEngine, SearchFn
 from voice_agent.server.schemas import (
     AskRequest,
     ConfigUpdateRequest,
@@ -34,6 +34,7 @@ from voice_agent.server.schemas import (
 )
 from voice_agent.server.websocket import router as websocket_router
 from voice_agent.settings import Settings, load_settings
+from voice_agent.tts.backends import Synthesizer
 import asyncio
 
 logger = logging.getLogger(__name__)
@@ -182,7 +183,7 @@ def create_app(
     *,
     settings: Optional[Settings] = None,
     llm_client: Optional[Any] = None,
-    tts: Optional[TtsFn] = None,
+    tts: Optional[Synthesizer] = None,
     search: Optional[SearchFn] = None,
     allowed_hosts: Optional[list[str]] = None,
 ) -> FastAPI:
@@ -196,7 +197,7 @@ def create_app(
             else one is built on first use.
         settings: Timing and endpoint settings for the default NarrationEngine. Defaults to `load_settings()`.
         llm_client: LLM client for the default NarrationEngine. Defaults to one built from `settings`.
-        tts: Async speech synthesizer for the default NarrationEngine. Defaults to `synthesize_sentence`.
+        tts: Speech synthesizer for the default NarrationEngine. Defaults to the TTS chain the settings choose.
         search: Async web search for the default NarrationEngine. Defaults to `search_web`.
         The last four are ignored when `narration_engine` is supplied.
         allowed_hosts: Host header names the server answers to. Defaults to loopback only; tests add `testserver`.

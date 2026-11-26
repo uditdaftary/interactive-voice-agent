@@ -32,19 +32,12 @@ from voice_agent.server.schemas import (
     ReplyErrorMessage,
 )
 from voice_agent.settings import Settings, load_settings
-from voice_agent.tts.synthesizer import synthesize_sentence
+from voice_agent.tts.backends import Synthesizer, build_tts
 
 logger = logging.getLogger(__name__)
 
-# Called as tts(text, voice_id, cadence); returns (audio bytes or None, format name).
-TtsFn = Callable[[str, str, float], Awaitable[tuple[bytes | None, str]]]
 # Called as search(query, max_results); returns the grounding text, "" when nothing was found.
 SearchFn = Callable[[str, int], Awaitable[str]]
-
-
-async def _default_tts(text: str, voice_id: str, cadence: float) -> tuple[bytes | None, str]:
-    # Resolves synthesize_sentence at call time so the module attribute stays patchable.
-    return await synthesize_sentence(text, voice_id=voice_id, cadence=cadence)
 
 
 # Spoken when a reply fails or the user's speech was not understood. Neutral on purpose: no persona, no detail.
@@ -126,12 +119,13 @@ class NarrationEngine:
         initial_sentences: Optional[List[str]] = None,
         *,
         settings: Optional[Settings] = None,
-        tts: Optional[TtsFn] = None,
+        tts: Optional[Synthesizer] = None,
         search: Optional[SearchFn] = None,
     ):
         self.manager = connection_manager
         self.settings = settings if settings is not None else load_settings()
-        self.tts: TtsFn = tts if tts is not None else _default_tts
+        # The chain follows the settings this engine was given, not whatever the environment holds when it is first used.
+        self.tts: Synthesizer = tts if tts is not None else build_tts(self.settings.tts_primary)
         self.search: SearchFn = search if search is not None else search_web
         if llm_client is not None:
             self.llm = llm_client
@@ -331,14 +325,14 @@ class NarrationEngine:
         sentence that has not been synthesized yet."""
         voice_id = self.manager.active_voice or "david-martinez"
         cadence = self.manager.cadence or 1.0
-        audio_bytes, _fmt = await self.tts(text, voice_id, cadence)
+        speech = await self.tts.synthesize(text, voice_id, cadence)
         return _Synthesis(
             sentence_idx=sentence_idx,
             first_word=first_word,
             word_count=max(1, len(text.split())),
             duration_s=self._estimated_duration_s(text, cadence),
             gap_s=self.settings.inter_sentence_pause_s / cadence,
-            audio=audio_bytes or None,
+            audio=speech.data if speech is not None and speech.data else None,
         )
 
     async def _feed(
@@ -575,9 +569,9 @@ class NarrationEngine:
         `playback_ack_timeout_s` past the estimate, with a WARNING, and the reply goes on."""
         voice_id = self.manager.active_voice or "david-martinez"
         cadence = self.manager.cadence or 1.0
-        audio_bytes, _fmt = await self.tts(text, voice_id, cadence)
+        speech = await self.tts.synthesize(text, voice_id, cadence)
         estimate_s = self._estimated_duration_s(text, cadence)
-        segment_id = await self.manager.send_audio(audio_bytes) if audio_bytes else None
+        segment_id = await self.manager.send_audio(speech.data) if speech is not None and speech.data else None
         if segment_id is None:
             await asyncio.sleep(estimate_s)
         else:

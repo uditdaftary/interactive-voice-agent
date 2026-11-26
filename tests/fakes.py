@@ -9,11 +9,13 @@ import asyncio
 import json
 import threading
 import time
-from collections.abc import AsyncGenerator, Callable, Collection, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Collection, Sequence
 from types import SimpleNamespace
 from typing import Any, NamedTuple
 
 import numpy as np
+
+from voice_agent.tts.backends import SpeechAudio
 
 TTS_SAMPLE_RATE = 24000
 SAMPLES_PER_WORD = 4800  # 0.2 s of audio per word
@@ -30,17 +32,27 @@ def wait_until(condition: Callable[[], bool], timeout_s: float = 5.0, interval_s
 
 
 class FakeTts:
-    """Records `(text, voice_id, cadence)` and returns 24 kHz int16 silence sized by word count."""
+    """A synthesizer that records `(text, voice_id, cadence)` and makes 24 kHz int16 silence sized by word count.
 
-    def __init__(self) -> None:
+    The engine calls `synthesize`, which turns what `__call__` returns (the bytes, or None for no audio, and a format
+    name) into the chain's result. A test scripts a synthesizer by overriding `__call__`. `status` is what a real
+    chain reports; a test sets it to say the chain fell back.
+    """
+
+    def __init__(self, status: str = "ok") -> None:
+        self.status = status
         self.calls: list[tuple[str, str, float]] = []
         self._called = asyncio.Event()
 
-    async def __call__(self, text: str, voice_id: str, cadence: float) -> tuple[bytes, str]:
+    async def __call__(self, text: str, voice_id: str, cadence: float) -> tuple[bytes | None, str]:
         self.calls.append((text, voice_id, cadence))
         self._called.set()
         silence = np.zeros(len(text.split()) * SAMPLES_PER_WORD, dtype=np.int16)
-        return silence.tobytes(), "pcm_s16le"
+        return silence.tobytes(), "audio/pcm"
+
+    async def synthesize(self, text: str, voice_id: str, cadence: float) -> SpeechAudio | None:
+        data, mime = await self(text, voice_id, cadence)
+        return SpeechAudio(data, mime) if data else None
 
     async def wait_for_calls(self, count: int) -> None:
         """Block until at least `count` calls were made. Wrap in `asyncio.timeout` in tests."""
@@ -74,11 +86,22 @@ class FailingTts(FakeTts):
         self.fail_on = None if fail_on is None else frozenset(fail_on)
         self.attempts: list[str] = []
 
-    async def __call__(self, text: str, voice_id: str, cadence: float) -> tuple[bytes, str]:
+    async def __call__(self, text: str, voice_id: str, cadence: float) -> tuple[bytes | None, str]:
         self.attempts.append(text)
         if self.fail_on is None or text in self.fail_on:
             raise RuntimeError("synthesis exploded")
         return await super().__call__(text, voice_id, cadence)
+
+
+class FunctionTts(FakeTts):
+    """A synthesizer scripted by one async function `(text, voice_id, cadence) -> (bytes or None, format)`."""
+
+    def __init__(self, speak: Callable[[str, str, float], Awaitable[tuple[bytes | None, str]]]) -> None:
+        super().__init__()
+        self._speak = speak
+
+    async def __call__(self, text: str, voice_id: str, cadence: float) -> tuple[bytes | None, str]:
+        return await self._speak(text, voice_id, cadence)
 
 
 class FakeSearch:

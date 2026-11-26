@@ -1,4 +1,4 @@
-"""TTS backends: the fallback chain, the edge-tts backend, and the synthesize_sentence adapter. No real edge-tts or SAPI call runs here."""
+"""TTS backends: the fallback chain, the edge-tts backend, and the chain's status. No real edge-tts or SAPI call runs here."""
 
 import logging
 import os
@@ -248,25 +248,10 @@ def test_voice_id_v_male_is_not_female() -> None:
     assert is_female_voice_id("lucy") is True
 
 
-async def test_synthesize_sentence_no_synthetic_tier(monkeypatch: pytest.MonkeyPatch) -> None:
-    from voice_agent.tts import synthesizer
+async def test_chain_reports_ok_until_a_backend_fails() -> None:
+    """Before the first sentence nothing has failed, and a sentence with nothing to say is not a failure."""
+    chain = ChainedTts([FakeBackend("edge", error=TtsError("offline"))])
 
-    failing_chain = ChainedTts([FakeBackend("edge", error=TtsError("offline")), FakeBackend("pyttsx3", error=OSError("no SAPI"))])
-    monkeypatch.setattr(synthesizer, "_chain", None)
-    monkeypatch.setattr(synthesizer, "build_tts", lambda primary="edge": failing_chain)
-
-    assert await synthesizer.synthesize_sentence("hello there") == (None, "")
-    assert not hasattr(synthesizer, "generate_synthetic_pcm_fallback")
-
-
-async def test_synthesize_sentence_reports_the_format(monkeypatch: pytest.MonkeyPatch) -> None:
-    from voice_agent.tts import synthesizer
-
-    monkeypatch.setattr(synthesizer, "_chain", None)
-    monkeypatch.setattr(
-        synthesizer,
-        "build_tts",
-        lambda primary="edge": ChainedTts([FakeBackend("edge", audio=SpeechAudio(AUDIO, "audio/mpeg"))]),
-    )
-
-    assert await synthesizer.synthesize_sentence("hello there") == (AUDIO, "mp3")
+    assert chain.status == "ok"
+    assert await chain.synthesize("   ", "david-martinez", 1.0) is None
+    assert chain.status == "ok"
