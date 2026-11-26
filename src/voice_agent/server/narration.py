@@ -356,9 +356,15 @@ class NarrationEngine:
         audio is stopped is dropped, not played after the stop by a loop that is about to be cancelled."""
         index, first_word, text = start
         first = True
+        silent: _Clip | None = None  # the sentence just before this one, if there was nothing to play for it
         try:
             while True:
                 synthesis = await self._synthesize(index, first_word, text)
+                if silent is not None:
+                    # The silent sentence is paced by its estimate when the loop reaches it, and this one is not sent
+                    # before that, or it would be heard early. It was made meanwhile, so no time is lost.
+                    await silent.played.wait()
+                    silent = None
                 await room.acquire()
                 segment_id = None
                 if synthesis.audio:
@@ -366,12 +372,11 @@ class NarrationEngine:
                         synthesis.audio, gap_s=0.0 if first else synthesis.gap_s, generation=generation
                     )
                 clip = _Clip(synthesis, segment_id, generation)
+                if segment_id is None:
+                    room.release()  # nothing is out, so this sentence holds no slot
+                    silent = clip
                 clips.put_nowait(clip)
                 first = False
-                if segment_id is None:
-                    # Nothing was sent, so nothing is playing: the sentence is paced by the estimate when the loop
-                    # reaches it, and the sentence after it is not sent before that, or it would be heard early.
-                    await clip.played.wait()
                 index = (index + 1) % len(self.sentences)
                 first_word, text = 0, self.sentences[index]
         except Exception as exc:  # noqa: BLE001  # handed to the loop, which logs it with its traceback and pauses
@@ -440,7 +445,8 @@ class NarrationEngine:
                 if outcome == "stopped":
                     return  # whoever stopped the audio cancels or restarts this loop
                 clip.played.set()
-                room.release()
+                if clip.segment_id is not None:
+                    room.release()  # a clip with no segment never took a slot
 
         except Exception as exc:  # noqa: BLE001  # logged with its traceback, then the session pauses and the HUD is told
             logger.exception("Error in narration loop")

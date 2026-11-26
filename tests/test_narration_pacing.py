@@ -422,6 +422,21 @@ async def test_the_sentence_after_a_silent_one_is_not_sent_before_the_silent_one
     await manager.tasks.cancel_all()
 
 
+async def test_the_sentence_after_a_silent_one_is_made_while_the_silent_one_is_paced() -> None:
+    manager = ConnectionManager()
+    listener = await tab(manager)
+    tts = SelectiveTts({BOOK[1]})
+    engine = make_engine(manager, tts=tts, settings=SLOW_WORDS)  # the estimate is long
+
+    engine.start_narration()
+    await listener.wait_for_clips(1)
+    await until(lambda: BOOK[2] in tts.texts)  # sentence 1 has no audio, and holds no slot, so 2 is made at once
+    await settle()
+
+    assert len(listener.clips) == 1  # made, but held until the silent sentence has been walked
+    await manager.tasks.cancel_all()
+
+
 async def test_a_synthesizer_that_fails_is_reported_when_its_turn_comes() -> None:
     manager = ConnectionManager()
     listener = await tab(manager)
