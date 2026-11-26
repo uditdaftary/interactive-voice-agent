@@ -84,3 +84,14 @@ def test_barge_in_listen_default_and_env_override() -> None:
 def test_barge_in_listen_rejects_nonsense_at_load(raw: str) -> None:
     with pytest.raises(ValueError, match="VOICE_AGENT_BARGE_IN_LISTEN_S"):
         load_settings({"VOICE_AGENT_BARGE_IN_LISTEN_S": raw})
+
+
+def test_the_web_speech_preview_is_off_unless_explicitly_enabled() -> None:
+    assert Settings().web_speech_preview is False
+    assert Settings.fast().web_speech_preview is False
+    assert load_settings({}).web_speech_preview is False
+    for raw in ("1", "true", "YES", " on "):
+        assert load_settings({"VOICE_AGENT_WEB_SPEECH_PREVIEW": raw}).web_speech_preview is True
+    # It sends audio off the machine, so anything that is not a clear yes (an empty value, a typo) leaves it off.
+    for raw in ("", "0", "false", "maybe"):
+        assert load_settings({"VOICE_AGENT_WEB_SPEECH_PREVIEW": raw}).web_speech_preview is False

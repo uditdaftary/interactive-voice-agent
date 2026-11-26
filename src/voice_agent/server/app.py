@@ -119,15 +119,13 @@ def _stored_stt_engine(app: FastAPI) -> Any:
     return engine
 
 
-def _construct_stt_engine(settings: Settings) -> Any:
+def _construct_stt_engine(settings: Settings) -> tuple[Any, bool]:
     """Runs in the build thread: builds the backend the settings choose and loads its model here, so no caller's thread
-    pays for it."""
+    pays for it. Returns the backend and whether its model is loaded."""
     backend = build_stt_backend(settings)
     load = getattr(backend, "load", None)  # Whisper loads a model; Moonshine starts its worker on the first utterance
-    if load is not None:
-        # A failed load is logged by the backend and retried after its cooldown; the backend is stored either way.
-        load()
-    return backend
+    # A failed load is logged by the backend and retried after its cooldown; the backend is stored either way.
+    return backend, True if load is None else bool(load())
 
 
 async def _build_stt_engine(app: FastAPI) -> Any:
@@ -135,13 +133,24 @@ async def _build_stt_engine(app: FastAPI) -> Any:
     if settings is None:
         # An app built without create_app has no settings on its state; it takes the environment's, as create_app would.
         settings = load_settings()
+    narration: Any = getattr(app.state, "narration_engine", None)
+    if narration is not None:
+        narration.set_stt_status("loading")
+    status = "ok"  # a build that was cancelled learned nothing
     try:
-        engine = await asyncio.to_thread(_construct_stt_engine, settings)
+        engine, loaded = await asyncio.to_thread(_construct_stt_engine, settings)
         app.state.stt_engine = engine
+        if not loaded:
+            status = "unavailable"
         return engine
+    except Exception:
+        status = "unavailable"
+        raise
     finally:
         # Success is now served from app.state.stt_engine; after a failure the next caller retries.
         app.state.stt_build = None
+        if narration is not None:
+            narration.set_stt_status(status)
 
 
 async def ensure_stt_engine(app: FastAPI) -> Any:
@@ -340,7 +349,7 @@ def create_app(
         eng: NarrationEngine = app.state.narration_engine
         mgr: ConnectionManager = app.state.connection_manager
 
-        eng.llm.update_config(
+        eng.configure_llm(
             base_url=body.base_url,
             api_key=body.api_key,
             provider=body.provider,

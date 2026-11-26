@@ -262,6 +262,23 @@ class StateSyncMessage(BaseProtocolMessage):
         default=True,
         description="True when this connection owns the microphone and the audio; false for every other tab",
     )
+    llm_status: str = Field(
+        default="ok",
+        description="How the last model request ended: ok, offline, auth, error, interrupted; none when no model is configured",
+    )
+    llm_provider: str = Field(default="", description="Provider name of the language model endpoint; none is the no-model mode")
+    tts_status: str = Field(
+        default="ok",
+        description="ok, fallback:<backend> when a later backend spoke, unavailable when every backend failed",
+    )
+    stt_status: str = Field(
+        default="ok",
+        description="ok, loading while the recognizer starts, unavailable when it cannot run, rejected when the last audio was not speech",
+    )
+    web_speech_preview: bool = Field(
+        default=False,
+        description="True when the browser's Web Speech preview (which sends audio to the browser vendor) may be used",
+    )
 
 
 class VADEventMessage(BaseProtocolMessage):

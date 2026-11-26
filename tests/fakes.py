@@ -120,9 +120,13 @@ class FakeSearch:
 class FakeLLM:
     """Streams preset tokens. Mirrors the slice of `LLMClient` that the server uses."""
 
-    def __init__(self, tokens: Sequence[str] = ("Understood. ",), web_search_enabled: bool = False) -> None:
+    def __init__(
+        self, tokens: Sequence[str] = ("Understood. ",), web_search_enabled: bool = False, status: str = "ok"
+    ) -> None:
         self.tokens = list(tokens)
         self.web_search_enabled = web_search_enabled
+        self.status = status  # how a request ended, as `LLMClient.status` says; it is what the client leaves after every stream
+        self.provider = "fake"
         self.calls: list[list[dict[str, str]]] = []
         self.config: dict[str, Any] = {"provider": "fake", "web_search_enabled": web_search_enabled}
 
@@ -140,6 +144,8 @@ class FakeLLM:
 
     def update_config(self, **kwargs: Any) -> None:
         self.config.update({key: value for key, value in kwargs.items() if value is not None})
+        if kwargs.get("provider") is not None:
+            self.provider = kwargs["provider"]
         if kwargs.get("web_search_enabled") is not None:
             self.web_search_enabled = bool(kwargs["web_search_enabled"])
 

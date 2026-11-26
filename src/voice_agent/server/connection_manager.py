@@ -10,6 +10,7 @@ import concurrent.futures
 import json
 import logging
 import threading
+from dataclasses import dataclass
 from fastapi import WebSocket
 from pydantic import BaseModel
 
@@ -32,6 +33,17 @@ SEND_TIMEOUT_S = 2.0
 
 # Session states in which microphone audio is recorded as a user turn.
 LISTENING_STATES = frozenset({"LISTENING"})
+
+
+@dataclass(frozen=True)
+class Statuses:
+    """What the HUD is told about the pieces the session depends on. Compared as a whole to see whether anything changed."""
+
+    llm_status: str = "ok"
+    llm_provider: str = ""
+    tts_status: str = "ok"
+    stt_status: str = "ok"
+    web_speech_preview: bool = False
 
 
 class ConnectionManager:
@@ -79,6 +91,10 @@ class ConnectionManager:
         self._word_offset: int = 0
         self._latency_ms: Optional[float] = None  # None until something measures it
         self._generation: int = 0
+
+        # Reports the language model, speech and recognizer statuses; the narration engine registers it.
+        self._status_provider: Callable[[], Statuses] = Statuses
+        self._announced_statuses = Statuses()
 
         # STT & Speech Turn-taking
         self._stt_engine: Optional[Any] = stt_engine
@@ -429,8 +445,25 @@ class ConnectionManager:
             if self._accumulator is not None:
                 self._accumulator.reset()
 
+    def set_status_provider(self, provider: Callable[[], Statuses]) -> None:
+        """Where every snapshot gets its statuses from. What the provider reports now counts as already announced: each
+        client learns it from the snapshot it receives on connecting."""
+        self._status_provider = provider
+        self._announced_statuses = provider()
+
+    def refresh_statuses(self) -> None:
+        """Tell every client when a status has changed since the last time they were told, and only then. Call it
+        wherever a status may have changed (after a request ends, never per token). Event loop only."""
+        current = self._status_provider()
+        if current == self._announced_statuses:
+            return
+        self._announced_statuses = current
+        if self.connection_count:
+            self.broadcast_state_sync()
+
     def get_state_sync_message(self, mic_owner: bool = True) -> StateSyncMessage:
         """Generate a StateSyncMessage snapshot from current session state."""
+        statuses = self._status_provider()  # outside the lock: it reads the engine, which may take this lock
         with self._lock:
             return StateSyncMessage(
                 mic_owner=mic_owner,
@@ -441,7 +474,22 @@ class ConnectionManager:
                 sentence_idx=self._sentence_idx,
                 word_offset=self._word_offset,
                 latency_ms=self._latency_ms,
+                llm_status=statuses.llm_status,
+                llm_provider=statuses.llm_provider,
+                tts_status=statuses.tts_status,
+                stt_status=statuses.stt_status,
+                web_speech_preview=statuses.web_speech_preview,
             )
+
+    @staticmethod
+    def _statuses_in(snapshot: StateSyncMessage) -> Statuses:
+        return Statuses(
+            llm_status=snapshot.llm_status,
+            llm_provider=snapshot.llm_provider,
+            tts_status=snapshot.tts_status,
+            stt_status=snapshot.stt_status,
+            web_speech_preview=snapshot.web_speech_preview,
+        )
 
     # ========================================================================
     # Audio Ingestion & Callback Hooks
@@ -489,12 +537,15 @@ class ConnectionManager:
 
     async def broadcast_state(self) -> None:
         """Send every connection the state snapshot, each with its own `mic_owner`."""
-        await self._send_snapshot(self.get_state_sync_message())
+        snapshot = self.get_state_sync_message()
+        self._announced_statuses = self._statuses_in(snapshot)
+        await self._send_snapshot(snapshot)
 
     def broadcast_state_sync(self, loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
         """`broadcast_state` from synchronous code. The snapshot is taken now and queued behind earlier messages, like
         `broadcast_json_sync`, so a later change does not leak into a message about this one."""
         snapshot = self.get_state_sync_message()
+        self._announced_statuses = self._statuses_in(snapshot)
         self._post(lambda: self._send_snapshot(snapshot), loop, "broadcast_state_sync")
 
     async def _send_snapshot(self, snapshot: StateSyncMessage) -> None:

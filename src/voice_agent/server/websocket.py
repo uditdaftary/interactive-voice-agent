@@ -17,7 +17,7 @@ from voice_agent.server.connection_manager import (
 )
 from voice_agent.server.security import origin_allowed
 from voice_agent.stt.accumulator import MAX_UTTERANCE_S
-from voice_agent.stt.backends import STT_UNAVAILABLE, Transcript
+from voice_agent.stt.backends import STT_UNAVAILABLE, Transcript, stt_status
 from voice_agent.stt.speech_judge import SAMPLE_RATE
 from voice_agent.server.schemas import (
     BargeInTriggerMessage,
@@ -101,6 +101,8 @@ async def _transcribe(
             logger.exception("STT transcription failed; treating the utterance as unrecognized")
             transcript = Transcript("", STT_UNAVAILABLE)
         latency_ms = round((time.perf_counter() - started) * 1000.0, 2)
+        if engine is not None:
+            engine.set_stt_status(stt_status(transcript))
         text = transcript.text.strip()
         if not text and fallback:
             logger.info("Using fallback query following empty STT transcript: %s", fallback)
@@ -216,7 +218,7 @@ async def handle_client_text_message(
 
     elif isinstance(msg, UpdateLLMConfigMessage):
         if engine is not None and getattr(engine, "llm", None) is not None:
-            engine.llm.update_config(
+            engine.configure_llm(
                 base_url=msg.base_url,
                 api_key=msg.api_key,
                 provider=msg.provider,

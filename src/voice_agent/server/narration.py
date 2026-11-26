@@ -9,7 +9,7 @@ import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from voice_agent.document.bm25 import BM25Index
 from voice_agent.cursor.tracker import CursorPosition, CursorTracker
@@ -24,7 +24,7 @@ from voice_agent.orchestrator.context import (
     sanitize_chatml,
     truncate_to_tokens,
 )
-from voice_agent.server.connection_manager import ConnectionManager
+from voice_agent.server.connection_manager import ConnectionManager, Statuses
 from voice_agent.server.schemas import (
     CursorUpdateMessage,
     ErrorMessage,
@@ -136,6 +136,8 @@ class NarrationEngine:
                 model=self.settings.llm_model,
                 web_search_enabled=self.settings.web_search_enabled,
             )
+        self._llm_status = "ok"  # how the last request that ran to its end finished; ok before any request
+        self._stt_status = "ok"
         self.sentences: List[str] = list(initial_sentences or DEFAULT_STORY_SENTENCES)
         self._bm25_index: BM25Index = BM25Index.from_sentences(self.sentences)
         self.document_title: str = "Night City: Santo Domingo Run"
@@ -150,6 +152,30 @@ class NarrationEngine:
         session.followup_window_s = self.settings.followup_window_s
         session.add_listener(self._on_state_change)
         self.manager.add_owner_listener(self._on_owner_change)
+        self.manager.set_status_provider(self.statuses)
+
+    # --- statuses reported to the HUD ------------------------------------------------------------------------------
+
+    def statuses(self) -> Statuses:
+        """The model, speech and recognizer statuses as the HUD is told them. `none` is the no-model mode, whatever the
+        last request said."""
+        provider = self.llm.provider
+        return Statuses(
+            llm_status="none" if provider == "none" else self._llm_status,
+            llm_provider=provider,
+            tts_status=self.tts.status,
+            stt_status=self._stt_status,
+            web_speech_preview=self.settings.web_speech_preview,
+        )
+
+    def set_stt_status(self, status: str) -> None:
+        self._stt_status = status
+        self.manager.refresh_statuses()
+
+    def configure_llm(self, **fields: Any) -> None:
+        """Change the model endpoint. How the old endpoint behaved says nothing about the new one, so the status starts over."""
+        self.llm.update_config(**fields)
+        self._llm_status = "ok"
 
     def _on_owner_change(self) -> None:
         """The audio goes to a different tab now. What the old one was playing is stopped either way."""
@@ -326,6 +352,7 @@ class NarrationEngine:
         voice_id = self.manager.active_voice or "david-martinez"
         cadence = self.manager.cadence or 1.0
         speech = await self.tts.synthesize(text, voice_id, cadence)
+        self.manager.refresh_statuses()
         return _Synthesis(
             sentence_idx=sentence_idx,
             first_word=first_word,
@@ -570,6 +597,7 @@ class NarrationEngine:
         voice_id = self.manager.active_voice or "david-martinez"
         cadence = self.manager.cadence or 1.0
         speech = await self.tts.synthesize(text, voice_id, cadence)
+        self.manager.refresh_statuses()
         estimate_s = self._estimated_duration_s(text, cadence)
         segment_id = await self.manager.send_audio(speech.data) if speech is not None and speech.data else None
         if segment_id is None:
@@ -690,6 +718,10 @@ class NarrationEngine:
                     query=query,
                     reply=accumulated_reply.strip(),
                 ))
+
+        # The stream ran to its end (a cancelled reply never gets here, so a barge-in is not reported as a model failure).
+        self._llm_status = self.llm.status
+        self.manager.refresh_statuses()
 
         final_reply = accumulated_reply.strip()
         if not final_reply:

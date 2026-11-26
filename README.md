@@ -122,6 +122,7 @@ Settings are read from environment variables (see `.env.example`; the app does n
 | `VOICE_AGENT_STT_BACKEND` | `whisper` | `whisper` or `moonshine`; the backend the server transcribes with |
 | `VOICE_AGENT_MOONSHINE_MODEL_DIR` | `models/stt/moonshine-tiny-en-int8` | Folder with the Moonshine model files |
 | `VOICE_AGENT_BARGE_IN_LISTEN_S` | `8.0` | Seconds the app waits for you after an interruption before it goes back to what it was doing; extended while you speak. After a click on Speak, the turn ends when you click Stop; only if Stop never comes does the wait start, after 30 seconds |
+| `VOICE_AGENT_WEB_SPEECH_PREVIEW` | `false` | Show the browser's Web Speech preview and let it answer a turn the server heard nothing in. Chrome sends that audio to Google, so it needs internet; only `1`, `true`, `yes` or `on` enable it |
 
 The provider, model, voice, cadence and microphone source can also be changed at runtime from the UI or with `POST /api/config`.
 

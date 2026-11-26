@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 STT_UNAVAILABLE = "stt-unavailable"
+STT_ERROR = "stt-error"
 QUIET = "quiet"
 # The names a setting may choose from; settings validates against this, so the two cannot drift apart.
 STT_BACKEND_NAMES: tuple[str, ...] = ("whisper", "moonshine")
@@ -52,6 +53,13 @@ class Transcript:
 
     text: str
     rejected_reason: str | None = None
+
+
+def stt_status(transcript: Transcript) -> str:
+    """What a transcript says about the recognizer: "ok", "unavailable" (it could not run) or "rejected" (the audio was not speech)."""
+    if transcript.text:
+        return "ok"
+    return "unavailable" if transcript.rejected_reason in (STT_UNAVAILABLE, STT_ERROR) else "rejected"
 
 
 class SttBackend(Protocol):
@@ -327,7 +335,7 @@ class MoonshineBackend:
                 continue  # the ready line, or a reply to an earlier request
             if message.get("type") == "error":
                 logger.warning("moonshine worker error: %s", message.get("message"))
-                return Transcript("", "stt-error")
+                return Transcript("", STT_ERROR)
             if message.get("type") == "final":
                 return _worker_transcript(message)
 
