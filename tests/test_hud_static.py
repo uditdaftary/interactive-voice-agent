@@ -29,6 +29,9 @@ REMOVED = [
     "ZERO-CLOUD",
     # The preview text went to the server whatever the server allowed.
     "fallback_query: existingVal",
+    # The built-in provider and its placeholders: with no model the agent reads the closest passage instead.
+    "builtin",
+    "in-process",
     # A fixed 3 s retry: the wait now grows from 1 s to 30 s.
     "reconnectInterval",
     # Assigned to when the server's document arrives: a const makes that throw, and the catch hid it.

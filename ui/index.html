@@ -440,23 +440,23 @@
       <div class="field-group">
         <label class="field-label">LLM Provider</label>
         <select id="cfg-provider" class="field-select" onchange="onProviderChange(this.value)">
-          <option value="builtin" selected>Built-in Agent (Zero Setup - 100% Native Python)</option>
-          <option value="ollama">Ollama (Local Daemon - http://localhost:11434)</option>
-          <option value="openai">OpenAI (api.openai.com)</option>
-          <option value="groq">Groq High-Speed (api.groq.com/openai/v1)</option>
-          <option value="together">Together AI / DeepSeek</option>
-          <option value="custom">Custom OpenAI-Compatible Endpoint</option>
+          <option value="none">No model (reads the closest passage)</option>
+          <option value="ollama" selected>Ollama (local)</option>
+          <option value="openai">OpenAI</option>
+          <option value="groq">Groq</option>
+          <option value="together">Together AI</option>
+          <option value="custom">Custom OpenAI-compatible endpoint</option>
         </select>
       </div>
 
       <div class="field-group">
         <label class="field-label">Endpoint URL</label>
-        <input type="text" id="cfg-endpoint" class="field-input" value="http://localhost:11434">
+        <input type="text" id="cfg-endpoint" class="field-input" value="http://localhost:11434/v1">
       </div>
 
       <div class="field-group">
         <label class="field-label">Model Identifier</label>
-        <input type="text" id="cfg-model" class="field-input" value="llama3.2" placeholder="e.g. llama3.2, qwen2.5:7b, mistral, gpt-4o-mini">
+        <input type="text" id="cfg-model" class="field-input" value="voice-agent" placeholder="e.g. voice-agent, qwen2.5:7b, gpt-4o-mini">
       </div>
 
       <div class="field-group">
@@ -475,7 +475,7 @@
         </div>
       </div>
 
-      <div id="model-config-status" class="mono" style="font-size:12.5px; color:var(--high); display:none;"></div>
+      <div id="model-config-status" class="mono" role="alert" style="font-size:12.5px; color:var(--high); display:none;"></div>
     </div>
     <div class="modal-foot">
       <button class="btn" onclick="testModelConfig()">TEST ENDPOINT</button>
@@ -2216,9 +2216,33 @@
   }
 
   // --- MODEL & LIVE WEB SEARCH CONFIG MODAL ---
+  // [endpoint, model] a provider starts with. `custom` keeps what is typed, and `none` needs neither.
+  const PROVIDER_DEFAULTS = new Map([
+    ['ollama', ['http://localhost:11434/v1', 'voice-agent']],
+    ['openai', ['https://api.openai.com/v1', 'gpt-4o-mini']],
+    ['groq', ['https://api.groq.com/openai/v1', 'llama-3.3-70b-versatile']],
+    ['together', ['https://api.together.xyz/v1', 'deepseek-ai/DeepSeek-R1-Distill-Llama-70B']],
+  ]);
+  const CONFIG_FIELD_NAMES = new Map([
+    ['provider', 'Provider'],
+    ['base_url', 'Endpoint URL'],
+    ['model', 'Model'],
+    ['api_key', 'API key'],
+  ]);
+
+  function showConfigStatus(text, isError = false) {
+    const statusEl = document.getElementById('model-config-status');
+    if (!statusEl) return;
+    statusEl.style.display = 'block';
+    statusEl.style.color = isError ? 'var(--critical-ink)' : 'var(--high)';
+    statusEl.textContent = text;
+  }
+
   function openModelConfigModal() {
     const modal = document.getElementById('model-config-modal');
     if (modal) modal.style.display = 'flex';
+    const statusEl = document.getElementById('model-config-status');
+    if (statusEl) statusEl.style.display = 'none';
     fetchModelConfig();
   }
 
@@ -2227,59 +2251,77 @@
     if (modal) modal.style.display = 'none';
   }
 
+  // With no model there is nothing to point at, so the endpoint, model and key are not asked for.
+  function setConfigFieldsEnabled(provider) {
+    for (const id of ['cfg-endpoint', 'cfg-model', 'cfg-api-key']) {
+      document.getElementById(id).disabled = provider === 'none';
+    }
+  }
+
   async function fetchModelConfig() {
     try {
       const resp = await fetch(`${getApiBaseUrl()}/api/config`);
       if (resp.ok) {
         const data = await resp.json();
         const llm = data.llm || {};
-        if (llm.provider) document.getElementById('cfg-provider').value = llm.provider;
+        const select = document.getElementById('cfg-provider');
+        // A provider this form has no option for (an older or newer server) leaves the choice as it was.
+        if (llm.provider && [...select.options].some(option => option.value === llm.provider)) select.value = llm.provider;
         if (llm.base_url) document.getElementById('cfg-endpoint').value = llm.base_url;
         if (llm.model) document.getElementById('cfg-model').value = llm.model;
         if (llm.web_search_enabled !== undefined) {
           document.getElementById('cfg-web-search').checked = !!llm.web_search_enabled;
         }
+        setConfigFieldsEnabled(select.value);
       }
-    } catch (e) {}
+    } catch (e) {
+      console.warn("Could not load the model settings:", e);
+    }
   }
 
   function onProviderChange(val) {
-    const endpointInput = document.getElementById('cfg-endpoint');
-    const modelInput = document.getElementById('cfg-model');
-    if (val === 'builtin') {
-      endpointInput.value = 'in-process';
-      modelInput.value = 'builtin-assistant';
-    } else if (val === 'ollama') {
-      endpointInput.value = 'http://localhost:11434';
-      modelInput.value = 'llama3.2';
-    } else if (val === 'openai') {
-      endpointInput.value = 'https://api.openai.com/v1';
-      modelInput.value = 'gpt-4o-mini';
-    } else if (val === 'groq') {
-      endpointInput.value = 'https://api.groq.com/openai/v1';
-      modelInput.value = 'llama-3.3-70b-versatile';
-    } else if (val === 'together') {
-      endpointInput.value = 'https://api.together.xyz/v1';
-      modelInput.value = 'deepseek-ai/DeepSeek-R1-Distill-Llama-70B';
+    const defaults = PROVIDER_DEFAULTS.get(val);
+    if (defaults) {
+      document.getElementById('cfg-endpoint').value = defaults[0];
+      document.getElementById('cfg-model').value = defaults[1];
     }
+    setConfigFieldsEnabled(val);
+  }
+
+  // The server's reason for a 422, as one line. The reply names each rejected field with a message; it also echoes the
+  // value that was sent, which can be the API key, so only the field and the message are read.
+  async function rejectionMessage(resp) {
+    let detail = null;
+    try {
+      detail = (await resp.json()).detail;
+    } catch (e) {
+      console.warn("The rejection from the server was not readable:", e);
+    }
+    if (typeof detail === 'string' && detail) return detail;
+    if (Array.isArray(detail)) {
+      const lines = detail
+        .filter(item => item && typeof item.msg === 'string')
+        .map(item => {
+          const field = Array.isArray(item.loc) ? CONFIG_FIELD_NAMES.get(item.loc[item.loc.length - 1]) : null;
+          const reason = item.msg.replace(/^Value error, /, '');
+          return field ? `${field}: ${reason}` : reason;
+        });
+      if (lines.length > 0) return lines.join('. ');
+    }
+    return 'The server did not accept these settings.';
   }
 
   async function saveModelConfig() {
     const provider = document.getElementById('cfg-provider').value;
-    const base_url = document.getElementById('cfg-endpoint').value.trim();
-    const model = document.getElementById('cfg-model').value.trim();
-    const api_key = document.getElementById('cfg-api-key').value.trim();
     const web_search_enabled = document.getElementById('cfg-web-search').checked;
 
-    const payload = {
-      provider,
-      base_url,
-      endpoint: base_url,
-      model,
-      model_name: model,
-      api_key,
-      web_search_enabled
-    };
+    const payload = { provider, web_search_enabled };
+    if (provider !== 'none') {
+      payload.base_url = document.getElementById('cfg-endpoint').value.trim();
+      payload.model = document.getElementById('cfg-model').value.trim();
+      // Sent even when empty: leaving a provider key behind would send it to the next endpoint.
+      payload.api_key = document.getElementById('cfg-api-key').value.trim();
+    }
 
     try {
       const resp = await fetch(`${getApiBaseUrl()}/api/config`, {
@@ -2292,18 +2334,18 @@
           wsClient.send({ type: 'update_config', ...payload });
         }
         closeModelConfigModal();
+      } else if (resp.status === 422) {
+        showConfigStatus(await rejectionMessage(resp), true);
+      } else {
+        showConfigStatus(`The server answered with HTTP ${resp.status}.`, true);
       }
     } catch (err) {
-      alert(`Failed to save config: ${err.message}`);
+      showConfigStatus(`Could not reach the server: ${err.message}`, true);
     }
   }
 
   async function testModelConfig() {
-    const statusEl = document.getElementById('model-config-status');
-    if (statusEl) {
-      statusEl.style.display = 'block';
-      statusEl.innerText = 'Testing connection and prompt completion...';
-    }
+    showConfigStatus('Sending a test question...');
     const t0 = performance.now();
     try {
       const resp = await fetch(`${getApiBaseUrl()}/api/ask`, {
@@ -2313,14 +2355,12 @@
       });
       const t1 = performance.now();
       if (resp.ok) {
-        if (statusEl) {
-          statusEl.innerText = `Connected! Latency: ${(t1 - t0).toFixed(1)} ms. Interruption Q&A pipeline active.`;
-        }
+        showConfigStatus(`The server took the question in ${(t1 - t0).toFixed(1)} ms. The status row shows whether the model could answer it.`);
       } else {
-        if (statusEl) statusEl.innerText = `Error: Server returned HTTP ${resp.status}`;
+        showConfigStatus(`Error: Server returned HTTP ${resp.status}`, true);
       }
     } catch (e) {
-      if (statusEl) statusEl.innerText = `Connection failed: ${e.message}`;
+      showConfigStatus(`Connection failed: ${e.message}`, true);
     }
   }
 
