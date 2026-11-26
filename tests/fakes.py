@@ -15,6 +15,7 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
+from voice_agent.stt.backends import Transcript
 from voice_agent.tts.backends import SpeechAudio
 
 TTS_SAMPLE_RATE = 24000
@@ -214,35 +215,42 @@ class FakeWhisper:
         return ([SimpleNamespace(text=self.text)] if self.text else []), None
 
 
-class FakeStt:
-    """Stands in for the STT engine: returns a fixed transcript and records the byte length of each input."""
+def _transcript(text: str, rejected_reason: str | None) -> Transcript:
+    """Words come with no reason; no words always come with one, as from a real backend."""
+    return Transcript(text, None if text else (rejected_reason or "not-speech"))
 
-    def __init__(self, fixed_transcript: str = "") -> None:
+
+class FakeStt:
+    """Stands in for an `SttBackend`: returns a fixed transcript and records the byte length of each input."""
+
+    def __init__(self, fixed_transcript: str = "", rejected_reason: str | None = None) -> None:
         self.fixed_transcript = fixed_transcript
+        self.rejected_reason = rejected_reason
         self.calls: list[int] = []
 
-    def transcribe(self, audio_data: bytes | bytearray | np.ndarray, sample_rate: int = 16000) -> str:
-        self.calls.append(audio_data.nbytes if isinstance(audio_data, np.ndarray) else len(audio_data))
-        return self.fixed_transcript
+    def transcribe(self, pcm16: bytes, sample_rate: int = 16000) -> Transcript:
+        self.calls.append(len(pcm16))
+        return _transcript(self.fixed_transcript, self.rejected_reason)
 
 
 class GatedStt:
-    """An STT engine whose `transcribe` blocks until the test releases it, then returns `transcript`.
+    """An STT backend whose `transcribe` blocks until the test releases it, then returns `transcript`.
 
     `started` is set once a call is inside `transcribe`; `inputs` holds the audio of every call.
     """
 
-    def __init__(self, transcript: str = "") -> None:
+    def __init__(self, transcript: str = "", rejected_reason: str | None = None) -> None:
         self.transcript = transcript
+        self.rejected_reason = rejected_reason
         self.started = threading.Event()
         self.release = threading.Event()
         self.inputs: list[bytes] = []
 
-    def transcribe(self, audio: bytes) -> str:
-        self.inputs.append(bytes(audio))
+    def transcribe(self, pcm16: bytes, sample_rate: int = 16000) -> Transcript:
+        self.inputs.append(bytes(pcm16))
         self.started.set()
         assert self.release.wait(5), "the test never released the recognizer"
-        return self.transcript
+        return _transcript(self.transcript, self.rejected_reason)
 
     async def wait_started(self) -> None:
         """Return once a call is inside `transcribe`, without blocking the event loop."""

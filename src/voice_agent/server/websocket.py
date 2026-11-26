@@ -17,6 +17,8 @@ from voice_agent.server.connection_manager import (
 )
 from voice_agent.server.security import origin_allowed
 from voice_agent.stt.accumulator import MAX_UTTERANCE_S
+from voice_agent.stt.backends import STT_UNAVAILABLE, Transcript
+from voice_agent.stt.speech_judge import SAMPLE_RATE
 from voice_agent.server.schemas import (
     BargeInTriggerMessage,
     PlaybackControlMessage,
@@ -94,12 +96,12 @@ async def _transcribe(
     try:
         try:
             active = stt_engine if stt_engine else await _ensure_stt_engine(websocket.app)
-            transcript = await asyncio.to_thread(active.transcribe, utterance)
+            transcript = await asyncio.to_thread(active.transcribe, utterance, SAMPLE_RATE)
         except Exception:  # noqa: BLE001  # logged with its traceback; the user hears "I didn't catch that"
             logger.exception("STT transcription failed; treating the utterance as unrecognized")
-            transcript = ""
+            transcript = Transcript("", STT_UNAVAILABLE)
         latency_ms = round((time.perf_counter() - started) * 1000.0, 2)
-        text = (transcript or "").strip()
+        text = transcript.text.strip()
         if not text and fallback:
             logger.info("Using fallback query following empty STT transcript: %s", fallback)
             text = fallback

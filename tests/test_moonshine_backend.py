@@ -268,3 +268,40 @@ def test_stt_backend_names_and_env() -> None:
 def test_unknown_stt_backend_rejected_at_load() -> None:
     with pytest.raises(ValueError, match="VOICE_AGENT_STT_BACKEND"):
         load_settings({"VOICE_AGENT_STT_BACKEND": "google"})
+
+
+def test_a_turn_is_transcribed_by_the_backend_the_settings_choose(make_worker, monkeypatch: pytest.MonkeyPatch) -> None:
+    """VOICE_AGENT_STT_BACKEND=moonshine reaches the server: an utterance goes to the worker and its words are asked about."""
+    from dataclasses import replace
+    from unittest.mock import MagicMock
+
+    from fastapi.testclient import TestClient
+
+    from voice_agent.server.app import create_app
+    from voice_agent.server.connection_manager import ConnectionManager
+    from voice_agent.stt import backends
+
+    monkeypatch.setattr(backends, "MoonshineBackend", lambda model_dir: make_worker(text="what is lucy"))
+    narration = MagicMock()
+    app = create_app(
+        connection_manager=ConnectionManager(),
+        narration_engine=narration,
+        settings=replace(Settings(), stt_backend="moonshine"),
+    )
+    pcm = (np.sin(np.linspace(0, 200, 8000)) * 12000).astype(np.int16).tobytes()
+
+    with TestClient(app) as client, client.websocket_connect("/ws") as ws:
+        ws.receive_json()  # handshake state_sync
+        ws.send_json({"type": "barge_in_trigger"})
+        ws.receive_json()  # barge_in
+        ws.receive_json()  # state_sync LISTENING
+        ws.send_bytes(pcm)
+        ws.send_json({"type": "voice_end"})
+
+        transcript = ws.receive_json()
+
+    assert transcript["type"] == "user_speech_transcript"
+    assert transcript["transcript"] == "what is lucy"
+    assert make_worker.starts() == 1
+    assert isinstance(app.state.stt_engine, MoonshineBackend)
+    narration.ask.assert_called_once_with("what is lucy")

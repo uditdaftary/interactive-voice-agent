@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from voice_agent.server.app import create_app
+from voice_agent.stt.backends import Transcript
 from fakes import FakeStt
 
 
@@ -98,7 +99,7 @@ def test_transcribe_with_default_app(offline_stt: None) -> None:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        # With no Whisper model and no recognizer, the real engine reports an empty transcript.
+        # With no Whisper model, the real backend reports an empty transcript.
         assert data["transcript"] == ""
         assert pytest.approx(data["duration_sec"], rel=1e-2) == 0.5
 
@@ -114,9 +115,9 @@ class RecordingStt:
     def __init__(self) -> None:
         self.received: list[np.ndarray] = []
 
-    def transcribe(self, pcm: bytes, *args: object, **kwargs: object) -> str:
+    def transcribe(self, pcm: bytes, *args: object, **kwargs: object) -> Transcript:
         self.received.append(np.frombuffer(pcm, dtype=np.int16))
-        return "heard"
+        return Transcript("heard")
 
 
 def make_wav(samples: np.ndarray, *, sample_rate: int, channels: int = 1, sample_width: int = 2) -> bytes:
