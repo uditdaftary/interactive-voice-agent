@@ -104,6 +104,23 @@ async def test_waiting_for_a_segment_nobody_sent_is_false_at_once() -> None:
     assert await PlaybackTracker().wait_done(99, 30) is False
 
 
+async def test_a_wait_is_cancelled_even_when_the_report_has_just_arrived() -> None:
+    """Python 3.11's wait_for hands back the result and drops the cancellation when the awaited future finished first,
+    and a stop resolves the future before it cancels the task that waits."""
+    tracker = PlaybackTracker()
+    connection = object()
+    segment_id = tracker.register(0, connection)
+    waiter = asyncio.ensure_future(tracker.wait_done(segment_id, 30))
+    await asyncio.sleep(0)
+
+    assert tracker.acknowledge(connection, segment_id, 0)
+    waiter.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert len(tracker) == 0
+
+
 # --- sending a clip -----------------------------------------------------------------------------------------------------
 
 
@@ -443,6 +460,57 @@ async def test_a_reply_ends_when_the_browser_says_it_has_played_the_answer() -> 
     await asyncio.wait([reply], timeout=5)
     assert reply.done() and reply.exception() is None
     assert manager.state != "REPLYING"  # the follow-up window, then back to what it was doing
+    await manager.tasks.cancel_all()
+
+
+async def reply_waiting_for_its_report(
+    manager: ConnectionManager, monkeypatch: pytest.MonkeyPatch
+) -> tuple[PlayerSocket, asyncio.Task[Any], list[int]]:
+    """A reply whose answer has been sent and is waiting for the browser to say it played. Also returns a list that
+    gains an entry whenever the user's audio turn is cleared, which only the end of a finished reply does."""
+    (owner,) = await listeners(manager, 1)
+    cleared: list[int] = []
+    monkeypatch.setattr(manager, "clear_audio_turn", lambda: cleared.append(1))
+    engine = make_engine(manager)
+    engine.ask("who is lucy")
+    reply = manager.tasks.get("reply")
+    assert reply is not None
+    await owner.wait_for_clips(1)
+    await asyncio.sleep(0.05)  # in the wait for the report
+    assert not reply.done()
+    return owner, reply, cleared
+
+
+async def test_a_barge_in_while_a_reply_waits_for_its_report_ends_the_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = ConnectionManager()
+    owner, reply, cleared = await reply_waiting_for_its_report(manager, monkeypatch)
+
+    manager.trigger_barge_in()  # resolves the wait with False, then cancels the reply
+    turn = manager.session.turn_id
+    await asyncio.wait([reply], timeout=5)
+    await asyncio.sleep(0.05)
+
+    assert reply.cancelled()
+    assert manager.state == "LISTENING" and manager.session.turn_id == turn  # the user's turn, not a follow-up window
+    assert cleared == []  # what the user is saying was not thrown away
+    assert [m for m in owner.messages("prompt_envelope") if m["state"] == "LISTENING"] == []  # no old answer resent
+    await manager.tasks.cancel_all()
+
+
+async def test_a_pause_while_a_reply_waits_for_its_report_ends_the_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = ConnectionManager()
+    owner, reply, cleared = await reply_waiting_for_its_report(manager, monkeypatch)
+    states: list[str] = []
+    manager.session.add_listener(lambda old, new, reason: states.append(new))
+
+    manager.session.transition("PAUSED", "pause")  # cancels the reply, then stops the audio
+    await asyncio.wait([reply], timeout=5)
+    await asyncio.sleep(0.05)
+
+    assert reply.cancelled()
+    assert states == ["PAUSED"]  # never through LISTENING
+    assert manager.state == "PAUSED" and cleared == []
+    assert [m for m in owner.messages("prompt_envelope") if m["state"] == "LISTENING"] == []
     await manager.tasks.cancel_all()
 
 

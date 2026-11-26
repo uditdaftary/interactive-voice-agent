@@ -313,6 +313,48 @@ async def test_narration_goes_on_for_the_next_tab_when_a_send_inside_the_loop_dr
     await manager.tasks.cancel_all()
 
 
+async def test_a_next_in_the_same_turn_as_a_report_stops_the_loop_that_was_waiting_for_it() -> None:
+    manager = ConnectionManager()
+    listener = await tab(manager)
+    engine = make_engine(manager)
+    engine.start_narration()
+    await listener.wait_for_clips(2)
+    await until(lambda: engine.current_word_idx == WORDS - 1)
+    await settle()  # the loop is waiting for the first clip's report
+    old = manager.tasks.get("narration")
+    assert old is not None
+
+    await listener.ack()  # the report resolves the wait...
+    engine.next_sentence()  # ...and before the loop has run, the listener moves on, which cancels it
+    await asyncio.wait([old], timeout=5)
+    await settle()
+
+    assert old.cancelled()  # not carried on for another sentence
+    words_of_sentence_one = [word for sentence_idx, word in cursor(listener) if sentence_idx == 1]
+    assert words_of_sentence_one == [0, *range(WORDS)]  # shown at once, then walked: by the new loop alone
+    await manager.tasks.cancel_all()
+
+
+async def test_the_feeder_sends_under_the_generation_its_loop_started_in() -> None:
+    manager = ConnectionManager()
+    listener = await tab(manager)
+    engine = make_engine(manager)
+    started_in = manager.generation
+    manager.stop_audio()  # audio was stopped after this loop started, and the loop has not noticed yet
+    clips: asyncio.Queue[Any] = asyncio.Queue()
+
+    feeder = asyncio.create_task(engine._feed((0, 0, BOOK[0]), asyncio.Semaphore(2), clips, started_in))
+    async with asyncio.timeout(5):
+        clip = await clips.get()
+    feeder.cancel()
+    await asyncio.gather(feeder, return_exceptions=True)
+    await settle()
+
+    assert clip.segment_id is None  # dropped, not sent under the newer generation
+    assert listener.clips == []
+    await manager.tasks.cancel_all()
+
+
 @pytest.mark.parametrize("direction", ["next", "prev"])
 async def test_next_and_prev_start_at_word_zero(direction: str) -> None:
     manager, listener, tts, engine = await narrating_at_word_ten()

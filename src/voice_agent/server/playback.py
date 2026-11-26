@@ -67,8 +67,11 @@ class PlaybackTracker:
         if segment is None:
             return False
         try:
-            return await asyncio.wait_for(segment.done, timeout_s)
-        except TimeoutError:
+            # Not wait_for: before Python 3.12 it returns the result and drops a cancellation that arrives once the future
+            # is done, and a stop resolves this future before it cancels the task that waits (a barge-in, a pause).
+            await asyncio.wait({segment.done}, timeout=timeout_s)
+            if segment.done.done():
+                return segment.done.result()
             logger.warning(
                 "No playback_done for segment %d after %.1f s; going on without it. Is the tab playing audio?",
                 segment_id,
