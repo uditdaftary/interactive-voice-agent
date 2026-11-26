@@ -263,7 +263,7 @@
             </div>
             
             <div class="visualizer-overlay-right num" id="db-level-readout">
-              -14.2 dB
+              not measured
             </div>
           </div>
 
@@ -1068,35 +1068,6 @@
     }
   }
 
-  function generateSimulatedFFTBins(time, state, voiceFreqMod) {
-    const bins = new Array(16);
-    if (state === 'NARRATING') {
-      for (let i = 0; i < 16; i++) {
-        const dist = Math.abs(i - 5.5);
-        const envelope = Math.exp(-0.15 * dist * dist);
-        const mod = Math.sin(time * 6 + i * 0.8) * 0.2 + Math.cos(time * 3 + i * voiceFreqMod) * 0.15;
-        bins[i] = Math.max(0.06, Math.min(1.0, envelope * 0.9 + mod));
-      }
-    } else if (state === 'BARGE_IN') {
-      for (let i = 0; i < 16; i++) {
-        bins[i] = Math.min(1.0, 0.4 + Math.random() * 0.6);
-      }
-    } else if (state === 'LISTENING') {
-      for (let i = 0; i < 16; i++) {
-        bins[i] = Math.max(0.04, 0.1 + Math.sin(time * 2 + i) * 0.08);
-      }
-    } else if (state === 'REPLYING') {
-      for (let i = 0; i < 16; i++) {
-        const dist = Math.abs(i - 4);
-        const envelope = Math.exp(-0.2 * dist * dist);
-        bins[i] = Math.max(0.06, Math.min(0.9, envelope * 0.8 + Math.sin(time * 5 + i) * 0.15));
-      }
-    } else {
-      for (let i = 0; i < 16; i++) bins[i] = 0.05;
-    }
-    return bins;
-  }
-
   // --- DYNAMIC VOICE GRAPH CANVAS ENGINE ---
   const vCanvas = document.getElementById('voice-graph-canvas');
   const vCtx = vCanvas ? vCanvas.getContext('2d') : null;
@@ -1147,6 +1118,8 @@
     }
 
     const freqMod = activeVoice ? activeVoice.freqMod : 1.0;
+    // With the server away there is no state to draw: a flat line.
+    const online = wsClient.isConnected;
 
     // Wave 1: Primary Plot White Voice Waveform
     vCtx.lineWidth = 1.5;
@@ -1155,7 +1128,9 @@
     for (let x = 0; x < w; x += 3) {
       const norm = (x / w) * Math.PI * 6;
       let amp = 0;
-      if (currentState === 'NARRATING') {
+      if (!online) {
+        amp = 0;
+      } else if (currentState === 'NARRATING') {
         amp = (Math.sin(norm * freqMod + time * 3) * Math.cos(norm * 0.5 + time)) * 36;
       } else if (currentState === 'BARGE_IN') {
         amp = (Math.random() - 0.5) * 60; // Critical disruption
@@ -1177,7 +1152,9 @@
     for (let x = 0; x < w; x += 4) {
       const norm = (x / w) * Math.PI * 6;
       let amp = 0;
-      if (currentState === 'NARRATING') {
+      if (!online) {
+        amp = 0;
+      } else if (currentState === 'NARRATING') {
         amp = (Math.sin(norm * freqMod * 1.5 + time * 2.5 - 0.5)) * 24;
       } else if (currentState === 'BARGE_IN') {
         amp = (Math.random() - 0.5) * 40;
@@ -1190,32 +1167,17 @@
     }
     vCtx.stroke();
 
-    // Telemetry & FFT Animation
+    // The bars and the level come from the server's telemetry only. Without a fresh reading the bars sit at their
+    // floor and the level says it was not measured.
     const now = performance.now();
-    const hasFreshLiveTelemetry = wsClient && (now - wsClient.lastTelemetryTime < 300);
+    const hasFreshLiveTelemetry = online && (now - wsClient.lastTelemetryTime < 300);
 
-    if (hasFreshLiveTelemetry && wsClient.lastTelemetryBins) {
-      updateFFTBars(wsClient.lastTelemetryBins);
-    } else {
-      const simBins = generateSimulatedFFTBins(time, currentState, freqMod);
-      updateFFTBars(simBins);
-    }
+    updateFFTBars(hasFreshLiveTelemetry ? wsClient.lastTelemetryBins : null);
 
-    // dB Readout Update
     const dbEl = document.getElementById('db-level-readout');
     if (dbEl) {
-      if (hasFreshLiveTelemetry && wsClient.lastTelemetryRms !== null) {
-        dbEl.innerText = `${wsClient.lastTelemetryRms.toFixed(1)} dB`;
-      } else if (currentState === 'NARRATING') {
-        const db = (-14.0 + Math.sin(time * 5) * 2.5).toFixed(1);
-        dbEl.innerText = `${db} dB`;
-      } else if (currentState === 'BARGE_IN') {
-        dbEl.innerText = `-0.2 dB PEAK`;
-      } else if (currentState === 'LISTENING') {
-        dbEl.innerText = `-${(36.0 + Math.sin(time * 2) * 3).toFixed(1)} dB`;
-      } else {
-        dbEl.innerText = `-${(16.0 + Math.cos(time * 3) * 2).toFixed(1)} dB`;
-      }
+      const level = hasFreshLiveTelemetry ? wsClient.lastTelemetryRms : null;
+      dbEl.innerText = (level === null || level === undefined) ? 'not measured' : `${Number(level).toFixed(1)} dB`;
     }
 
     requestAnimationFrame(renderDynamicVoiceGraph);
@@ -1241,9 +1203,12 @@
     bCtx.strokeStyle = (currentState === 'BARGE_IN') ? 'var(--critical)' : (currentState === 'LISTENING') ? 'var(--high)' : 'var(--ink)';
 
     bCtx.beginPath();
+    const online = wsClient.isConnected;
     for (let x = 0; x < w; x += 3) {
       let amp = 0;
-      if (currentState === 'BARGE_IN') {
+      if (!online) {
+        amp = 0;
+      } else if (currentState === 'BARGE_IN') {
         amp = (Math.random() - 0.5) * 44; // Instantaneous disruption spike
       } else if (currentState === 'LISTENING') {
         amp = Math.sin(x * 0.05 + time * 3) * 16;
@@ -1747,9 +1712,7 @@
       this.lastTelemetryTime = performance.now();
 
       if (msg.drain_latency_ms !== undefined) {
-        const latStr = `${Number(msg.drain_latency_ms).toFixed(2)} ms`;
-        document.getElementById('header-latency').innerText = latStr;
-        document.getElementById('diag-latency').innerText = latStr;
+        showLatency(msg.drain_latency_ms);
       }
     }
 
