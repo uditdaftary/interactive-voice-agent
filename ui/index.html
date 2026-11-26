@@ -8,6 +8,17 @@
   <link rel="preload" href="fonts/archivo-latin-wdth-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="fonts/martian-mono-latin-wdth-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="app.css">
+  <style>
+    /* What the server reports about the model, the voice, speech recognition and the listening tab. */
+    .status-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+    .status-row:empty { display: none; }
+    .status-chip { border: 1px solid var(--hair-2); border-radius: 0; padding: 2px 8px; font-size: 12.5px; line-height: 1.5; color: var(--ink); }
+    .status-chip.warn { border-color: var(--high); color: var(--high); }
+    .status-chip.bad { border-color: var(--critical); color: var(--critical-ink); }
+    .status-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--critical); color: var(--critical-ink); padding: 6px 10px; margin-bottom: 12px; font-size: 13.5px; }
+    .status-dismiss { appearance: none; background: transparent; border: 1px solid var(--hair-2); border-radius: 0; color: var(--ink); min-height: 32px; padding: 0 12px; cursor: pointer; flex: none; }
+    .status-dismiss:hover { background: var(--raised); }
+  </style>
 </head>
 <body>
 
@@ -37,9 +48,6 @@
       <div class="item">
         <span class="faint">WS LINK:</span>
         <span class="state-pill offline" id="ws-status-pill"><i></i>Connecting</span>
-      </div>
-      <div class="item" id="audio-elsewhere" style="display:none;">
-        <span>Audio is playing in another tab</span>
       </div>
       <div class="item">
         <span class="faint">INPUT:</span>
@@ -100,6 +108,12 @@
       </div>
     </div>
   </header>
+
+  <div class="status-row" id="status-row" role="status" aria-label="Server status"></div>
+  <div class="status-error" id="status-error" role="alert" hidden>
+    <span id="status-error-text"></span>
+    <button type="button" class="status-dismiss" onclick="dismissStatusError()" aria-label="Dismiss this message">Dismiss</button>
+  </div>
 
   <!-- Audio Autoplay Unlock Alert Banner -->
   <div id="audio-unlock-banner" class="audio-unlock-banner" onclick="unlockAudioPlayback()">
@@ -703,9 +717,11 @@
   }
 
   // Controls that need the server do nothing while it is away: the cursor and the state are the server's, and showing
-  // a change it has not confirmed would be a guess.
+  // a change it has not confirmed would be a guess. They say so, and the message goes when the server is back.
   function requireConnection() {
-    return wsClient.isConnected;
+    if (wsClient.isConnected) return true;
+    showStatusError('Not connected to the server. Nothing was sent.', { clearOnConnect: true });
+    return false;
   }
 
   let lastCadenceTimestamp = 0;
@@ -1036,6 +1052,99 @@
     return text;
   }
 
+  // --- SERVER STATUS: CHIPS AND THE ERROR LINE ---
+  // Each table maps a status the server sends to [text, tone]. A status that is missing or not listed shows nothing:
+  // an older server sends none of these, and a value this page does not know is not worth guessing at. Maps, not
+  // objects, because the key is text from the server.
+  const MODEL_STATUS_CHIPS = new Map([
+    ['ok', ['Model ready', '']],
+    ['offline', ['Model offline, reading passages', 'warn']],
+    ['auth', ['Model key rejected', 'bad']],
+    ['error', ['Model error', 'bad']],
+    ['interrupted', ['Answer cut short', 'warn']],
+    ['none', ['No model, reading passages', '']],
+  ]);
+  const SPEECH_STATUS_CHIPS = new Map([
+    ['loading', ['Loading speech recognition', 'warn']],
+    ['unavailable', ['Speech recognition unavailable', 'bad']],
+    ['rejected', ["Didn't catch that", 'warn']],
+  ]);
+  const FALLBACK_VOICE_PREFIX = 'fallback:';
+
+  function statusChips(sync) {
+    const chips = [];
+    if (!sync) return chips;
+    const model = MODEL_STATUS_CHIPS.get(sync.llm_status);
+    if (model) chips.push(model);
+    if (sync.tts_status === 'unavailable') {
+      chips.push(['No voice output', 'bad']);
+    } else if (typeof sync.tts_status === 'string' && sync.tts_status.startsWith(FALLBACK_VOICE_PREFIX)) {
+      const name = sync.tts_status.slice(FALLBACK_VOICE_PREFIX.length).trim();
+      chips.push([name ? `Voice fallback: ${name}` : 'Voice fallback', 'warn']);
+    }
+    const speech = SPEECH_STATUS_CHIPS.get(sync.stt_status);
+    if (speech) chips.push(speech);
+    if (sync.mic_owner === false) chips.push(['Audio is playing in another tab', 'warn']);
+    return chips;
+  }
+
+  // The failure being shown, if any. `settledState` is the state the session was left in by the failure itself: the
+  // server reports a failure first and moves the session after, so the first state_sync that follows is that move and
+  // not a recovery. The line clears on a later state_sync with a different state, or when it is dismissed.
+  let statusError = null;
+
+  function showStatusError(text, { clearOnConnect = false } = {}) {
+    statusError = { text: String(text).slice(0, 200), settledState: null, clearOnConnect };
+    renderStatusError();
+  }
+
+  function dismissStatusError() {
+    statusError = null;
+    renderStatusError();
+  }
+
+  function renderStatusError() {
+    const box = document.getElementById('status-error');
+    const text = document.getElementById('status-error-text');
+    if (!box || !text) return;
+    text.textContent = statusError ? statusError.text : '';
+    box.hidden = !statusError;
+  }
+
+  function errorDetail(msg) {
+    return (typeof msg.detail === 'string' && msg.detail) ? msg.detail : 'unknown error';
+  }
+
+  function capitalized(text) {
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
+  // Draws the chips from the latest state_sync (null when there is none: the server is away, so nothing is known), and
+  // clears the error line when a sync shows the session has moved on.
+  let renderedChips = '';
+  function renderStatus(sync) {
+    const row = document.getElementById('status-row');
+    const chips = statusChips(sync);
+    // Redrawn only when it changed: the row is a live region, and a state_sync arrives for many reasons.
+    if (row && JSON.stringify(chips) !== renderedChips) {
+      renderedChips = JSON.stringify(chips);
+      row.replaceChildren(...chips.map(([text, tone]) => {
+        const chip = document.createElement('span');
+        chip.className = tone ? `status-chip ${tone}` : 'status-chip';
+        chip.textContent = text;
+        return chip;
+      }));
+    }
+    if (statusError && sync && typeof sync.state === 'string') {
+      if (statusError.settledState === null) {
+        statusError.settledState = sync.state;
+      } else if (sync.state !== statusError.settledState) {
+        statusError = null;
+      }
+    }
+    renderStatusError();
+  }
+
   function updateWsStatusUI(connected) {
     const pill = document.getElementById('ws-status-pill');
     if (!pill) return;
@@ -1344,8 +1453,6 @@
 
     setMicOwner(isOwner) {
       this.isMicOwner = isOwner !== false;
-      const note = document.getElementById('audio-elsewhere');
-      if (note) note.style.display = this.isMicOwner ? 'none' : 'flex';
     }
 
     reportPlayed(segment) {
@@ -1395,6 +1502,7 @@
       this.stoppedBefore = 0;
       this.pendingSegment = null;
       updateWsStatusUI(true);
+      if (statusError && statusError.clearOnConnect) dismissStatusError();
       this.reconnectDelayMs = RECONNECT_FIRST_MS;
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
@@ -1418,6 +1526,7 @@
       this.isConnected = false;
       this.resumeOnFirstSync = false;
       updateWsStatusUI(false);
+      renderStatus(null);
       this.stopBrowserMicCapture();
 
       if (!this.reconnectTimer) {
@@ -1570,10 +1679,19 @@
         case 'user_speech_transcript':
           this.handleUserSpeechTranscript(msg);
           break;
+        case 'reply_error':
+          showStatusError(`Reply failed: ${errorDetail(msg)}`);
+          break;
+        case 'error':
+          showStatusError(msg.detail === 'playback stalled'
+            ? 'Playback stalled. Press play to continue.'
+            : capitalized(errorDetail(msg)));
+          break;
       }
     }
 
     handleStateSync(msg) {
+      renderStatus(msg);
       if (this.resumeOnFirstSync) {
         this.resumeOnFirstSync = false;
         if (msg.state === 'PAUSED') {
@@ -2275,6 +2393,7 @@
   window.addEventListener('DOMContentLoaded', () => {
     renderVoiceRoster();
     renderNarrativeStream();
+    renderStatus(null);
     renderDynamicVoiceGraph();
     renderBargeInCanvas();
 
