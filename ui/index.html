@@ -1528,7 +1528,10 @@
 
     onConnected() {
       this.isConnected = true;
-      // Generations belong to one server process and one socket: a restarted server counts from zero again.
+      // Generations and segment ids belong to one server process and one socket: a restarted server counts from zero
+      // again. Every clip received on the old socket is ended, one still waiting in the decode chain included, so none
+      // plays late and none is reported to the new connection under an id that may now belong to another clip.
+      this.stopAllAudio();
       this.stoppedBefore = 0;
       this.pendingSegment = null;
       updateWsStatusUI(true);
