@@ -250,6 +250,21 @@ async def test_a_clip_handed_over_just_before_a_stop_is_never_sent() -> None:
     assert len(manager.playback) == 0
 
 
+async def test_a_clip_made_under_an_older_generation_is_dropped_whenever_it_is_handed_over() -> None:
+    """A narration loop that is about to be cancelled may finish a clip after the stop that ends it. It sends under the
+    generation it started in, and that clip must not go out under the newer one."""
+    manager = ConnectionManager()
+    (owner,) = await listeners(manager, 1)
+    started_in = manager.generation
+
+    manager.stop_audio()
+
+    assert await manager.send_audio(CLIP, generation=started_in) is None
+    assert await manager.send_audio(CLIP, generation=manager.generation) is not None
+    await manager.tasks.cancel_all()
+    assert owner.frames == ["audio_stop", "audio_segment", "blob"]
+
+
 async def test_every_stop_is_announced_in_order() -> None:
     manager = ConnectionManager()
     (owner,) = await listeners(manager, 1)

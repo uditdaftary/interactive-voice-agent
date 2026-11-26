@@ -382,7 +382,7 @@ class ConnectionManager:
             message = AudioStopMessage(generation=generation).model_dump_json()
             await self._fan_out(lambda ws: ws.send_text(message))
 
-    async def send_audio(self, data: bytes, *, gap_s: float = 0.0) -> Optional[int]:
+    async def send_audio(self, data: bytes, *, gap_s: float = 0.0, generation: Optional[int] = None) -> Optional[int]:
         """Send one clip to the owner, announced by an `audio_segment` right before it, and return its segment id.
         None when nobody owns the audio (the caller paces by an estimate) or the send failed.
 
@@ -390,12 +390,14 @@ class ConnectionManager:
         would be paired with the next blob, and a clip of the old generation that is sent anyway is dropped by the
         browser. `gap_s` is the silence the browser adds before the clip.
 
-        The clip belongs to the generation current when this is called. If audio is stopped before it is sent, it is
-        dropped and None is returned: sending it under the newer generation would play it after the stop.
+        The clip belongs to `generation`, by default the one current when this is called; a caller that made the clip
+        over a longer time passes the one it started in. If audio is stopped before it is sent, it is dropped and None
+        is returned: sending it under the newer generation would play it after the stop.
         """
         if self.owner is None:
             return None
-        generation = self.generation
+        if generation is None:
+            generation = self.generation
         return await asyncio.shield(self.tasks.spawn(self._send_audio(data, gap_s, generation), "audio"))
 
     async def _send_audio(self, data: bytes, gap_s: float, generation: int) -> Optional[int]:

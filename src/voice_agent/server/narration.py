@@ -164,7 +164,10 @@ class NarrationEngine:
             # The new owner has not heard the sentence that is playing: it starts again for them.
             self.manager.stop_audio()
             self.manager.tasks.cancel("narration")
-            self._ensure_narration()
+            # The restart is not made here. The owner may have been dropped by a send the narration loop itself was
+            # making, and a task is never cancelled by its own call: from here that loop would look alive, and nothing
+            # would be started. A callback runs outside every task, where the old loop is cancelled like any other.
+            asyncio.get_running_loop().call_soon(self._restart_narration)
         elif state == "REPLYING":
             # The clip being waited for went to the old owner: the wait ends and the turn goes on.
             self.manager.stop_audio()
@@ -189,6 +192,13 @@ class NarrationEngine:
         elif new == "NARRATING":
             # Coming back from a question or a listening window is announced to the HUD; a plain resume is not.
             self._cue_pre_roll = old in ("LISTENING", "REPLYING")
+            self._ensure_narration()
+
+    def _restart_narration(self) -> None:
+        """Replace the narration loop. Called outside any task (see `_on_owner_change`): by then the session may have
+        left NARRATING, in which case whoever moved it already stopped the loop and nothing starts."""
+        self.manager.tasks.cancel("narration")
+        if self.manager.state == "NARRATING":
             self._ensure_narration()
 
     def _ensure_narration(self) -> None:
@@ -336,20 +346,25 @@ class NarrationEngine:
         start: tuple[int, int, str],
         room: asyncio.Semaphore,
         clips: "asyncio.Queue[_Clip | Exception]",
+        generation: int,
     ) -> None:
         """Make each sentence's audio, and hand it to the owner as soon as there is room for it. The sentence after the
         one being made is not started before this one has been sent, so at most one is made ahead of what is out. A
-        failure goes to the loop through the queue, which reports it."""
+        failure goes to the loop through the queue, which reports it.
+
+        `generation` is the audio generation the loop started in. A clip is sent under it, so one still being made when
+        audio is stopped is dropped, not played after the stop by a loop that is about to be cancelled."""
         index, first_word, text = start
         first = True
         try:
             while True:
                 synthesis = await self._synthesize(index, first_word, text)
                 await room.acquire()
-                generation = self.manager.generation
                 segment_id = None
                 if synthesis.audio:
-                    segment_id = await self.manager.send_audio(synthesis.audio, gap_s=0.0 if first else synthesis.gap_s)
+                    segment_id = await self.manager.send_audio(
+                        synthesis.audio, gap_s=0.0 if first else synthesis.gap_s, generation=generation
+                    )
                 clip = _Clip(synthesis, segment_id, generation)
                 clips.put_nowait(clip)
                 first = False
@@ -396,6 +411,7 @@ class NarrationEngine:
         loop moves the cursor to the queued clip at that report. So a barge-in flushes at most one queued sentence,
         and the book never piles up in the browser.
         """
+        generation = self.manager.generation  # before the first await: this loop belongs to the audio that follows the last stop
         feeder: asyncio.Task[None] | None = None
         try:
             if self._cue_pre_roll:
@@ -410,7 +426,7 @@ class NarrationEngine:
             await self._show_word(start[0], start[1])  # the sentence is on screen while its audio is being made
             clips: asyncio.Queue[_Clip | Exception] = asyncio.Queue()
             room = asyncio.Semaphore(2)  # the clip playing and the one queued behind it
-            feeder = asyncio.create_task(self._feed(start, room, clips), name="narration-feed")
+            feeder = asyncio.create_task(self._feed(start, room, clips, generation), name="narration-feed")
             while self.manager.state == "NARRATING":
                 clip = await clips.get()
                 if isinstance(clip, Exception):

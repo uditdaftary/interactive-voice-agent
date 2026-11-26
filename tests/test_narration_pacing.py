@@ -3,6 +3,7 @@ sentence starts again a few words before the stop point (D7, N16)."""
 
 import asyncio
 import dataclasses
+import json
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -273,6 +274,42 @@ async def test_a_new_owner_hears_the_sentence_again_from_the_resume_point() -> N
 
     assert tts.texts[made] == tail(0, 6)
     assert newcomer.clips[0].generation == manager.generation
+    await manager.tasks.cancel_all()
+
+
+class DroppedAtWord(PlayerSocket):
+    """A tab whose connection fails while the narration loop is sending it the cursor at `word_offset` of sentence 0:
+    the send is made inside the loop's own task."""
+
+    def __init__(self, manager: ConnectionManager, word_offset: int) -> None:
+        super().__init__(manager)
+        self.word_offset = word_offset
+
+    async def send_text(self, text: str) -> None:
+        message = json.loads(text)
+        if message["type"] == "cursor_update" and (message["sentence_idx"], message["word_offset"]) == (0, self.word_offset):
+            raise ConnectionResetError("the tab went away")
+        await super().send_text(text)
+
+
+async def test_narration_goes_on_for_the_next_tab_when_a_send_inside_the_loop_drops_the_owner() -> None:
+    manager = ConnectionManager()
+    owner = DroppedAtWord(manager, word_offset=5)
+    await manager.connect(owner)  # type: ignore[arg-type]
+    other = PlayerSocket(manager, auto_ack=True)
+    await manager.connect(other)  # type: ignore[arg-type]
+    tts = FakeTts()
+    engine = make_engine(manager, tts=tts)
+
+    engine.start_narration()
+    await other.wait_for_clips(5)  # the loop that dropped the owner carried on for the tab that took over
+
+    assert manager.owner is other and manager.state == "NARRATING"
+    resumed = tts.texts.index(tail(0, 1))  # word 5 was being sent: four words back
+    assert tts.texts[resumed : resumed + 3] == [tail(0, 1), BOOK[1], BOOK[2]]  # in order, none twice
+    assert other.clips[0].generation == manager.generation  # sent after the stop, so not dropped by it
+    loops = [task for task in asyncio.all_tasks() if task.get_name() == "narration" and not task.done()]
+    assert len(loops) == 1  # the old loop is not running beside the new one
     await manager.tasks.cancel_all()
 
 
