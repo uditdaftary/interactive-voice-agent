@@ -9,6 +9,16 @@ HUD_SOURCE = (Path(__file__).resolve().parent.parent / "ui" / "index.html").read
 
 # What the page must not contain.
 REMOVED = [
+    # The offline simulation: with the server away the page shows that, and does not play the story by itself.
+    "startSimulationLoop",
+    "stopSimulationLoop",
+    "isLiveMode",
+    "advanceWordCursor",
+    "narrativeTimer",
+    "OFFLINE SIMULATION",
+    # One server: the page is served by the app, so there is no second port and no `file:` address.
+    "8080",
+    "localhost:8000",
     # Assigned to when the server's document arrives: a const makes that throw, and the catch hid it.
     "const STORY_PARAGRAPHS",
 ]

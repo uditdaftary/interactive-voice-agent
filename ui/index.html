@@ -36,7 +36,7 @@
     <div class="header-telemetry">
       <div class="item">
         <span class="faint">WS LINK:</span>
-        <span class="state-pill offline" id="ws-status-pill"><i></i>OFFLINE SIMULATION</span>
+        <span class="state-pill offline" id="ws-status-pill"><i></i>Connecting</span>
       </div>
       <div class="item" id="audio-elsewhere" style="display:none;">
         <span>Audio is playing in another tab</span>
@@ -484,10 +484,8 @@
 <!-- JAVASCRIPT: LOGIC & WAVEFORM ENGINES       -->
 <!-- ========================================== -->
 <script>
+  // The page is served by the app, so every request goes to the origin it came from.
   function getApiBaseUrl() {
-    if (window.location.protocol.startsWith('http') && window.location.port === '8080') {
-      return 'http://localhost:8000';
-    }
     return '';
   }
 
@@ -507,9 +505,7 @@
   let isPlaying = true;
   let currentCadence = 1.0;
   let currentState = 'NARRATING'; // NARRATING, PAUSED, LISTENING, REPLYING (BARGE_IN is a client-side flash only)
-  let narrativeTimer = null;
   let wordsArray = [];
-  let isLiveMode = false;
 
   // --- RESIDENT CHARACTER VOICES ---
   const VOICES = [
@@ -706,29 +702,10 @@
     }
   }
 
-  function clearNarrativeTimer() {
-    if (narrativeTimer !== null) {
-      clearTimeout(narrativeTimer);
-      narrativeTimer = null;
-    }
-  }
-
-  function advanceWordCursor() {
-    clearNarrativeTimer();
-    if (isLiveMode || !isPlaying || currentState !== 'NARRATING') return;
-
-    const currentParagraphWords = STORY_PARAGRAPHS[currentSentenceIdx].split(/\s+/);
-    updateWordHighlight();
-
-    currentWordIdx++;
-    if (currentWordIdx >= currentParagraphWords.length) {
-      currentWordIdx = 0;
-      currentSentenceIdx++;
-      if (currentSentenceIdx >= STORY_PARAGRAPHS.length) currentSentenceIdx = 0;
-    }
-
-    const delay = 220 / currentCadence;
-    narrativeTimer = setTimeout(advanceWordCursor, delay);
+  // Controls that need the server do nothing while it is away: the cursor and the state are the server's, and showing
+  // a change it has not confirmed would be a guess.
+  function requireConnection() {
+    return wsClient.isConnected;
   }
 
   let lastCadenceTimestamp = 0;
@@ -737,7 +714,6 @@
     if (now - lastCadenceTimestamp < 50) return;
     lastCadenceTimestamp = now;
 
-    clearNarrativeTimer();
     currentCadence = cadence;
     document.querySelectorAll('#cadence-btn-group button').forEach(b => b.classList.remove('active'));
     if (btnEl) {
@@ -751,60 +727,38 @@
     if (sendWs && wsClient && wsClient.isConnected) {
       wsClient.send({ type: 'set_cadence', cadence: cadence });
     }
-
-    if (!isLiveMode && isPlaying && currentState === 'NARRATING') {
-      advanceWordCursor();
-    }
   }
 
   function togglePlayPause() {
+    if (!requireConnection()) return;
     isPlaying = !isPlaying;
     const btnLabel = document.getElementById('btn-playback-label');
     if (btnLabel) {
       btnLabel.innerText = isPlaying ? 'PAUSE NARRATION' : 'RESUME NARRATION';
     }
-
-    if (isPlaying) {
-      if (!isLiveMode) advanceWordCursor();
-    } else {
-      clearNarrativeTimer();
-    }
-
-    if (wsClient && wsClient.isConnected) {
-      wsClient.send({ type: 'playback_control', action: isPlaying ? 'resume' : 'pause' });
-    }
+    wsClient.send({ type: 'playback_control', action: isPlaying ? 'resume' : 'pause' });
   }
 
   function nextSentence() {
-    clearNarrativeTimer();
+    if (!requireConnection()) return;
     // Queued clips belong to the sentence being left. Not while an answer is in progress: it is not part of the
     // narration and must finish.
-    if (currentState === 'NARRATING' && wsClient) wsClient.stopAllAudio();
+    if (currentState === 'NARRATING') wsClient.stopAllAudio();
     currentSentenceIdx = (currentSentenceIdx + 1) % STORY_PARAGRAPHS.length;
     currentWordIdx = 0;
     renderNarrativeStream();
-    if (!isLiveMode && isPlaying && currentState === 'NARRATING') {
-      advanceWordCursor();
-    }
-    if (wsClient && wsClient.isConnected) {
-      wsClient.send({ type: 'playback_control', action: 'next' });
-    }
+    wsClient.send({ type: 'playback_control', action: 'next' });
   }
 
   function prevSentence() {
-    clearNarrativeTimer();
+    if (!requireConnection()) return;
     // Queued clips belong to the sentence being left. Not while an answer is in progress: it is not part of the
     // narration and must finish.
-    if (currentState === 'NARRATING' && wsClient) wsClient.stopAllAudio();
+    if (currentState === 'NARRATING') wsClient.stopAllAudio();
     currentSentenceIdx = (currentSentenceIdx - 1 + STORY_PARAGRAPHS.length) % STORY_PARAGRAPHS.length;
     currentWordIdx = 0;
     renderNarrativeStream();
-    if (!isLiveMode && isPlaying && currentState === 'NARRATING') {
-      advanceWordCursor();
-    }
-    if (wsClient && wsClient.isConnected) {
-      wsClient.send({ type: 'playback_control', action: 'prev' });
-    }
+    wsClient.send({ type: 'playback_control', action: 'prev' });
   }
 
   // --- DIRECT MICROPHONE BARGE-IN & SPEECH RECOGNITION ---
@@ -918,6 +872,7 @@
       return;
     }
 
+    if (!requireConnection()) return;
     isVoiceListening = true;
     updateBargeInButtonUI(true);
 
@@ -1011,75 +966,27 @@
 
   // --- BARGE-IN INTERRUPTION PROTOCOL ---
   function triggerBargeIn() {
-    if (wsClient && wsClient.isConnected) {
-      wsClient.send({ type: 'barge_in_trigger' });
-    }
+    if (!requireConnection()) return;
+    wsClient.send({ type: 'barge_in_trigger' });
 
-    clearTimeout(narrativeTimer);
-    narrativeTimer = null;
     currentState = 'BARGE_IN';
     updateStateUI();
 
-    const t0 = performance.now();
-    const measuredLatency = ((performance.now() - t0) + 0.04).toFixed(2);
-    document.getElementById('header-latency').innerText = `${measuredLatency} ms`;
-    document.getElementById('diag-latency').innerText = `${measuredLatency} ms`;
-
+    // The flush time comes from the server's barge_in message; until it arrives the tag carries no number.
     const flashTag = document.getElementById('bargein-flash-tag');
     if (flashTag) {
-      flashTag.innerText = `FLUSH: ${measuredLatency} ms`;
+      flashTag.innerText = 'FLUSH';
       flashTag.style.display = 'block';
     }
 
-    // In live mode with active WebSocket, let server drive LISTENING, REPLYING, and NARRATING states
-    if (wsClient && wsClient.isConnected) {
-      setTimeout(() => {
-        if (flashTag) flashTag.style.display = 'none';
-        if (currentState === 'BARGE_IN') {
-          currentState = 'LISTENING';
-          updateStateUI();
-        }
-      }, 300);
-      return;
-    }
-
-    // Offline / Local Simulation Mode: Step 2: Transition to Listening
+    // The server drives LISTENING, REPLYING and NARRATING from here.
     setTimeout(() => {
-      currentState = 'LISTENING';
-      updateStateUI();
-
-      const envelope = document.getElementById('dialogue-envelope');
-      if (envelope) {
-        envelope.style.display = 'grid';
-        const ctxEl = document.getElementById('env-local-ctx');
-        if (ctxEl) ctxEl.innerText = `"${STORY_PARAGRAPHS[currentSentenceIdx]}"`;
-      }
-
-      // Step 3: Transition to Replying
-      setTimeout(() => {
-        currentState = 'REPLYING';
+      if (flashTag) flashTag.style.display = 'none';
+      if (currentState === 'BARGE_IN') {
+        currentState = 'LISTENING';
         updateStateUI();
-
-        // Step 4: Resume story with 4-word pre-roll protocol
-        setTimeout(() => {
-          highlightPreRollWords(4);
-          currentState = 'NARRATING';
-          updateStateUI();
-          if (flashTag) flashTag.style.display = 'none';
-
-          setTimeout(() => {
-            document.querySelectorAll('.preroll').forEach(e => e.classList.remove('preroll'));
-            if (envelope) envelope.style.display = 'none';
-            if (!isLiveMode && isPlaying) {
-              advanceWordCursor();
-            }
-          }, 1400);
-
-        }, 2200);
-
-      }, 1800);
-
-    }, 400);
+      }
+    }, 300);
   }
 
   function updateStateUI() {
@@ -1134,25 +1041,10 @@
     if (!pill) return;
     if (connected) {
       pill.className = 'state-pill connected';
-      pill.innerHTML = '<i></i>WS: CONNECTED';
+      pill.innerHTML = '<i></i>Connected';
     } else {
       pill.className = 'state-pill offline';
-      pill.innerHTML = '<i></i>OFFLINE SIMULATION';
-    }
-  }
-
-  function startSimulationLoop() {
-    isLiveMode = false;
-    if (isPlaying && currentState === 'NARRATING' && !narrativeTimer) {
-      advanceWordCursor();
-    }
-  }
-
-  function stopSimulationLoop() {
-    isLiveMode = true;
-    if (narrativeTimer) {
-      clearTimeout(narrativeTimer);
-      narrativeTimer = null;
+      pill.innerHTML = '<i></i>Disconnected, retrying';
     }
   }
 
@@ -1399,14 +1291,8 @@
     }
 
     getWsUrl() {
-      if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
-        if (window.location.port === '8080') {
-          return 'ws://localhost:8000/ws';
-        }
-        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        return `${proto}//${window.location.host}/ws`;
-      }
-      return 'ws://localhost:8000/ws';
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${proto}//${window.location.host}/ws`;
     }
 
     initAudioContext() {
@@ -1535,7 +1421,6 @@
       this.stoppedBefore = 0;
       this.pendingSegment = null;
       updateWsStatusUI(true);
-      stopSimulationLoop();
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
@@ -1558,7 +1443,6 @@
       this.isConnected = false;
       this.resumeOnFirstSync = false;
       updateWsStatusUI(false);
-      startSimulationLoop();
       this.stopBrowserMicCapture();
 
       if (!this.reconnectTimer) {
@@ -1712,7 +1596,6 @@
     }
 
     handleStateSync(msg) {
-      clearNarrativeTimer();
       if (this.resumeOnFirstSync) {
         this.resumeOnFirstSync = false;
         if (msg.state === 'PAUSED') {
@@ -2416,7 +2299,6 @@
   window.addEventListener('DOMContentLoaded', () => {
     renderVoiceRoster();
     renderNarrativeStream();
-    startSimulationLoop();
     renderDynamicVoiceGraph();
     renderBargeInCanvas();
 
