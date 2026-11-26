@@ -26,29 +26,21 @@ class Settings:
     web_search_enabled: bool = True
 
     # Narration loop
-    idle_poll_s: float = 0.5
     inter_sentence_pause_s: float = 0.35  # divided by cadence at the call site
     words_per_s: float = 2.5  # reading rate at cadence 1.0; a divisor, not a duration
     min_sentence_s: float = 1.2
 
-    # Reply playback and turn-taking after a barge-in answer
-    min_reply_playback_s: float = 2.0
-    reply_words_per_s: float = 2.2  # divisor, like words_per_s
+    # Turn-taking after a barge-in answer
     followup_window_s: float = 2.5
-    unrecognized_pause_s: float = 2.0
 
     @classmethod
     def fast(cls) -> "Settings":
         """Every wait collapses to zero. Rates become infinite so derived durations are exactly 0."""
         return cls(
-            idle_poll_s=0.0,
             inter_sentence_pause_s=0.0,
             words_per_s=float("inf"),
             min_sentence_s=0.0,
-            min_reply_playback_s=0.0,
-            reply_words_per_s=float("inf"),
             followup_window_s=0.0,
-            unrecognized_pause_s=0.0,
         )
 
     # STT: Whisper's initial prompt, which biases decoding toward names the user cares about. Empty means none.
@@ -64,6 +56,11 @@ class Settings:
     # Turn-taking: how long the session waits for the user after a barge-in before returning to what it was
     # doing. It is extended while the user is heard speaking. (`followup_window_s` is the wait after a reply.)
     barge_in_listen_s: float = 8.0
+
+    # Playback: how long past a clip's estimated length the server waits for the browser to say it has played it,
+    # before it logs a WARNING and goes on. Not pacing, so `fast()` leaves it alone: a missing report must show up as
+    # a stalled test, not be waved through.
+    playback_ack_timeout_s: float = 30.0
 
 
 def _one_of(env_name: str, raw: str | None, default: str, names: tuple[str, ...]) -> str:

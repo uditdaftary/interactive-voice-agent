@@ -157,6 +157,11 @@ In regex-based sentence boundary tokenizers, periods inside abbreviations (`Dr.`
    ```json
    {"type": "playback_control", "action": "pause" | "resume" | "next" | "prev"}
    ```
+   **Playback done** (owner only; others are ignored): sent when a clip has finished playing, or could not be decoded.
+   A clip that was stopped is never reported.
+   ```json
+   {"type": "playback_done", "segment_id": 12, "generation": 4}
+   ```
 6. **Binary PCM Audio Frame**:
    - Format: 24kHz 16-bit Mono PCM (Little-Endian int16).
    - Ingested directly into `AudioIngestionBridge` when `mic_source == "browser"`.
@@ -172,9 +177,12 @@ In regex-based sentence boundary tokenizers, periods inside abbreviations (`Dr.`
      "cadence": 1.0,
      "sentence_idx": 3,
      "word_offset": 0,
-     "latency_ms": 0.04
+     "latency_ms": null,
+     "mic_owner": true
    }
    ```
+   `latency_ms` is `null` until something measures it. `mic_owner` is true for the one connection that holds the
+   microphone and receives the audio, and is set per connection.
 2. **VAD Event Telemetry (`vad_event`)** *(emitted every 30ms frame)*:
    ```json
    {
@@ -189,11 +197,13 @@ In regex-based sentence boundary tokenizers, periods inside abbreviations (`Dr.`
    ```json
    {
      "type": "barge_in",
-     "latency_ms": 0.045,
+     "latency_ms": null,
      "generation": 4,
-     "flushed_samples": 48000
+     "flushed_samples": null
    }
    ```
+   `latency_ms` and `flushed_samples` are `null` unless a caller measured them. `generation` is the one the audio is in
+   from now on: the browser ends every clip of an older generation.
 4. **Word Cursor Update (`cursor_update`)**:
    ```json
    {
@@ -227,8 +237,18 @@ In regex-based sentence boundary tokenizers, periods inside abbreviations (`Dr.`
      "fft_bins": [0.12, 0.45, 0.88, 0.65, 0.32, 0.21, 0.15, 0.08, 0.05, 0.04, 0.03, 0.02, 0.01, 0.01, 0.0, 0.0]
    }
    ```
-7. **Binary Audio Output PCM**:
-   - 24kHz 16-bit Mono PCM streamed directly to browser Web Audio API DAC for continuous stutter-free playback.
+7. **Audio segment and binary audio output**:
+   ```json
+   {"type": "audio_segment", "segment_id": 12, "generation": 4, "gap_s": 0.35}
+   ```
+   - Sent to the owner connection only, immediately before the clip's binary frame (24kHz 16-bit Mono PCM, or WAV/MP3).
+     `gap_s` is the pause the browser adds before the clip when it follows another one.
+8. **Audio stop**:
+   ```json
+   {"type": "audio_stop", "generation": 5}
+   ```
+   - Sent to every connection when audio is stopped (pause, navigation, new document, new owner). Clips of an older
+     generation must not play.
 
 ### 5.3. Hybrid Audio Ingestion Architecture
 ```

@@ -352,7 +352,7 @@ def create_app(
             mgr.set_mic_source(body.mic_source)
 
         # Broadcast state synchronization to clients
-        await mgr.broadcast_json(mgr.get_state_sync_message())
+        await mgr.broadcast_state()
 
         return {
             "status": "ok",
@@ -390,7 +390,7 @@ def create_app(
 
         if mgr.state == state_before:
             # No transition happened, so the state listener announced nothing; still answer the request.
-            await mgr.broadcast_json(mgr.get_state_sync_message())
+            await mgr.broadcast_state()
         return {"status": "ok", "state": mgr.state, "current_sentence_idx": eng.current_sentence_idx}
 
     @app.post("/api/transcribe")

@@ -20,6 +20,7 @@ from voice_agent.stt.accumulator import MAX_UTTERANCE_S
 from voice_agent.server.schemas import (
     BargeInTriggerMessage,
     PlaybackControlMessage,
+    PlaybackDoneMessage,
     QueryInterruptionMessage,
     SelectVoiceMessage,
     SetCadenceMessage,
@@ -129,6 +130,20 @@ def _deliver(manager: ConnectionManager, engine: Optional[Any], turn: int, text:
         engine.report_unrecognized()
 
 
+def _owns_microphone(manager: ConnectionManager, websocket: WebSocket, what: str) -> bool:
+    """False, after one INFO line per connection, when another connection owns the microphone and the audio.
+
+    Only the owner's recording, push-to-talk and playback reports mean anything: a second tab's microphone would
+    otherwise feed the first one's turn. Everything else (typed questions, pause, resume, next, prev, voice, cadence)
+    works from any tab. With nobody connected there is no owner and nothing to protect.
+    """
+    owner = manager.owner
+    if owner is None or owner is websocket:
+        return True
+    manager.ignore_from_non_owner(websocket, what)
+    return False
+
+
 async def handle_client_text_message(
     text: str,
     websocket: WebSocket,
@@ -147,15 +162,17 @@ async def handle_client_text_message(
 
     if isinstance(msg, SelectVoiceMessage):
         manager.set_voice(msg.voice_id)
-        sync_msg = manager.get_state_sync_message()
-        await manager.broadcast_json(sync_msg)
+        await manager.broadcast_state()
 
     elif isinstance(msg, SetMicSourceMessage):
+        # The tab the user points at the microphone takes the audio with it, from whichever tab had it.
+        manager.claim_ownership(websocket, explicit=True)
         manager.set_mic_source(msg.source)
-        sync_msg = manager.get_state_sync_message()
-        await manager.broadcast_json(sync_msg)
+        await manager.broadcast_state()
 
     elif isinstance(msg, BargeInTriggerMessage):
+        if not _owns_microphone(manager, websocket, "barge_in_trigger"):
+            return
         # Narration stops at once. The client records until it sends voice_end, and quiet speech never registers
         # with the server, so the deadline waits for that message, but no longer than one utterance can last.
         manager.trigger_barge_in()
@@ -163,8 +180,7 @@ async def handle_client_text_message(
 
     elif isinstance(msg, SetCadenceMessage):
         manager.set_cadence(msg.cadence)
-        sync_msg = manager.get_state_sync_message()
-        await manager.broadcast_json(sync_msg)
+        await manager.broadcast_state()
 
     elif isinstance(msg, PlaybackControlMessage):
         state_before = manager.state
@@ -187,7 +203,7 @@ async def handle_client_text_message(
 
         if manager.state == state_before:
             # No transition happened, so the state listener announced nothing; still answer the request.
-            await manager.broadcast_json(manager.get_state_sync_message())
+            await manager.broadcast_state()
 
     elif isinstance(msg, QueryInterruptionMessage):
         if engine is not None:
@@ -205,10 +221,16 @@ async def handle_client_text_message(
                 model=msg.model,
                 web_search_enabled=msg.web_search_enabled,
             )
-        sync_msg = manager.get_state_sync_message()
-        await manager.broadcast_json(sync_msg)
+        await manager.broadcast_state()
+
+    elif isinstance(msg, PlaybackDoneMessage):
+        # Only the owner is sent audio, so only the owner can have finished playing it.
+        if _owns_microphone(manager, websocket, "playback_done"):
+            manager.playback.acknowledge(websocket, msg.segment_id, msg.generation)
 
     elif isinstance(msg, VoiceEndMessage):
+        if not _owns_microphone(manager, websocket, "voice_end"):
+            return
         # The client is done recording, so the hold ends. The turn ends here, on Stop; the normal deadline only runs
         # if Stop never comes and the hold's cap passes.
         manager.session.release_deadline_hold()
@@ -236,6 +258,10 @@ async def _handle_frame(
 
     # Binary frame (24kHz / 16kHz 16-bit PCM from browser mic)
     elif raw_msg.get("bytes") is not None:
+        # The first tab to send audio owns the microphone and keeps it; a later tab's frames are dropped.
+        if not manager.claim_ownership(websocket, explicit=False):
+            manager.ignore_from_non_owner(websocket, "microphone audio")
+            return
         pcm_data = raw_msg["bytes"]
         manager.on_audio_frame(pcm_data)
         acc = getattr(manager, "accumulator", None)

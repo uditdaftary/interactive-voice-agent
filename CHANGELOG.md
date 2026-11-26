@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - S2.1: one SessionState with legal transitions, resume_to and a LISTENING deadline; tracked tasks cancelled at shutdown; pause on narration error and on last disconnect; initial state PAUSED (M4, M6, M11 part, L5, L6 part).
 - S4.2: optional Pocket TTS and Moonshine STT backends behind `pocket` and `moonshine` extras; deleted the vendored game-mod TTS workers (H9).
 - S2.2: one reply per user turn (numbered turns; transcription runs as its own task, off the receive loop); a failed reply is reported, spoken as one neutral line, and the session resumes; next, prev and load go through the engine so no sentence is skipped (H1, H2, M3, M7, N6, N17, N18, N20).
+- S2.3: audio goes to one listening tab, and the browser reports each clip played (`audio_segment`, `audio_stop`, `playback_done`), so narration stays one sentence ahead of the listener, the cursor follows the audio, and a partly spoken sentence resumes four words early; no latency is shown that was not measured (D7, M11, N16, N19; #86, #103, #104, #105). The settings `min_reply_playback_s`, `reply_words_per_s`, `unrecognized_pause_s` and `idle_poll_s` are gone (one estimate paces everything) and `playback_ack_timeout_s` is new, with no environment variable.
 - Default test suite: the slowest tests run on shorter inputs and waits, with no assertion or test removed; about 3 s faster (#82).
 
 ---

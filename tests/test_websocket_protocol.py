@@ -54,7 +54,7 @@ def test_websocket_handshake_and_initial_state_sync(isolated_app) -> None:
             assert init_msg["cadence"] == 1.0
             assert init_msg["sentence_idx"] == 0
             assert init_msg["word_offset"] == 0
-            assert "latency_ms" in init_msg
+            assert init_msg["latency_ms"] is None  # nothing has been measured, so no number is shown
 
             assert manager.connection_count == 1
 
@@ -104,8 +104,8 @@ def test_client_barge_in_trigger_action(isolated_app) -> None:
             barge_in_event = ws.receive_json()
             assert barge_in_event["type"] == "barge_in"
             assert barge_in_event["generation"] == 1
-            assert "latency_ms" in barge_in_event
-            assert "flushed_samples" in barge_in_event
+            assert barge_in_event["latency_ms"] is None  # the server measures neither: null, not a constant
+            assert barge_in_event["flushed_samples"] is None
 
             # 2. Receives updated state_sync with LISTENING
             state_event = ws.receive_json()
@@ -191,12 +191,13 @@ def test_bidirectional_binary_pcm_audio_streaming(isolated_app) -> None:
             assert received_frames[0] == pcm_chunk
             assert len(received_frames[0]) == 1440
 
-            # Server -> Client: Broadcast synthesized binary audio PCM
+            # Server -> Client: a synthesized clip, announced by an audio_segment right before it
             synth_chunk = b"\x7f\x00" * 480
-            # TestClient loop handles broadcast_bytes inside thread-safe context
             import asyncio
-            asyncio.run(manager.broadcast_bytes(synth_chunk))
+            segment_id = asyncio.run(manager.send_audio(synth_chunk, gap_s=0.25))
 
+            announcement = ws.receive_json()
+            assert announcement == {"type": "audio_segment", "segment_id": segment_id, "generation": 0, "gap_s": 0.25}
             client_received = ws.receive_bytes()
             assert client_received == synth_chunk
             assert len(client_received) == 960

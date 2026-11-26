@@ -1,6 +1,7 @@
 """Broadcast fan-out survives stalled and broken clients, and says so (M5, L2)."""
 
 import asyncio
+import json
 import logging
 from typing import Any
 
@@ -78,17 +79,20 @@ async def test_stalled_socket_dropped_after_timeout(short_send_timeout: None, ca
     assert healthy.close_codes == []
 
 
-async def test_stalled_socket_dropped_for_binary_frames(short_send_timeout: None, caplog: pytest.LogCaptureFixture) -> None:
+async def test_stalled_owner_dropped_when_a_clip_is_sent(short_send_timeout: None, caplog: pytest.LogCaptureFixture) -> None:
     healthy, stalled = RecordingSocket(), StalledSocket()
-    manager = manager_with(stalled, healthy)
+    manager = manager_with(stalled, healthy)  # the oldest connection owns the audio
 
     with caplog.at_level(logging.INFO):
         async with asyncio.timeout(2):
-            await manager.broadcast_bytes(b"\x01\x02")
+            assert await manager.send_audio(b"\x01\x02") is None  # not delivered: nobody is waiting for it
 
-    assert healthy.blobs == [b"\x01\x02"]
     assert manager.active_connections == [healthy]
+    assert manager.owner is healthy  # the next clip goes to the connection that is still there
+    assert healthy.blobs == []
     assert "TimeoutError" in caplog.text
+    assert stalled.close_codes == [1011]
+    await manager.tasks.cancel_all()
 
 
 async def test_broken_socket_dropped_and_logged_by_type(short_send_timeout: None, caplog: pytest.LogCaptureFixture) -> None:
@@ -97,10 +101,11 @@ async def test_broken_socket_dropped_and_logged_by_type(short_send_timeout: None
 
     with caplog.at_level(logging.INFO):
         await manager.broadcast_text("hello")
-        await manager.broadcast_bytes(b"x")
+        await manager.send_audio(b"x")
 
     assert manager.active_connections == [healthy]
-    assert healthy.texts == ["hello"]
+    assert healthy.texts[0] == "hello"  # the broken socket was the oldest, so the survivor is also told it owns the audio
+    assert json.loads(healthy.texts[1])["mic_owner"] is True
     assert "RuntimeError" in caplog.text
     assert "Cannot call" not in caplog.text  # type name only, never the exception text
 
@@ -130,7 +135,8 @@ async def test_slow_client_does_not_delay_the_others(short_send_timeout: None) -
 
     await manager.broadcast_text("hello")
 
-    assert events == ["stalled send started", "healthy delivered", "stalled send abandoned"]
+    # The last delivery is the survivor being told it owns the audio now: the stalled client was the oldest.
+    assert events == ["stalled send started", "healthy delivered", "stalled send abandoned", "healthy delivered"]
 
 
 async def test_close_that_also_stalls_does_not_hang_the_broadcast(short_send_timeout: None) -> None:
@@ -151,7 +157,7 @@ def test_sync_broadcast_without_loop_warns(caplog: pytest.LogCaptureFixture) -> 
 
     with caplog.at_level(logging.WARNING):
         manager.broadcast_json_sync({"type": "ping"})
-        manager.broadcast_bytes_sync(b"\x00\x00")
+        manager.broadcast_state_sync()
 
     assert [record.levelname for record in caplog.records] == ["WARNING", "WARNING"]
     assert "no running event loop" in caplog.records[0].getMessage()

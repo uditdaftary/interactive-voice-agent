@@ -140,6 +140,14 @@ class UpdateLLMConfigMessage(BaseProtocolMessage):
     web_search_enabled: Optional[bool] = Field(default=None, description="Enable live internet web search grounding")
 
 
+class PlaybackDoneMessage(BaseProtocolMessage):
+    """The browser finished playing a clip the server announced with `audio_segment`."""
+
+    type: Literal["playback_done"] = "playback_done"
+    segment_id: Annotated[int, Field(strict=True, ge=0, description="The `segment_id` of the clip that finished")]
+    generation: Annotated[int, Field(strict=True, ge=0, description="The `generation` that clip was sent with")]
+
+
 class VoiceEndMessage(BaseProtocolMessage):
     """Client notification that user voice utterance has concluded."""
 
@@ -209,6 +217,7 @@ ClientMessage = Union[
     QueryInterruptionMessage,
     UpdateLLMConfigMessage,
     VoiceEndMessage,
+    PlaybackDoneMessage,
 ]
 
 
@@ -245,9 +254,13 @@ class StateSyncMessage(BaseProtocolMessage):
         default=0,
         description="Active word index offset within current sentence",
     )
-    latency_ms: float = Field(
-        default=0.0,
-        description="Latest measured round-trip or drain latency in milliseconds",
+    latency_ms: Optional[float] = Field(
+        default=None,
+        description="Latest measured round-trip or drain latency in milliseconds; null when nothing was measured",
+    )
+    mic_owner: bool = Field(
+        default=True,
+        description="True when this connection owns the microphone and the audio; false for every other tab",
     )
 
 
@@ -277,17 +290,17 @@ class BargeInEventMessage(BaseProtocolMessage):
     """Sub-50ms barge-in interruption event dispatched to client HUD."""
 
     type: Literal["barge_in"] = "barge_in"
-    latency_ms: float = Field(
-        ...,
-        description="Atomic buffer drain execution latency in milliseconds (< 0.05ms target)",
+    latency_ms: Optional[float] = Field(
+        default=None,
+        description="Measured time to stop the audio, in milliseconds; null when nothing was measured",
     )
     generation: int = Field(
         ...,
         description="Monotonically incremented generation counter invalidating stale audio",
     )
-    flushed_samples: int = Field(
-        ...,
-        description="Number of audio samples purged from playback ring buffer",
+    flushed_samples: Optional[int] = Field(
+        default=None,
+        description="Number of audio samples purged from the playback buffer; null when nothing was measured",
     )
 
 
@@ -387,6 +400,22 @@ class UserSpeechTranscriptMessage(BaseProtocolMessage):
     )
 
 
+class AudioSegmentMessage(BaseProtocolMessage):
+    """Announces the audio blob that follows it on the socket, which only the owner connection receives."""
+
+    type: Literal["audio_segment"] = "audio_segment"
+    segment_id: int = Field(..., description="Echoed back in `playback_done` when the clip has finished playing")
+    generation: int = Field(..., description="A clip older than the newest `audio_stop` or `barge_in` must not play")
+    gap_s: float = Field(default=0.0, description="Silence the browser adds before the clip starts")
+
+
+class AudioStopMessage(BaseProtocolMessage):
+    """Audio was stopped (a pause, a navigation, a new document, a new owner): drop every clip older than `generation`."""
+
+    type: Literal["audio_stop"] = "audio_stop"
+    generation: int = Field(..., description="Clips with a smaller generation are dead, queued, decoding or playing")
+
+
 class ErrorMessage(BaseProtocolMessage):
     """Reply to a client message that was rejected. The session stays open."""
 
@@ -416,6 +445,8 @@ ServerMessage = Union[
     TelemetryMessage,
     UserSpeechTranscriptMessage,
     ReplyErrorMessage,
+    AudioSegmentMessage,
+    AudioStopMessage,
     ErrorMessage,
 ]
 
@@ -494,6 +525,11 @@ def parse_client_message(raw: Union[str, bytes, Dict[str, Any]]) -> ClientMessag
 
         if msg_type in ("voice_end", "voiceend", "speech_end", "speechend", "voice_stop"):
             return VoiceEndMessage()
+
+        if msg_type == "playback_done":
+            return PlaybackDoneMessage.model_validate(
+                {"segment_id": payload.get("segment_id"), "generation": payload.get("generation")}
+            )
 
         if msg_type in ("update_config", "set_config", "configure_llm"):
             return UpdateLLMConfigMessage.model_validate(

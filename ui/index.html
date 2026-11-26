@@ -38,6 +38,9 @@
         <span class="faint">WS LINK:</span>
         <span class="state-pill offline" id="ws-status-pill"><i></i>OFFLINE SIMULATION</span>
       </div>
+      <div class="item" id="audio-elsewhere" style="display:none;">
+        <span>Audio is playing in another tab</span>
+      </div>
       <div class="item">
         <span class="faint">INPUT:</span>
         <div class="mic-toggle-group" id="mic-toggle-group">
@@ -61,7 +64,7 @@
       </div>
       <div class="item">
         <span class="faint">LATENCY:</span>
-        <span class="num" id="header-latency" style="color:var(--high);">&lt; 0.05 ms</span>
+        <span class="num" id="header-latency">not measured</span>
       </div>
       <div class="item">
         <span class="faint">ACTIVE VOICE:</span>
@@ -226,7 +229,7 @@
               [VAD SENSITIVITY // SUB-50MS ATOMIC DRAIN]
             </div>
             <div id="bargein-flash-tag" class="visualizer-overlay-right num" style="color:var(--critical-ink); display:none;">
-              FLUSH: 0.04 ms
+              FLUSH
             </div>
           </div>
 
@@ -326,7 +329,7 @@
   <section class="diagnostics-strip">
     <div class="diag-cell">
       <span class="label">TRUNCATION LATENCY</span>
-      <span class="val num" id="diag-latency" style="color:var(--high);">&lt; 0.05 ms</span>
+      <span class="val num" id="diag-latency">not measured</span>
     </div>
     <div class="diag-cell">
       <span class="label">AUDIO SAMPLE RATE</span>
@@ -923,6 +926,11 @@
     if (wsClient) {
       wsClient.stopAllAudio();
     }
+    // Only the tab that holds the microphone may start a turn, so a tab that does not asks for it first. The server
+    // handles the two messages in the order they are sent.
+    if (wsClient && wsClient.isConnected && !wsClient.isMicOwner) {
+      wsClient.send({ type: 'set_mic_source', source: 'browser' });
+    }
     triggerBargeIn();
 
     // 2. Ensure WebSocket client starts streaming 16kHz PCM mic frames
@@ -1111,6 +1119,14 @@
         bargePill.innerHTML = `<i></i>PAUSED`;
       }
     }
+  }
+
+  // The server sends null for a latency it did not measure, and that is shown as such, never as a number.
+  function showLatency(ms) {
+    const text = (ms === null || ms === undefined) ? 'not measured' : `${Number(ms).toFixed(2)} ms`;
+    document.getElementById('header-latency').innerText = text;
+    document.getElementById('diag-latency').innerText = text;
+    return text;
   }
 
   function updateWsStatusUI(connected) {
@@ -1367,7 +1383,16 @@
       this.masterVolume = 1.0;
       this.isMuted = false;
       this.nextPlayTime = 0;
-      this.activeAudioSources = [];
+      this.activeAudioSources = [];  // one { src, generation, stopped } per clip that is scheduled or playing
+      // Ordering of audio. The server announces each clip with an audio_segment message just before its blob, and a
+      // stop (audio_stop, or a barge_in) names the generation the audio is in from then on: nothing older may play.
+      this.pendingSegment = null;    // the announcement for the blob that comes next
+      this.stoppedBefore = 0;        // clips of a generation below this are dead
+      this.audioEpoch = 0;           // counts this tab's own stops, which have no generation, so a clip being decoded can tell
+      this.clipChain = Promise.resolve();  // the clip being decoded and scheduled, and every one queued behind it
+      // Only one tab holds the microphone and hears the audio; the server says which in every state_sync.
+      this.isMicOwner = true;
+      this.resumeOnFirstSync = false;  // set when the socket opens: see onConnected
       this.lastTelemetryBins = null;
       this.lastTelemetryRms = null;
       this.lastTelemetryTime = 0;
@@ -1423,17 +1448,52 @@
       return this.isMuted;
     }
 
-    stopAllAudio() {
-      for (const s of this.activeAudioSources) {
-        try { s.stop(); } catch (e) {}
-      }
-      this.activeAudioSources = [];
-      if (this.audioContext) {
+    // Stops the clips for which shouldStop(clip) holds. Stopping a source also fires its onended, so each clip is marked
+    // first: a clip that was cut off must never be reported as played.
+    stopClips(shouldStop) {
+      this.activeAudioSources = this.activeAudioSources.filter((clip) => {
+        if (!shouldStop(clip)) return true;
+        clip.stopped = true;
+        try { clip.src.stop(); } catch (e) {}
+        return false;
+      });
+      if (this.audioContext && this.activeAudioSources.length === 0) {
         this.nextPlayTime = this.audioContext.currentTime;
       }
       if (window.speechSynthesis) {
         window.speechSynthesis.cancel();
       }
+    }
+
+    // This tab's own stop, for a click that does not wait for the server. It has no generation, so it ends every clip
+    // received so far, one still being decoded included. A clip the server has sent but this tab has not received yet
+    // is ended by the server's audio_stop when that arrives.
+    stopAllAudio() {
+      this.audioEpoch++;
+      this.stopClips(() => true);
+    }
+
+    // The server stopped audio: from `generation` on, only clips of that generation or a later one may play. Clips
+    // arrive in order after the stop, so this ends exactly what was queued before it. It is a statement about
+    // generations only: a clip being decoded is dropped when the stop is newer than the clip's own generation, and not
+    // for a stop that is older, which would lose a clip nobody has stopped and leave the server waiting for its report.
+    stopAudioBefore(generation) {
+      if (!Number.isInteger(generation)) {
+        this.stopAllAudio();
+        return;
+      }
+      this.stoppedBefore = Math.max(this.stoppedBefore, generation);
+      this.stopClips((clip) => clip.generation === null || clip.generation < this.stoppedBefore);
+    }
+
+    setMicOwner(isOwner) {
+      this.isMicOwner = isOwner !== false;
+      const note = document.getElementById('audio-elsewhere');
+      if (note) note.style.display = this.isMicOwner ? 'none' : 'flex';
+    }
+
+    reportPlayed(segment) {
+      this.send({ type: 'playback_done', segment_id: segment.segmentId, generation: segment.generation });
     }
 
     connect() {
@@ -1468,6 +1528,12 @@
 
     onConnected() {
       this.isConnected = true;
+      // Generations and segment ids belong to one server process and one socket: a restarted server counts from zero
+      // again. Every clip received on the old socket is ended, one still waiting in the decode chain included, so none
+      // plays late and none is reported to the new connection under an id that may now belong to another clip.
+      this.stopAllAudio();
+      this.stoppedBefore = 0;
+      this.pendingSegment = null;
       updateWsStatusUI(true);
       stopSimulationLoop();
       if (this.reconnectTimer) {
@@ -1482,14 +1548,15 @@
       // Sync document and sentences from server
       syncDocumentFromServer();
 
-      // Signal resume to start backend narration
-      if (isPlaying) {
-        this.send({ type: 'playback_control', action: 'resume' });
-      }
+      // The user was playing, so narration should be running. Whether it is, the server says in the snapshot it sends
+      // first: the resume goes out only if that says PAUSED, so a tab opening cannot end another tab's recording
+      // or follow-up window.
+      this.resumeOnFirstSync = isPlaying;
     }
 
     onDisconnected() {
       this.isConnected = false;
+      this.resumeOnFirstSync = false;
       updateWsStatusUI(false);
       startSimulationLoop();
       this.stopBrowserMicCapture();
@@ -1529,7 +1596,32 @@
       }
     }
 
-    async handleBinaryAudio(arrayBuffer) {
+    // A clip is an audio_segment message and then its blob. It starts after the clip scheduled before it, plus the pause
+    // the server asked for, and the server is told with playback_done when it has finished playing. A clip that is
+    // stopped, or that a stop made stale while it was being decoded, is never reported: the server drops those by
+    // generation. A clip that cannot be decoded is reported, so the session goes on instead of waiting for it.
+    //
+    // Clips are decoded and scheduled one at a time, in the order they arrived. decodeAudioData calls made together
+    // finish in any order, and a clip that finished first would be scheduled ahead of an earlier one: after an unlock,
+    // when everything held back continues at once, that is a sentence heard out of order.
+    handleBinaryAudio(arrayBuffer) {
+      const segment = this.pendingSegment;
+      this.pendingSegment = null;
+      const epoch = this.audioEpoch;
+      const stoppedAtArrival = this.stoppedBefore;
+      // A clip is announced with its generation, so a stop of the server's matters only if it is newer than that. One
+      // that was not announced cannot be told apart, so any newer stop ends it.
+      const isStale = () => this.audioEpoch !== epoch ||
+        (segment !== null ? segment.generation < this.stoppedBefore : this.stoppedBefore > stoppedAtArrival);
+      this.clipChain = this.clipChain
+        .then(() => this.scheduleClip(arrayBuffer, segment, isStale))
+        .catch((err) => console.warn("Audio clip error:", err));
+      return this.clipChain;
+    }
+
+    async scheduleClip(arrayBuffer, segment, isStale) {
+      if (isStale()) return;
+
       this.initAudioContext();
       if (!this.audioContext) return;
       if (this.audioContext.state === 'suspended') {
@@ -1555,7 +1647,7 @@
           audioBuf.copyToChannel(float32, 0);
         }
 
-        if (!audioBuf) return;
+        if (!audioBuf || isStale()) return;
 
         const src = this.audioContext.createBufferSource();
         src.buffer = audioBuf;
@@ -1569,20 +1661,21 @@
         }
 
         const now = this.audioContext.currentTime;
-        if (this.nextPlayTime < now) {
-          this.nextPlayTime = now;
-        }
-        const startTime = Math.max(now, this.nextPlayTime);
+        const gapS = segment ? segment.gapS : 0;
+        const startTime = Math.max(now, this.nextPlayTime + gapS);
         src.start(startTime);
         this.nextPlayTime = startTime + audioBuf.duration;
 
-        this.activeAudioSources.push(src);
+        const clip = { src, generation: segment ? segment.generation : null, stopped: false };
+        this.activeAudioSources.push(clip);
         src.onended = () => {
-          const idx = this.activeAudioSources.indexOf(src);
+          const idx = this.activeAudioSources.indexOf(clip);
           if (idx !== -1) this.activeAudioSources.splice(idx, 1);
+          if (!clip.stopped && segment) this.reportPlayed(segment);
         };
       } catch (err) {
         console.warn("Audio buffer decode / playback error:", err);
+        if (segment && !isStale()) this.reportPlayed(segment);
       }
     }
 
@@ -1596,6 +1689,12 @@
           break;
         case 'barge_in':
           this.handleBargeIn(msg);
+          break;
+        case 'audio_segment':
+          this.pendingSegment = { segmentId: msg.segment_id, generation: msg.generation, gapS: msg.gap_s || 0 };
+          break;
+        case 'audio_stop':
+          this.stopAudioBefore(msg.generation);
           break;
         case 'cursor_update':
           this.handleCursorUpdate(msg);
@@ -1614,6 +1713,15 @@
 
     handleStateSync(msg) {
       clearNarrativeTimer();
+      if (this.resumeOnFirstSync) {
+        this.resumeOnFirstSync = false;
+        if (msg.state === 'PAUSED') {
+          this.send({ type: 'playback_control', action: 'resume' });
+        }
+      }
+      if (msg.mic_owner !== undefined) {
+        this.setMicOwner(msg.mic_owner);
+      }
       if (msg.state) {
         currentState = msg.state;
         if (msg.state === 'NARRATING') {
@@ -1624,6 +1732,7 @@
           isPlaying = false;
           const btnLabel = document.getElementById('btn-playback-label');
           if (btnLabel) btnLabel.innerText = 'RESUME NARRATION';
+          this.stopAllAudio();
         }
         updateStateUI();
         if ((msg.state === 'NARRATING' || msg.state === 'PAUSED') && !isVoiceListening) {
@@ -1643,9 +1752,7 @@
         setCadence(msg.cadence, null, false);
       }
       if (msg.latency_ms !== undefined) {
-        const latStr = `${Number(msg.latency_ms).toFixed(2)} ms`;
-        document.getElementById('header-latency').innerText = latStr;
-        document.getElementById('diag-latency').innerText = latStr;
+        showLatency(msg.latency_ms);
       }
       if (msg.sentence_idx !== undefined) {
         currentSentenceIdx = msg.sentence_idx;
@@ -1662,15 +1769,13 @@
     }
 
     handleBargeIn(msg) {
-      this.stopAllAudio();
+      this.stopAudioBefore(msg.generation);
       currentState = 'BARGE_IN';
       updateStateUI();
-      const lat = (msg.latency_ms !== undefined) ? Number(msg.latency_ms).toFixed(2) : '0.04';
-      document.getElementById('header-latency').innerText = `${lat} ms`;
-      document.getElementById('diag-latency').innerText = `${lat} ms`;
+      const latency = showLatency(msg.latency_ms);
       const flashTag = document.getElementById('bargein-flash-tag');
       if (flashTag) {
-        flashTag.innerText = `FLUSH: ${lat} ms`;
+        flashTag.innerText = `FLUSH: ${latency}`;
         flashTag.style.display = 'block';
         setTimeout(() => {
           flashTag.style.display = 'none';
@@ -1854,7 +1959,7 @@
           }
 
           // Hands-free voice barge-in detection on downsampled 16kHz buffer
-          if (handsFreeDetectionEnabled && currentState === 'NARRATING' && !isVoiceListening) {
+          if (handsFreeDetectionEnabled && this.isMicOwner && currentState === 'NARRATING' && !isVoiceListening) {
             let sumSquares = 0.0;
             for (let i = 0; i < downsampled.length; i++) {
               sumSquares += downsampled[i] * downsampled[i];
@@ -2063,8 +2168,6 @@
       }
 
       const result = await resp.json();
-      // Whatever is still queued is from the old document, whatever state the session was in.
-      if (wsClient) wsClient.stopAllAudio();
       if (statusEl) {
         statusEl.innerText = `Success: Ingested "${result.title}" (${result.sentence_count} sentences, ${result.word_count} words).`;
       }
@@ -2317,15 +2420,6 @@
 
     // Connect WebSocket
     wsClient.connect();
-
-    // Page Visibility API: resync audio playhead on tab refocus to prevent queue burst
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && wsClient && wsClient.audioContext) {
-        if (wsClient.audioContext.state === 'running') {
-          wsClient.nextPlayTime = wsClient.audioContext.currentTime;
-        }
-      }
-    });
 
     // User gesture unlocking for AudioContext
     const unlockAudio = () => {

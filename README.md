@@ -14,6 +14,8 @@ Audiobook-style readers are one-way. If you want to ask "who is that character?"
 
 - **Document ingestion**: upload PDF, EPUB, TXT or Markdown, or paste text. Parsing runs off the event loop and is bounded (page, archive member and uncompressed size limits for PDF and EPUB).
 - **Narration with a word cursor**: a sentence splitter that protects abbreviations, initials and decimals, a cursor (sentence and word), and cadence control from 0.1x to 3.0x.
+- **One listening tab**: the audio plays in one browser tab, and only that tab's microphone, Speak button and playback reports count. It is the tab that first sends microphone audio or picks the microphone, else the oldest one, so a tab without microphone permission still hears the narration. Other tabs get state and text, say "Audio is playing in another tab", and can take over with the Speak button. Pause, resume, next, previous, voice, cadence and typed questions work from any tab.
+- **Narration paced by the browser**: the browser reports each clip when it has finished playing. Narration stays one sentence ahead of what you hear (the next sentence is synthesized while the current one plays), the word cursor holds on the last word until the clip is done, and after an interruption a sentence you were partway through starts again about four words before where you stopped. If the browser never reports, narration pauses with an error after 30 seconds past the clip's estimated length; a reply goes on instead.
 - **Voice interruption**: the browser streams 16 kHz PCM over WebSocket. An energy-based turn accumulator keeps about one second of pre-roll so the first consonant is not clipped, ends a turn after a silence timeout, and caps a turn at 30 seconds. A barge-in bumps a generation counter, moves the session to `LISTENING`, resets the partial turn and tells the browser to stop playback.
 - **Speech recognition**: faster-whisper on CPU behind a backend protocol, with a speech judge that withholds output for audio that is too quiet or does not look like speech.
 - **Question answering**: BM25 passage retrieval over the loaded document with a boost for passages near the cursor, optional DuckDuckGo search grounding, and prompt sanitising. Answers come from a model behind an OpenAI-compatible endpoint, Ollama by default. If none is reachable the app says so instead of guessing.
@@ -123,6 +125,8 @@ Settings are read from environment variables (see `.env.example`; the app does n
 
 The provider, model, voice, cadence and microphone source can also be changed at runtime from the UI or with `POST /api/config`.
 
+How long the server waits for the browser to report a clip played is `Settings.playback_ack_timeout_s` (30 seconds past the clip's estimated length). It has no environment variable.
+
 ## Optional local voices
 
 Both optional backends are installed only through extras, so the base install and CI never need them.
@@ -135,12 +139,12 @@ Both optional backends are installed only through extras, so the base install an
 - **Not offline by default.** See the network note in the quickstart.
 - **Answers need a local model.** Without a reachable Ollama model the app only answers a few local commands and otherwise says its model is offline. The Modelfile has not been run against a real Ollama install yet, so check the model's reply before relying on it.
 - **The ring buffer, voice activity detector, state machine and host microphone bridge are not wired into the web server.** The server detects speech with a simple energy threshold, and the `host` microphone option is stored as a setting but only browser audio is used. Wiring these in is the main open engineering item.
-- **The barge-in latency shown in the UI is not a measurement.** The server reports a fixed default (0.04 ms) and the UI shows a placeholder before the first event. The tests assert the ring buffer drain stays under 1 ms, which covers the buffer only, not microphone to silence.
-- **The word cursor is timed, not aligned.** Highlighting advances on an estimated words-per-second rate rather than from audio timestamps.
+- **Nothing measures the barge-in latency.** The server sends `null` for `latency_ms` and `flushed_samples`, and the UI shows "not measured". The Speak button still shows a placeholder figure the page makes up until the server's answer replaces it. The tests assert the ring buffer drain stays under 1 ms, which covers the buffer only, not microphone to silence.
+- **The word cursor is timed, not aligned.** Highlighting steps at an estimated words-per-second rate and holds on the last word until the browser reports the clip played, rather than following audio timestamps. The resume point after an interruption is that estimate, minus four words.
 - **No authentication.** The server is meant for loopback use and rejects non-loopback Host headers. Do not expose it on a network.
-- **One session.** One narration engine and connection manager serve all connected clients.
+- **One session.** One narration engine and connection manager serve all connected clients, but only one tab plays audio and records (see "One listening tab").
 - **Sample content is themed on a Cyberpunk fan story.** The bundled story, character personas and voice names are fan material and are not affiliated with any rights holder. Voice reference clips are no longer tracked in this repository.
-Candidate next steps: wire the audio building blocks and the STT backend setting into the server, and replace the placeholder latency display with a measured value.
+Candidate next steps: wire the audio building blocks and the STT backend setting into the server, and measure the barge-in latency so the UI can show a value.
 
 ## License
 
