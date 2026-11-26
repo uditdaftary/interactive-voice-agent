@@ -20,6 +20,7 @@ from voice_agent.llm.client import (
     LLMClient,
     search_web,
 )
+from voice_agent.llm.intents import classify_local, greeting_reply
 from voice_agent.llm.prompt import build_messages
 from voice_agent.server.connection_manager import ConnectionManager, Statuses
 from voice_agent.server.schemas import (
@@ -535,19 +536,57 @@ class NarrationEngine:
 
     # --- replies --------------------------------------------------------------------------------------------------
 
+    def _run_command(self, query: str) -> bool:
+        """Carry out `query` if it is a pause, resume or repeat command, and say whether it was. These never reach the
+        model or enter the history, and each is one change of the session at most."""
+        intent = classify_local(query)
+        if intent == "pause":
+            self.pause_narration()
+        elif intent == "resume":
+            self.start_narration()
+        elif intent == "repeat":
+            self._repeat_sentence()
+        else:
+            return False  # a greeting is a reply (see `_answer`); everything else is a question
+        return True
+
+    def _repeat_sentence(self) -> None:
+        """Narrate the current sentence again from its first word, from whatever the session was doing."""
+        session = self.manager.session
+        state = session.state
+        self.current_word_idx = 0
+        self.manager.update_cursor(sentence_idx=self.current_sentence_idx, word_offset=0)
+        if state == "NARRATING":
+            self._go_to(self.current_sentence_idx)
+            return
+        session.set_resume_to("NARRATING")
+        if state == "PAUSED":
+            session.transition("NARRATING", "repeat")
+        else:
+            # The question or answer in progress is dropped: the user asked to hear the book again.
+            self.manager.tasks.cancel("reply")
+            self.manager.tasks.cancel("stt")
+            self.manager.stop_audio()
+            session.resume("repeat")
+
     def ask(self, query: str) -> None:
         """Answer `query` now: stop what is playing, take the session over and speak the answer as the `reply` task.
+        A pause, resume or repeat command is carried out instead and starts no reply.
 
         Synchronous on purpose. The state has changed when this returns, so nothing the caller does next (another
         question, a pause, an audio frame) can see a half-started reply, and the messages the change causes are queued
         ahead of everything the reply sends. A reply that is already running is replaced, and a transcription still
         pending is dropped: this question is the newest turn.
         """
+        if self._run_command(query):
+            return
         self._begin_reply("question", barge_in=True)
         self.manager.tasks.spawn(self._reply(query), "reply", replace=True)
 
     async def handle_user_interruption(self, query: str) -> None:
         """`ask`, but the caller waits for the whole exchange: the answer spoken and the follow-up window open."""
+        if self._run_command(query):
+            return
         self._begin_reply("question", barge_in=True)
         await self._reply(query)
 
@@ -635,12 +674,17 @@ class NarrationEngine:
     async def _answer(self, query: str) -> None:
         """Answer the question and open the follow-up window. Raises on any failure.
 
-        The question is grounded in the book (and the web, when the book is not authoritative) and put to the model.
-        When the model gives no text, the closest passage of the book is read out instead, or the offline line when
-        there is none.
+        A greeting is answered locally. Anything else is grounded in the book (and the web, when the book is not
+        authoritative) and put to the model. When the model gives no text, the closest passage of the book is read out
+        instead, or the offline line when there is none.
         """
         current_context = self.sentences[self.current_sentence_idx] if self.sentences else ""
         voice_id = self.manager.active_voice or "david-martinez"
+        if classify_local(query) == "greeting":
+            await self._announce(query, current_context, greeting_reply(voice_id))
+            await self._speak_then_listen(query, current_context, greeting_reply(voice_id))
+            return
+
         scored = self.search_document_passages_with_scores(
             query, max_passages=3, current_sentence_idx=self.current_sentence_idx
         )
