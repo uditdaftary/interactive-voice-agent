@@ -18,6 +18,8 @@ def hud_function_source(name: str) -> str:
     """The text of `function name(...) { ... }` in the page. It counts braces, so the function must hold none in a
     string or a comment."""
     start = HUD_SOURCE.index(f"function {name}(")
+    if HUD_SOURCE[start - 6 : start] == "async ":
+        start -= 6
     depth = 0
     for i in range(HUD_SOURCE.index("{", start), len(HUD_SOURCE)):
         if HUD_SOURCE[i] == "{":
@@ -184,3 +186,111 @@ def test_only_the_preview_transcript_is_sent_as_a_fallback() -> None:
     assert with_preview == {"type": "voice_end", "fallback_query": "who is lucy"}
     assert preview_off == {"type": "voice_end"}
     assert heard_nothing == {"type": "voice_end"}
+
+
+# --- fetching the document -----------------------------------------------------------------------------------------
+
+DOCUMENT_HARNESS = """
+let STORY_PARAGRAPHS = [];
+let currentSentenceIdx = 0;
+let currentWordIdx = 0;
+let documentSyncTotal = null;
+let documentFetchSerial = 0;
+const getApiBaseUrl = () => '';
+const titleEl = { innerText: '' };
+const document = { getElementById: () => titleEl };
+const renderNarrativeStream = () => {};
+let warnings = [];
+console.warn = (...args) => warnings.push(args.map(String).join(' '));
+const queued = [];
+globalThis.fetch = () => queued.shift()();
+const ok = (data) => () => Promise.resolve({ ok: true, status: 200, json: async () => data });
+const status = (code) => () => Promise.resolve({ ok: false, status: code });
+const down = () => () => Promise.reject(new Error('network down'));
+const later = () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  return { reply: () => gate, release };
+};
+const doc = (title, sentences, idx) => ({ title, sentences, current_sentence_idx: idx });
+const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
+"""
+
+
+def run_document_scenario(body: str) -> Any:
+    """Run `body` (async JavaScript that returns a JSON-able value) against the page's document fetching."""
+    script = (
+        hud_function_source("requestDocumentSync")
+        + "\n"
+        + hud_function_source("syncDocumentFromServer")
+        + "\n"
+        + DOCUMENT_HARNESS
+        + "\n(async () => {"
+        + body
+        + "})().then((result) => process.stdout.write(JSON.stringify(result)));"
+    )
+    done = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def test_a_failed_fetch_gives_the_count_back_and_logs_so_the_next_update_asks_again() -> None:
+    result = run_document_scenario(
+        """
+        queued.push(status(500));
+        requestDocumentSync(3);
+        await settle();
+        const afterServerError = { latch: documentSyncTotal, warnings: warnings.slice(), shown: STORY_PARAGRAPHS.length };
+        queued.push(down());
+        requestDocumentSync(3);
+        await settle();
+        const afterNetworkError = { latch: documentSyncTotal, warnings: warnings.slice(), shown: STORY_PARAGRAPHS.length };
+        queued.push(ok(doc('Book', ['A.', 'B.', 'C.'], 1)));
+        requestDocumentSync(3);
+        await settle();
+        return { afterServerError, afterNetworkError, shown: STORY_PARAGRAPHS, idx: currentSentenceIdx, latch: documentSyncTotal };
+        """
+    )
+    assert result["afterServerError"]["latch"] is None
+    assert any("HTTP 500" in line for line in result["afterServerError"]["warnings"])
+    assert result["afterNetworkError"]["latch"] is None
+    assert any("network down" in line for line in result["afterNetworkError"]["warnings"])
+    assert result["afterNetworkError"]["shown"] == 0
+    assert result["shown"] == ["A.", "B.", "C."]
+    assert result["idx"] == 1
+    assert result["latch"] == 3
+
+
+def test_only_the_newest_fetch_is_applied() -> None:
+    result = run_document_scenario(
+        """
+        // The connect-time fetch is slow; a cursor update starts a second one that answers first.
+        const slow = later();
+        queued.push(slow.reply);
+        const first = syncDocumentFromServer();
+        queued.push(ok(doc('New', ['N1.', 'N2.'], 1)));
+        const second = syncDocumentFromServer();
+        await second;
+        slow.release({ ok: true, status: 200, json: async () => doc('Old', ['O1.', 'O2.', 'O3.'], 2) });
+        await first;
+        return { shown: STORY_PARAGRAPHS, idx: currentSentenceIdx, title: titleEl.innerText };
+        """
+    )
+    assert result == {"shown": ["N1.", "N2."], "idx": 1, "title": "[BOOK: New]"}
+
+
+def test_a_superseded_fetch_that_fails_does_not_give_back_the_newer_ones_count() -> None:
+    result = run_document_scenario(
+        """
+        const slow = later();
+        queued.push(slow.reply);
+        const first = syncDocumentFromServer();
+        queued.push(ok(doc('New', ['N1.'], 0)));
+        requestDocumentSync(1);
+        await settle();
+        slow.release({ ok: false, status: 500 });
+        await first;
+        return { latch: documentSyncTotal, warnings };
+        """
+    )
+    assert result == {"latch": 1, "warnings": []}

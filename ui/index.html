@@ -2228,7 +2228,9 @@
     }
   }
 
-  // The sentence count a re-fetch was last asked for, so a count that stays different from the one shown asks once.
+  // The sentence count a re-fetch was last asked for, so a count that stays different from the one shown asks once. A
+  // fetch that fails gives the count back, so the next cursor update asks again. ponytail: while /api/document keeps
+  // failing and the socket is up, that is one failed request per cursor update; add a minimum wait if it ever shows.
   let documentSyncTotal = null;
   function requestDocumentSync(total) {
     if (total === documentSyncTotal) return;
@@ -2236,12 +2238,27 @@
     syncDocumentFromServer();
   }
 
+  // Counts the fetches of the document, so that only the newest one is applied: a reply that arrives after a newer fetch
+  // was started (the one made on connecting, say, and one made for a cursor update) is dropped, and must not move the
+  // cursor back.
+  let documentFetchSerial = 0;
+
   // Shows the document the server holds, or the empty state when it holds none.
   async function syncDocumentFromServer() {
+    const mine = ++documentFetchSerial;
+    const failed = (why) => {
+      if (mine !== documentFetchSerial) return;
+      documentSyncTotal = null;
+      console.warn("Could not load the document from the server:", why);
+    };
     try {
       const resp = await fetch(`${getApiBaseUrl()}/api/document`);
-      if (!resp.ok) return;
+      if (!resp.ok) {
+        failed(`HTTP ${resp.status}`);
+        return;
+      }
       const data = await resp.json();
+      if (mine !== documentFetchSerial) return;
       const sentences = Array.isArray(data.sentences) ? data.sentences.filter(text => typeof text === 'string') : [];
       STORY_PARAGRAPHS = sentences;
       currentSentenceIdx = Number.isInteger(data.current_sentence_idx)
@@ -2252,7 +2269,7 @@
       if (docTitleEl) docTitleEl.innerText = (sentences.length && data.title) ? `[BOOK: ${data.title}]` : '[No document]';
       renderNarrativeStream();
     } catch (e) {
-      console.warn("Could not load the document from the server:", e);
+      failed(e);
     }
   }
 
