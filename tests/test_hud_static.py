@@ -43,6 +43,12 @@ REMOVED = [
     "stood at the edge of the catwalk",
     "scav vehicle",
     "let currentSentenceIdx = 3",
+    # Tags and a cue in the question panel that the server never sent.
+    "PROMPT ENVELOPE ACTIVATED",
+    "env-character-tag",
+    "SANTO DOMINGO",
+    "Resumption Cue",
+    "Returning to our story",
     # A fixed 3 s retry: the wait now grows from 1 s to 30 s.
     "reconnectInterval",
     # Assigned to when the server's document arrives: a const makes that throw, and the catch hid it.

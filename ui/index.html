@@ -228,13 +228,11 @@
           <!-- Q&A Context Envelope (Appears upon Barge-In) -->
           <div id="dialogue-envelope" style="display:none;" class="envelope-box">
             <div style="display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--hair-2); padding-bottom:6px;">
-              <span class="state-pill listening" id="env-status-pill"><i></i>PROMPT ENVELOPE ACTIVATED</span>
-              <span class="mono faint" id="env-character-tag">DAVID MARTINEZ // SANTO DOMINGO</span>
+              <span class="state-pill listening" id="env-status-pill"><i></i></span>
             </div>
             <div style="font-size:13.5px;"><span class="faint mono">Context:</span> <span class="mono text-white" id="env-local-ctx"></span></div>
             <div style="font-size:13.5px;"><span class="faint mono">Query:</span> <span class="mono" style="color:var(--high);"></span></div>
             <div style="font-size:13.5px;"><span class="faint mono">Reply:</span> <span class="mono text-white"></span></div>
-            <div class="faint mono" style="font-size:11.5px; margin-top:2px;">↳ Resumption Cue: <em style="color:var(--ink);">"Returning to our story..."</em> (+4 words pre-roll)</div>
           </div>
 
           <!-- Mini Disruption Waveform Canvas -->
@@ -622,8 +620,6 @@
 
     const activeEl = document.getElementById('header-active-voice');
     if (activeEl) activeEl.innerText = activeVoice.name;
-    const envCharTag = document.getElementById('env-character-tag');
-    if (envCharTag) envCharTag.innerText = `${activeVoice.name.toUpperCase()} // ${activeVoice.role.toUpperCase()}`;
   }
 
   function selectVoice(id, sendWs = true) {
@@ -1083,6 +1079,18 @@
     // A state this page does not know is shown as it came, with the marker it already had.
     if (headPill) setPill(headPill, known ? `state-pill ${known[0]}` : headPill.className, String(currentState));
     if (bargePill && known) setPill(bargePill, `state-pill ${known[0]}`, known[1]);
+  }
+
+  // The state the question panel shows, from the state a prompt_envelope carries. Any other state shows nothing.
+  const ENVELOPE_STATE_PILLS = new Map([
+    ['LISTENING', ['listening', 'Listening']],
+    ['REPLYING', ['replying', 'Replying']],
+  ]);
+
+  function showEnvelopeState(state) {
+    const pill = document.getElementById('env-status-pill');
+    const known = ENVELOPE_STATE_PILLS.get(state);
+    if (pill && known) setPill(pill, `state-pill ${known[0]}`, known[1]);
   }
 
   // The server sends null for a latency it did not measure, and that is shown as such, never as a number.
@@ -1857,6 +1865,7 @@
         currentState = msg.state;
         updateStateUI();
         envelope.style.display = 'grid';
+        showEnvelopeState(msg.state);
         if (msg.context) {
           const ctxEl = document.getElementById('env-local-ctx');
           if (ctxEl) ctxEl.innerText = `"${msg.context}"`;
@@ -1927,6 +1936,7 @@
         const envelope = document.getElementById('dialogue-envelope');
         if (envelope) {
           envelope.style.display = 'grid';
+          showEnvelopeState('LISTENING');
           const qEl = envelope.querySelector('div:nth-child(3) span:last-child');
           if (qEl) qEl.innerText = `"${cleanQuery}"`;
           const rEl = envelope.querySelector('div:nth-child(4) span:last-child');
@@ -2521,6 +2531,7 @@
     const envelope = document.getElementById('dialogue-envelope');
     if (envelope) {
       envelope.style.display = 'grid';
+      showEnvelopeState('LISTENING');
       const qEl = envelope.querySelector('div:nth-child(3) span:last-child');
       if (qEl) qEl.innerText = `"${query}"`;
       const rEl = envelope.querySelector('div:nth-child(4) span:last-child');
