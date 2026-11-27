@@ -35,6 +35,8 @@ REMOVED = [
     # Em and en dashes in copy.
     chr(0x2014),  # em dash
     chr(0x2013),  # en dash
+    # The audio banner was capitals, mono type and a product slogan.
+    "NEURAL AUDIOBOOK",
     # A fixed 3 s retry: the wait now grows from 1 s to 30 s.
     "reconnectInterval",
     # Assigned to when the server's document arrives: a const makes that throw, and the catch hid it.
@@ -45,6 +47,10 @@ REMOVED = [
 @pytest.mark.parametrize("text", REMOVED)
 def test_hud_has_no_simulation_second_server_or_invented_number(text: str) -> None:
     assert text not in HUD_SOURCE
+
+
+def test_hud_audio_banner_says_what_to_do_in_plain_words() -> None:
+    assert "Click anywhere to turn on sound." in HUD_SOURCE
 
 
 def test_hud_labels_the_online_speech_preview() -> None:

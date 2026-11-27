@@ -18,6 +18,7 @@
     .status-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--critical); color: var(--critical-ink); padding: 6px 10px; margin-bottom: 12px; font-size: 13.5px; }
     .status-dismiss { appearance: none; background: transparent; border: 1px solid var(--hair-2); border-radius: 0; color: var(--ink); min-height: 32px; padding: 0 12px; cursor: pointer; flex: none; }
     .status-dismiss:hover { background: var(--raised); }
+    .audio-unlock-banner { font-family: var(--sans); font-size: 14px; font-weight: 500; }
   </style>
 </head>
 <body>
@@ -117,8 +118,8 @@
 
   <!-- Audio Autoplay Unlock Alert Banner -->
   <div id="audio-unlock-banner" class="audio-unlock-banner" onclick="unlockAudioPlayback()">
-    <span>🎧 NEURAL AUDIOBOOK READY. CLICK ANYWHERE TO ENABLE SOUND [▶]</span>
-    <span style="font-weight:normal; opacity:0.8;">DISMISS ✕</span>
+    <span>Click anywhere to turn on sound.</span>
+    <span style="font-weight:normal; opacity:0.8;">Dismiss</span>
   </div>
 
   <!-- ========================================== -->
