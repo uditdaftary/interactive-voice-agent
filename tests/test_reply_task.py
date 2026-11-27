@@ -25,6 +25,7 @@ from fakes import (
     wait_until,
 )
 from voice_agent.llm.client import OFFLINE_LINE
+from voice_agent.llm.prompt import HISTORY_MESSAGES
 from voice_agent.server.app import create_app
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.narration import REPLY_ERROR_LINE, UNRECOGNIZED_LINE, NarrationEngine
@@ -787,4 +788,20 @@ async def test_the_question_reaches_the_web_search_and_the_book_unchanged() -> N
 
     assert search.calls == [("who is johnny", 3)]
     assert engine.search_document_passages("who is in arakas tower") == []  # "arakas" is not rewritten to "arasaka"
+    await engine.manager.tasks.cancel_all()
+
+
+async def test_the_history_kept_is_the_history_sent() -> None:
+    """One window: what the engine remembers is exactly the messages `build_messages` puts in front of the model."""
+    llm = StreamingLLM(tokens=("An answer.",))
+    engine = book_engine(llm, FakeTts())
+    for number in range(4):
+        await ask_and_wait(engine, f"question number {number}")
+    remembered = list(engine._conversation_history)
+    await ask_and_wait(engine, "question number 4")
+
+    assert len(remembered) == HISTORY_MESSAGES  # four exchanges are eight messages; only the last six are kept
+    assert llm.calls[-1][1:-1] == remembered  # between the system prompt and the final user message
+    assert [m["content"] for m in remembered if m["role"] == "user"] == [f"question number {n}" for n in (1, 2, 3)]
+    assert len(engine._conversation_history) == HISTORY_MESSAGES
     await engine.manager.tasks.cancel_all()

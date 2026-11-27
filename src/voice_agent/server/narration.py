@@ -21,7 +21,7 @@ from voice_agent.llm.client import (
     search_web,
 )
 from voice_agent.llm.intents import classify_local, greeting_reply
-from voice_agent.llm.prompt import build_messages
+from voice_agent.llm.prompt import HISTORY_MESSAGES, build_messages
 from voice_agent.server.connection_manager import ConnectionManager, Statuses
 from voice_agent.server.schemas import (
     CursorUpdateMessage,
@@ -46,7 +46,6 @@ FROM_THE_TEXT = "From the text: "
 
 # The book is the primary source, and the web is not searched, when its best passage scores at least this much.
 AUTHORITATIVE_SCORE = 2.5
-HISTORY_MESSAGES = 12  # six question and answer pairs
 DEFAULT_PERSONA_PROMPT = (
     "You are an interactive conversational voice audiobook narrator. "
     "The user interrupted the book narration to ask you a question. "
