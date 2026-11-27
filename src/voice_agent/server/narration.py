@@ -533,15 +533,34 @@ class NarrationEngine:
         """Carry out `query` if it is a pause, resume or repeat command, and say whether it was. These never reach the
         model or enter the history, and each is one change of the session at most."""
         intent = classify_local(query)
+        if intent not in ("pause", "resume", "repeat"):
+            return False  # a greeting is a reply (see `_answer`); everything else is a question
+        state_before = self.manager.state
         if intent == "pause":
             self.pause_narration()
         elif intent == "resume":
             self.start_narration()
-        elif intent == "repeat":
-            self._repeat_sentence()
         else:
-            return False  # a greeting is a reply (see `_answer`); everything else is a question
+            self._repeat_sentence()
+        if self.manager.state == state_before:
+            self._bring_page_back(intent, state_before)
         return True
+
+    def _bring_page_back(self, intent: str, state: str) -> None:
+        """Typed text arrives from a page that has already stopped its own audio and shows LISTENING. When the command
+        leaves the state as it was, no transition tells it where the session is, so it is told here, and whatever it
+        stopped goes on for it: the narration that was playing starts again a few words back, and a reply whose clip
+        was stopped stops waiting for a report that will never come."""
+        manager = self.manager
+        restart_narration = intent == "resume" and state == "NARRATING"
+        if intent == "resume" and state in ("NARRATING", "REPLYING"):
+            manager.stop_audio()
+        if restart_narration:
+            manager.tasks.cancel("narration")
+        manager.broadcast_state_sync()  # queued before the restarted loop's first message
+        if restart_narration:
+            self._cue_pre_roll = True
+            self._ensure_narration()
 
     def _repeat_sentence(self) -> None:
         """Narrate the current sentence again from its first word, from whatever the session was doing."""

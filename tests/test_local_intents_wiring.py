@@ -39,6 +39,13 @@ async def tab(manager: ConnectionManager) -> PlayerSocket:
     return socket
 
 
+async def delivered() -> None:
+    """Wait until every message queued so far has reached the sockets."""
+    pending = [task for task in asyncio.all_tasks() if task.get_name() == "broadcast"]
+    if pending:
+        await asyncio.wait(pending, timeout=5)
+
+
 def record_changes(manager: ConnectionManager) -> list[str]:
     """The state each change of the session went to, in order."""
     states: list[str] = []
@@ -301,4 +308,112 @@ async def test_the_awaited_form_carries_out_a_command_too() -> None:
 
     assert manager.state == "PAUSED"
     assert llm.calls == []
+    await manager.tasks.cancel_all()
+
+
+# --- a typed command that leaves the state as it was ----------------------------------------------------------------
+#
+# The page that sends typed text has already stopped its own audio and shows LISTENING. When the command changes
+# nothing, no transition tells it where the session is, so the server must.
+
+
+async def test_continue_while_narrating_tells_the_page_and_narrates_on_for_it() -> None:
+    manager = ConnectionManager()
+    tts = FakeTts()
+    engine, llm, _ = make_engine(manager, tts=tts)
+    socket = PlayerSocket(manager)  # never reports a clip played: the page stopped it
+    await manager.connect(socket)  # type: ignore[arg-type]
+    engine.start_narration()
+    await socket.wait_for_clips(1)
+    await delivered()
+    generation = socket.clips[0].generation
+    syncs_before = len(socket.messages("state_sync"))
+    stops_before = len(socket.messages("audio_stop"))
+
+    engine.ask("continue")
+    # A narration that kept waiting for the report would send nothing for the next 30 seconds.
+    await socket.wait_until(lambda: any(clip.generation > generation for clip in socket.clips))
+    await delivered()
+
+    new_syncs = socket.messages("state_sync")[syncs_before:]
+    assert [m["state"] for m in new_syncs] == ["NARRATING"]
+    assert len(socket.messages("audio_stop")) == stops_before + 1
+    assert [m for m in socket.messages("error")] == []
+    assert any(m.get("pre_roll_words") == 4 for m in socket.messages("prompt_envelope"))  # the page is told it is coming back
+    assert manager.state == "NARRATING"
+    assert llm.calls == []
+    await manager.tasks.cancel_all()
+
+
+async def test_repeat_while_narrating_tells_the_page() -> None:
+    manager = ConnectionManager()
+    tts = FakeTts()
+    engine, llm, _ = make_engine(manager, tts=tts)
+    socket = await tab(manager)
+    await narrating(manager, engine, tts)
+    await delivered()
+    syncs_before = len(socket.messages("state_sync"))
+
+    engine.ask("repeat")
+    await delivered()
+
+    assert [m["state"] for m in socket.messages("state_sync")[syncs_before:]] == ["NARRATING"]
+    assert llm.calls == []
+    await manager.tasks.cancel_all()
+
+
+async def test_resume_during_a_reply_tells_the_page_and_the_reply_goes_on_without_the_stopped_clip() -> None:
+    manager = ConnectionManager()
+    engine, llm, _ = make_engine(manager)
+    socket = PlayerSocket(manager)  # never reports a clip played: the page stopped it
+    await manager.connect(socket)  # type: ignore[arg-type]
+    engine.ask("who writes this book")
+    reply = manager.tasks.get("reply")
+    assert reply is not None
+    await socket.wait_for_clips(1)  # the answer is being played
+    await delivered()
+    syncs_before = len(socket.messages("state_sync"))
+    stops_before = len(socket.messages("audio_stop"))
+
+    engine.ask("resume")
+    # The reply stops waiting for a report of the clip the page dropped (the wait would otherwise last 30 seconds).
+    done, _ = await asyncio.wait([reply], timeout=5)
+    await delivered()
+
+    assert reply in done and not reply.cancelled()
+    assert [m["state"] for m in socket.messages("state_sync")[syncs_before:]][0] == "REPLYING"
+    assert len(socket.messages("audio_stop")) == stops_before + 1
+    assert len(llm.calls) == 1
+    await wait_for_state(manager.session, "NARRATING")  # the resume was kept: narration follows the reply
+    await manager.tasks.cancel_all()
+
+
+async def test_pause_while_paused_tells_the_page() -> None:
+    manager = ConnectionManager()
+    engine, llm, _ = make_engine(manager)
+    socket = await tab(manager)
+    assert manager.state == "PAUSED"
+
+    engine.ask("pause")
+    await delivered()
+
+    assert [m["state"] for m in socket.messages("state_sync")] == ["PAUSED"]
+    assert llm.calls == []
+
+
+@pytest.mark.parametrize("command", ["continue", "repeat", "pause"])
+async def test_the_awaited_form_tells_the_page_too(command: str) -> None:
+    manager = ConnectionManager()
+    tts = FakeTts()
+    engine, _, _ = make_engine(manager, tts=tts)
+    socket = await tab(manager)
+    await narrating(manager, engine, tts)
+    await delivered()
+    syncs_before = len(socket.messages("state_sync"))
+
+    await engine.handle_user_interruption(command)
+    await delivered()
+
+    new = [m["state"] for m in socket.messages("state_sync")[syncs_before:]]
+    assert new == (["PAUSED"] if command == "pause" else ["NARRATING"])
     await manager.tasks.cancel_all()
