@@ -2268,28 +2268,63 @@
     }
   }
 
+  // What the server reported the last time the form was opened, and whether the user has picked a provider since. A
+  // save sends only what differs from the first and, for the provider, only a pick.
+  let loadedConfig = null;
+  let providerPicked = false;
+
   async function fetchModelConfig() {
+    loadedConfig = null;
+    providerPicked = false;
     try {
       const resp = await fetch(`${getApiBaseUrl()}/api/config`);
       if (resp.ok) {
         const data = await resp.json();
         const llm = data.llm || {};
         const select = document.getElementById('cfg-provider');
-        // A provider this form has no option for (an older or newer server) leaves the choice as it was.
-        if (llm.provider && [...select.options].some(option => option.value === llm.provider)) select.value = llm.provider;
+        for (const extra of select.querySelectorAll('option[data-extra]')) extra.remove();
+        // A provider this form has no option for (the server still accepts others) is shown as itself, so that saving
+        // does not move the server to whatever option happened to be selected.
+        if (typeof llm.provider === 'string' && llm.provider && ![...select.options].some(option => option.value === llm.provider)) {
+          const extra = document.createElement('option');
+          extra.value = llm.provider;
+          extra.textContent = `${llm.provider} (set on the server)`;
+          extra.dataset.extra = 'true';
+          select.appendChild(extra);
+        }
+        if (typeof llm.provider === 'string' && llm.provider) select.value = llm.provider;
         if (llm.base_url) document.getElementById('cfg-endpoint').value = llm.base_url;
         if (llm.model) document.getElementById('cfg-model').value = llm.model;
         if (llm.web_search_enabled !== undefined) {
           document.getElementById('cfg-web-search').checked = !!llm.web_search_enabled;
         }
         setConfigFieldsEnabled(select.value);
+        loadedConfig = {
+          base_url: document.getElementById('cfg-endpoint').value.trim(),
+          model: document.getElementById('cfg-model').value.trim(),
+        };
       }
     } catch (e) {
       console.warn("Could not load the model settings:", e);
     }
   }
 
+  // The body of a save: only what the user changed. `form` holds the field values and whether a provider was picked;
+  // `loaded` the endpoint and model the server reported.
+  function configPayload(form, loaded) {
+    const payload = { web_search_enabled: form.webSearch };
+    if (form.providerPicked) payload.provider = form.provider;
+    if (form.provider !== 'none') {
+      if (form.baseUrl !== loaded.base_url) payload.base_url = form.baseUrl;
+      if (form.model !== loaded.model) payload.model = form.model;
+      // Sent even when empty: leaving a provider key behind would send it to the next endpoint.
+      payload.api_key = form.apiKey;
+    }
+    return payload;
+  }
+
   function onProviderChange(val) {
+    providerPicked = true;
     const defaults = PROVIDER_DEFAULTS.get(val);
     if (defaults) {
       document.getElementById('cfg-endpoint').value = defaults[0];
@@ -2322,16 +2357,18 @@
   }
 
   async function saveModelConfig() {
-    const provider = document.getElementById('cfg-provider').value;
-    const web_search_enabled = document.getElementById('cfg-web-search').checked;
-
-    const payload = { provider, web_search_enabled };
-    if (provider !== 'none') {
-      payload.base_url = document.getElementById('cfg-endpoint').value.trim();
-      payload.model = document.getElementById('cfg-model').value.trim();
-      // Sent even when empty: leaving a provider key behind would send it to the next endpoint.
-      payload.api_key = document.getElementById('cfg-api-key').value.trim();
+    if (!loadedConfig) {
+      showConfigStatus('The current settings could not be loaded, so nothing was saved. Reload the page and try again.', true);
+      return;
     }
+    const payload = configPayload({
+      provider: document.getElementById('cfg-provider').value,
+      providerPicked,
+      webSearch: document.getElementById('cfg-web-search').checked,
+      baseUrl: document.getElementById('cfg-endpoint').value.trim(),
+      model: document.getElementById('cfg-model').value.trim(),
+      apiKey: document.getElementById('cfg-api-key').value.trim(),
+    }, loadedConfig);
 
     try {
       const resp = await fetch(`${getApiBaseUrl()}/api/config`, {

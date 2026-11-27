@@ -1,0 +1,100 @@
+"""Behaviour of the HUD's pure functions, run in Node on the source in `ui/index.html`. The functions under test touch no
+page element, so they can be lifted out of the script and called with plain data; the tests skip without Node."""
+
+import json
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+HUD_SOURCE = (Path(__file__).resolve().parent.parent / "ui" / "index.html").read_text(encoding="utf-8")
+
+pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="Node is not installed")
+
+
+def hud_function_source(name: str) -> str:
+    """The text of `function name(...) { ... }` in the page. It counts braces, so the function must hold none in a
+    string or a comment."""
+    start = HUD_SOURCE.index(f"function {name}(")
+    depth = 0
+    for i in range(HUD_SOURCE.index("{", start), len(HUD_SOURCE)):
+        if HUD_SOURCE[i] == "{":
+            depth += 1
+        elif HUD_SOURCE[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return HUD_SOURCE[start : i + 1]
+    raise AssertionError(f"function {name} is not closed")
+
+
+def call_hud_function(name: str, calls: list[list[Any]]) -> list[Any]:
+    """Run the page's function once per argument list, in one Node process, and return the results."""
+    script = (
+        hud_function_source(name)
+        + "\nconst calls = JSON.parse(require('fs').readFileSync(0, 'utf8'));"
+        + f"\nprocess.stdout.write(JSON.stringify(calls.map((args) => {name}(...args))));"
+    )
+    done = subprocess.run(
+        ["node", "-e", script], input=json.dumps(calls), capture_output=True, text=True, timeout=30, check=False
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+# --- what a config save sends ---------------------------------------------------------------------------------------
+
+LOADED = {"base_url": "https://api.example.test/v1", "model": "served-model"}
+
+# Each case changes some fields of a form in which nothing was changed, picked or typed.
+CONFIG_CASES: dict[str, dict[str, Any]] = {
+    "nothing changed": {},
+    "unlisted provider, not picked": {"provider": "local-builtin", "webSearch": False},
+    "provider picked": {"provider": "groq", "providerPicked": True},
+    "endpoint and model changed": {"baseUrl": "https://api.other.test/v1", "model": "other"},
+    "only the model changed": {"model": "other"},
+    "only the endpoint changed": {"baseUrl": "https://api.other.test/v1"},
+    "no model picked": {"provider": "none", "providerPicked": True, "baseUrl": "", "model": "", "apiKey": "ignored"},
+}
+
+
+@pytest.fixture(scope="module")
+def sent() -> dict[str, dict[str, Any]]:
+    """The body each case would send, from one Node run."""
+    unchanged = {
+        "provider": "openai",
+        "providerPicked": False,
+        "webSearch": True,
+        "baseUrl": LOADED["base_url"],
+        "model": LOADED["model"],
+        "apiKey": "",
+    }
+    calls = [[{**unchanged, **fields}, LOADED] for fields in CONFIG_CASES.values()]
+    return dict(zip(CONFIG_CASES, call_hud_function("configPayload", calls), strict=True))
+
+
+def test_a_save_that_changes_nothing_sends_no_provider_endpoint_or_model(sent: dict[str, dict[str, Any]]) -> None:
+    for key in ("provider", "base_url", "model"):
+        assert key not in sent["nothing changed"]
+
+
+def test_a_provider_the_user_did_not_pick_is_never_sent(sent: dict[str, dict[str, Any]]) -> None:
+    # The server runs a provider the form has no option for, so the form shows it as itself.
+    assert "provider" not in sent["unlisted provider, not picked"]
+    assert sent["unlisted provider, not picked"]["web_search_enabled"] is False
+
+
+def test_a_picked_provider_is_sent(sent: dict[str, dict[str, Any]]) -> None:
+    assert sent["provider picked"]["provider"] == "groq"
+
+
+def test_an_endpoint_or_model_is_sent_only_when_it_changed(sent: dict[str, dict[str, Any]]) -> None:
+    assert sent["endpoint and model changed"]["base_url"] == "https://api.other.test/v1"
+    assert sent["endpoint and model changed"]["model"] == "other"
+    assert "base_url" not in sent["only the model changed"]
+    assert "model" not in sent["only the endpoint changed"]
+
+
+def test_no_model_sends_neither_endpoint_nor_model_nor_key(sent: dict[str, dict[str, Any]]) -> None:
+    assert sent["no model picked"] == {"web_search_enabled": True, "provider": "none"}
