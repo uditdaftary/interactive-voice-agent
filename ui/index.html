@@ -829,6 +829,32 @@
   let webSpeechPreview = false;
   const SPEECH_PREVIEW_LABEL = 'Preview (uses an online service): ';
 
+  // The question box is the user's, with two exceptions: the page writes into it what the preview and the server heard.
+  // `pageWrittenText` is the last of that, so the box is cleared at the end of a turn only while it still holds exactly
+  // that text, and anything typed there is left alone. `previewTranscript` is what the preview heard, and the only text
+  // that goes to the server as a fallback: typed text never does.
+  let pageWrittenText = '';
+  let previewTranscript = '';
+
+  function putInQueryBox(text) {
+    const input = document.getElementById('interruption-query-input');
+    if (!input || !text) return;
+    input.value = text;
+    pageWrittenText = text;
+  }
+
+  // What the box should hold once a turn has ended.
+  function boxAfterTurn(boxValue, pageText) {
+    return (pageText && boxValue === pageText) ? '' : boxValue;
+  }
+
+  // The voice_end message: the preview transcript rides along only when the preview was allowed and heard something.
+  function voiceEndMessage(previewAllowed, transcript) {
+    const message = { type: 'voice_end' };
+    if (previewAllowed && transcript) message.fallback_query = transcript;
+    return message;
+  }
+
   function setWebSpeechPreview(allowed) {
     webSpeechPreview = allowed === true;
     if (!webSpeechPreview) stopSpeechPreview();
@@ -856,8 +882,10 @@
         }
       }
       const fullTranscript = (finalTranscript + ' ' + interimTranscript).trim() || finalTranscript.trim() || interimTranscript.trim();
-      const input = document.getElementById('interruption-query-input');
-      if (input && fullTranscript) input.value = fullTranscript;
+      if (fullTranscript) {
+        previewTranscript = fullTranscript;
+        putInQueryBox(fullTranscript);
+      }
 
       const ticker = document.getElementById('speech-ticker');
       if (ticker) {
@@ -941,6 +969,7 @@
 
     if (!requireConnection()) return;
     isVoiceListening = true;
+    previewTranscript = '';
     updateBargeInButtonUI(true);
 
     unlockAudioPlayback();
@@ -980,21 +1009,17 @@
 
     stopSpeechPreview();
 
-    const input = document.getElementById('interruption-query-input');
-    const previewText = input ? input.value.trim() : '';
-
     const tickerText = document.getElementById('speech-ticker-text');
     if (tickerText) {
       tickerText.innerText = '⚡ Transcribing...';
     }
 
-    // Send voice_end over WebSocket to flush server accumulator and transcribe immediately. The preview text goes along
-    // as a fallback only when the preview was allowed, so text typed into the box is never taken for speech.
+    // Send voice_end over WebSocket to flush server accumulator and transcribe immediately. Only what the preview heard
+    // goes along as a fallback, never the text in the box.
     if (wsClient && wsClient.isConnected) {
-      const voiceEnd = { type: 'voice_end' };
-      if (webSpeechPreview && previewText) voiceEnd.fallback_query = previewText;
-      wsClient.send(voiceEnd);
+      wsClient.send(voiceEndMessage(webSpeechPreview, previewTranscript));
     }
+    previewTranscript = '';
   }
 
   // --- PRE-ROLL RESUMPTION CUES ---
@@ -1749,11 +1774,12 @@
           // leave "Transcribing..." on screen until the next voice turn.
           const speechTicker = document.getElementById('speech-ticker');
           if (speechTicker) speechTicker.style.display = 'none';
-          // Nor the question: it was spoken or typed for the turn that has just ended. Only a sync that closes a turn
-          // clears it, since one arrives for many other reasons while the user may be typing.
+          // Nor the text the page wrote into the question box for that turn. Only a sync that closes a turn clears it, and
+          // only while the box still holds exactly that text: a follow-up the user is typing stays.
           if (TURN_STATES.has(stateBefore)) {
             const queryBox = document.getElementById('interruption-query-input');
-            if (queryBox) queryBox.value = '';
+            if (queryBox) queryBox.value = boxAfterTurn(queryBox.value, pageWrittenText);
+            pageWrittenText = '';
           }
         }
       }
@@ -1876,10 +1902,7 @@
       const transcript = (msg.transcript !== undefined && msg.transcript !== null) ? String(msg.transcript) : '';
 
       // 1. Update query input field
-      const input = document.getElementById('interruption-query-input');
-      if (input && transcript) {
-        input.value = transcript;
-      }
+      putInQueryBox(transcript);
 
       // 2. Update speech recognition ticker
       const ticker = document.getElementById('speech-ticker');
@@ -2441,6 +2464,7 @@
     if (!requireConnection()) return;
 
     if (input) input.value = '';
+    pageWrittenText = '';
 
     // 1. Immediately disrupt audio and update UI to LISTENING / INTERRUPTED
     if (wsClient) {

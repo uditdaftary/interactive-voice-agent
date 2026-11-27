@@ -120,3 +120,36 @@ def test_removing_the_stored_key_is_explicit(sent: dict[str, dict[str, Any]]) ->
     assert sent["removal asked for"]["api_key"] == ""
     # A key typed next to the request replaces the stored one, which also removes it.
     assert sent["removal asked for and a key typed"]["api_key"] == "sk-typed"
+
+
+# --- the question box ----------------------------------------------------------------------------------------------
+
+
+def test_the_box_is_cleared_only_while_it_holds_what_the_page_wrote() -> None:
+    cleared, kept_follow_up, kept_edit, nothing_written = call_hud_function(
+        "boxAfterTurn",
+        [
+            ["who is lucy", "who is lucy"],  # the preview's text, untouched
+            ["what about the", "who is lucy"],  # a follow-up typed while the reply played
+            ["who is lucy and", "who is lucy"],  # the preview's text, then edited
+            ["typed", ""],  # the page wrote nothing: the box is the user's
+        ],
+    )
+    assert cleared == ""
+    assert kept_follow_up == "what about the"
+    assert kept_edit == "who is lucy and"
+    assert nothing_written == "typed"
+
+
+def test_only_the_preview_transcript_is_sent_as_a_fallback() -> None:
+    with_preview, preview_off, heard_nothing = call_hud_function(
+        "voiceEndMessage",
+        [
+            [True, "who is lucy"],
+            [False, "who is lucy"],
+            [True, ""],  # the preview is on but heard nothing, whatever is typed in the box
+        ],
+    )
+    assert with_preview == {"type": "voice_end", "fallback_query": "who is lucy"}
+    assert preview_off == {"type": "voice_end"}
+    assert heard_nothing == {"type": "voice_end"}
