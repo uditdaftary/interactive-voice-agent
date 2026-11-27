@@ -29,7 +29,7 @@ REMOVED = [
     "ZERO-CLOUD",
     # The preview text went to the server whatever the server allowed.
     "fallback_query: existingVal",
-    # The built-in provider and its placeholders: with no model the agent reads the closest passage instead.
+    # The built-in provider and its placeholders: with no model the app reads the closest passage instead.
     "builtin",
     "in-process",
     # Em and en dashes in copy.
@@ -54,36 +54,48 @@ def test_hud_labels_the_online_speech_preview() -> None:
 # --- no server data in markup -------------------------------------------------------------------------------------
 
 _MARKUP_SINK = re.compile(r"(?:innerHTML|outerHTML)\s*\+?=(?!=)")
-_LITERAL = "\x00"
+# After a closing quote, a line that goes on with one of these continues the expression.
+_CONTINUATION = "+-*/%?:.([,|&=<>!"
+
+
+def _statement_ends_after_literal(source: str, i: int) -> bool:
+    """True when the statement is over at `i`: a `;`, a `}`, the end of the text, or a new line that does not go on
+    with an operator (a statement ended by automatic semicolon insertion)."""
+    while i < len(source) and source[i] in " \t\r":
+        i += 1
+    if i >= len(source) or source[i] in ";}":
+        return True
+    if source[i] != "\n":
+        return False
+    while i < len(source) and source[i] in " \t\r\n":
+        i += 1
+    return i >= len(source) or source[i] not in _CONTINUATION
 
 
 def unsafe_markup_assignments(source: str) -> list[str]:
-    """The `innerHTML` / `outerHTML` assignments in `source` whose right side is not made of fixed strings.
+    """The `innerHTML` / `outerHTML` assignments in `source` whose right side is not exactly one string literal.
 
-    A right side is unsafe when a template literal interpolates (`${`), when strings are joined with `+`, or when
-    it holds no string literal at all (a variable or a call). A ternary between two fixed strings is fine.
+    Only a single quoted string, or a template literal with no `${`, passes. A conditional, a `||`, a `+`, a
+    variable or a call is unsafe even when it holds a literal, because data can sit in the other branch.
     """
     unsafe = []
     for sink in _MARKUP_SINK.finditer(source):
-        code: list[str] = []
-        interpolated = False
         i = sink.end()
-        while i < len(source) and source[i] != ";":
-            if source[i] in "'\"`":
-                quote = source[i]
-                i += 1
-                while i < len(source) and source[i] != quote:
-                    if source[i] == "\\":
-                        i += 1
-                    elif quote == "`" and source.startswith("${", i):
-                        interpolated = True
-                    i += 1
-                code.append(_LITERAL)
-            else:
-                code.append(source[i])
+        while i < len(source) and source[i] in " \t\r\n":
             i += 1
-        right_side = "".join(code)
-        if interpolated or "+" in right_side or _LITERAL not in right_side:
+        fixed = i < len(source) and source[i] in "'\"`"
+        if fixed:
+            quote = source[i]
+            i += 1
+            while i < len(source) and source[i] != quote:
+                if source[i] == "\\":
+                    i += 1
+                elif quote == "`" and source.startswith("${", i):
+                    fixed = False
+                    break
+                i += 1
+            fixed = fixed and _statement_ends_after_literal(source, i + 1)
+        if not fixed:
             line = source.count("\n", 0, sink.start()) + 1
             unsafe.append(f"line {line}: {source[sink.start():sink.start() + 60]!r}")
     return unsafe
@@ -99,6 +111,11 @@ def unsafe_markup_assignments(source: str) -> list[str]:
         "el.outerHTML = build(name);",
         "el.innerHTML = `\n  <td>static</td>\n  <td>${name}</td>\n`;",
         "el.innerHTML = ok ? `<b>${name}</b>` : '';",
+        "el.innerHTML = ok ? '<b>' : name;",
+        "el.innerHTML = name || '';",
+        "el.innerHTML = ok ? '<a></a>' : '<b></b>';",
+        "el.innerHTML = '<b>'\n  + name;",
+        "el.innerHTML = '' + name;",
     ],
 )
 def test_checker_flags_data_in_markup(statement: str) -> None:
@@ -110,7 +127,8 @@ def test_checker_flags_data_in_markup(statement: str) -> None:
     [
         "el.innerHTML = '';",
         "el.innerHTML = '<path d=\"M2 5h3\"/>';",
-        "el.innerHTML = on ? `<span>on; ok</span>` : `<span>off</span>`;",
+        "el.innerHTML = `<span>static; ok</span>`;",
+        "el.innerHTML = ''\nnext();",
         "if (a === b) { el.textContent = `${name}`; }",
     ],
 )

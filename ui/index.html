@@ -200,9 +200,9 @@
             </button>
 
             <button type="button" class="btn" id="btn-handsfree-toggle" onclick="toggleHandsFree()" title="Auto-detect voice energy in browser mic">
-              <span style="font-size:11.5px;">⚡ AUTO-VOICE VAD: ON</span>
+              <span id="handsfree-label" style="font-size:11.5px;">⚡ AUTO-VOICE VAD: ON</span>
               <span class="tab">
-                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="4" fill="var(--high)"/><circle cx="8" cy="8" r="6"/></svg>
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle id="handsfree-dot" cx="8" cy="8" r="4" fill="var(--high)"/><circle cx="8" cy="8" r="6"/></svg>
               </span>
             </button>
           </div>
@@ -810,12 +810,10 @@
 
   function toggleHandsFree() {
     handsFreeDetectionEnabled = !handsFreeDetectionEnabled;
-    const btn = document.getElementById('btn-handsfree-toggle');
-    if (btn) {
-      btn.innerHTML = handsFreeDetectionEnabled 
-        ? `<span>⚡ AUTO-VOICE VAD: ON</span><span class="tab"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="4" fill="var(--high)"/><circle cx="8" cy="8" r="6"/></svg></span>`
-        : `<span>⚡ AUTO-VOICE VAD: OFF</span><span class="tab"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6"/></svg></span>`;
-    }
+    const label = document.getElementById('handsfree-label');
+    if (label) label.textContent = handsFreeDetectionEnabled ? '⚡ AUTO-VOICE VAD: ON' : '⚡ AUTO-VOICE VAD: OFF';
+    const dot = document.getElementById('handsfree-dot');
+    if (dot) dot.style.display = handsFreeDetectionEnabled ? '' : 'none';
   }
 
   // The browser's own speech recognition is an online service: Chrome sends the audio to a third party. It runs only
