@@ -29,10 +29,13 @@ def hud_function_source(name: str) -> str:
     raise AssertionError(f"function {name} is not closed")
 
 
-def call_hud_function(name: str, calls: list[list[Any]]) -> list[Any]:
-    """Run the page's function once per argument list, in one Node process, and return the results."""
+def call_hud_function(name: str, calls: list[list[Any]], helpers: tuple[str, ...] = ()) -> list[Any]:
+    """Run the page's function once per argument list, in one Node process, and return the results. `helpers` are
+    other page functions it calls."""
     script = (
-        hud_function_source(name)
+        "\n".join(hud_function_source(helper) for helper in helpers)
+        + "\n"
+        + hud_function_source(name)
         + "\nconst calls = JSON.parse(require('fs').readFileSync(0, 'utf8'));"
         + f"\nprocess.stdout.write(JSON.stringify(calls.map((args) => {name}(...args))));"
     )
@@ -45,7 +48,7 @@ def call_hud_function(name: str, calls: list[list[Any]]) -> list[Any]:
 
 # --- what a config save sends ---------------------------------------------------------------------------------------
 
-LOADED = {"base_url": "https://api.example.test/v1", "model": "served-model"}
+LOADED = {"provider": "openai", "base_url": "https://api.example.test/v1", "model": "served-model"}
 
 # Each case changes some fields of a form in which nothing was changed, picked or typed.
 CONFIG_CASES: dict[str, dict[str, Any]] = {
@@ -60,7 +63,13 @@ CONFIG_CASES: dict[str, dict[str, Any]] = {
     "key typed": {"apiKey": "sk-typed"},
     "removal asked for": {"clearKey": True},
     "removal asked for and a key typed": {"clearKey": True, "apiKey": "sk-typed"},
-    "provider switched, key field blank": {"provider": "ollama", "providerPicked": True, "baseUrl": "http://localhost:11434/v1"},
+    "provider switched, key field blank": {
+        "provider": "ollama",
+        "providerPicked": True,
+        "baseUrl": "http://localhost:11434/v1",
+    },
+    "provider switched, key typed": {"provider": "groq", "providerPicked": True, "apiKey": "sk-new"},
+    "same provider picked again, key field blank": {"provider": "openai", "providerPicked": True},
 }
 
 
@@ -77,7 +86,8 @@ def sent() -> dict[str, dict[str, Any]]:
         "clearKey": False,
     }
     calls = [[{**unchanged, **fields}, LOADED] for fields in CONFIG_CASES.values()]
-    return dict(zip(CONFIG_CASES, call_hud_function("configPayload", calls), strict=True))
+    results = call_hud_function("configPayload", calls, helpers=("destinationChanged",))
+    return dict(zip(CONFIG_CASES, results, strict=True))
 
 
 def test_a_save_that_changes_nothing_sends_no_provider_endpoint_or_model(sent: dict[str, dict[str, Any]]) -> None:
@@ -106,10 +116,31 @@ def test_no_model_sends_neither_endpoint_nor_model_nor_key(sent: dict[str, dict[
     assert sent["no model picked"] == {"web_search_enabled": True, "provider": "none"}
 
 
-def test_a_blank_key_field_leaves_the_stored_key_alone(sent: dict[str, dict[str, Any]]) -> None:
-    # Toggling web search with the key field blank must not replace the stored key with an empty one.
-    for case in ("nothing changed", "web search toggled, key field blank", "provider switched, key field blank"):
+def test_a_blank_key_field_leaves_the_stored_key_alone_when_the_destination_is_the_same(
+    sent: dict[str, dict[str, Any]],
+) -> None:
+    # Toggling web search with the key field blank must not replace the stored key with an empty one, and picking the
+    # provider the server already uses is not a move.
+    for case in (
+        "nothing changed",
+        "web search toggled, key field blank",
+        "only the model changed",
+        "same provider picked again, key field blank",
+    ):
         assert "api_key" not in sent[case]
+
+
+def test_a_stored_key_is_dropped_when_the_provider_or_endpoint_changes_and_no_key_was_typed(
+    sent: dict[str, dict[str, Any]],
+) -> None:
+    # The old key must not go to the new host.
+    for case in ("provider switched, key field blank", "provider picked", "only the endpoint changed"):
+        assert sent[case]["api_key"] == ""
+    assert sent["endpoint and model changed"]["api_key"] == ""
+
+
+def test_a_key_typed_with_a_new_destination_is_the_one_sent(sent: dict[str, dict[str, Any]]) -> None:
+    assert sent["provider switched, key typed"]["api_key"] == "sk-new"
 
 
 def test_a_typed_key_is_sent(sent: dict[str, dict[str, Any]]) -> None:
