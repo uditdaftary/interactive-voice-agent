@@ -127,6 +127,7 @@ class FakeLLM:
         self.web_search_enabled = web_search_enabled
         self.status = status  # how a request ended, as `LLMClient.status` says; it is what the client leaves after every stream
         self.provider = "fake"
+        self.api_key = "local"
         self.calls: list[list[dict[str, str]]] = []
         self.config: dict[str, Any] = {"provider": "fake", "web_search_enabled": web_search_enabled}
 
@@ -146,6 +147,8 @@ class FakeLLM:
         self.config.update({key: value for key, value in kwargs.items() if value is not None})
         if kwargs.get("provider") is not None:
             self.provider = kwargs["provider"]
+        if kwargs.get("api_key") is not None:
+            self.api_key = kwargs["api_key"]
         if kwargs.get("web_search_enabled") is not None:
             self.web_search_enabled = bool(kwargs["web_search_enabled"])
 

@@ -182,10 +182,18 @@ class NarrationEngine:
         self._stt_status = status
         self.manager.refresh_statuses()
 
+    def _llm_endpoint(self) -> tuple[Any, ...]:
+        """What decides which model answers: a change in any of these makes the old endpoint's behaviour irrelevant."""
+        config = self.llm.get_config()
+        return (config.get("provider"), config.get("base_url"), config.get("model"), getattr(self.llm, "api_key", None))
+
     def configure_llm(self, **fields: Any) -> None:
-        """Change the model endpoint. How the old endpoint behaved says nothing about the new one, so the status starts over."""
+        """Change the model configuration. When the endpoint, provider, model or key changed, how the old one behaved
+        says nothing about the new one, so the status starts over; a change to anything else (web search) keeps it."""
+        before = self._llm_endpoint()
         self.llm.update_config(**fields)
-        self._llm_status = "ok"
+        if self._llm_endpoint() != before:
+            self._llm_status = "ok"
 
     def _on_owner_change(self) -> None:
         """The audio goes to a different tab now. What the old one was playing is stopped either way."""

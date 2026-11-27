@@ -260,19 +260,68 @@ async def test_a_barge_in_is_not_reported_as_a_model_failure() -> None:
     await manager.tasks.cancel_all()
 
 
-async def test_changing_the_model_endpoint_starts_the_status_over() -> None:
-    manager = ConnectionManager()
-    llm = FakeLLM(status="offline")
-    engine = make_engine(manager, llm=llm)
-    socket = await tab(manager)
+async def offline_engine(manager: ConnectionManager) -> NarrationEngine:
+    """An engine whose last question found the model offline."""
+    engine = make_engine(manager, llm=FakeLLM(status="offline"))
     engine.ask("who is lucy")
     await wait_for_state(manager.session, "PAUSED")
     assert engine.statuses().llm_status == "offline"
+    return engine
 
-    engine.configure_llm(base_url="http://127.0.0.1:1234/v1")
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"base_url": "http://127.0.0.1:1234/v1"},
+        {"provider": "lmstudio"},
+        {"model": "another-model"},
+        {"api_key": "a-new-key"},
+    ],
+)
+async def test_changing_the_model_endpoint_starts_the_status_over(change: dict[str, str]) -> None:
+    manager = ConnectionManager()
+    socket = await tab(manager)
+    engine = await offline_engine(manager)
+
+    engine.configure_llm(**change)
     await manager.broadcast_state()
 
     assert seen(socket, "llm_status")[-1] == "ok"
+    await manager.tasks.cancel_all()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"web_search_enabled": False},
+        {"base_url": None, "api_key": None, "provider": None, "model": None, "web_search_enabled": None},  # a body that sets only the voice
+        {"provider": "fake"},  # what it already is
+        {"api_key": "local"},
+    ],
+)
+async def test_a_change_that_leaves_the_model_endpoint_alone_keeps_the_status(change: dict[str, object]) -> None:
+    manager = ConnectionManager()
+    socket = await tab(manager)
+    engine = await offline_engine(manager)
+
+    engine.configure_llm(**change)
+    await manager.broadcast_state()
+
+    assert seen(socket, "llm_status")[-1] == "offline"
+    await manager.tasks.cancel_all()
+
+
+async def test_a_websocket_config_message_that_only_changes_web_search_keeps_the_status() -> None:
+    from voice_agent.server.websocket import handle_client_text_message
+
+    manager = ConnectionManager()
+    socket = await tab(manager)
+    engine = await offline_engine(manager)
+
+    await handle_client_text_message('{"type": "update_config", "web_search_enabled": false}', socket, manager, engine)  # type: ignore[arg-type]
+    await delivered()
+
+    assert seen(socket, "llm_status")[-1] == "offline"
     await manager.tasks.cancel_all()
 
 
