@@ -56,6 +56,11 @@ CONFIG_CASES: dict[str, dict[str, Any]] = {
     "only the model changed": {"model": "other"},
     "only the endpoint changed": {"baseUrl": "https://api.other.test/v1"},
     "no model picked": {"provider": "none", "providerPicked": True, "baseUrl": "", "model": "", "apiKey": "ignored"},
+    "web search toggled, key field blank": {"webSearch": False},
+    "key typed": {"apiKey": "sk-typed"},
+    "removal asked for": {"clearKey": True},
+    "removal asked for and a key typed": {"clearKey": True, "apiKey": "sk-typed"},
+    "provider switched, key field blank": {"provider": "ollama", "providerPicked": True, "baseUrl": "http://localhost:11434/v1"},
 }
 
 
@@ -69,6 +74,7 @@ def sent() -> dict[str, dict[str, Any]]:
         "baseUrl": LOADED["base_url"],
         "model": LOADED["model"],
         "apiKey": "",
+        "clearKey": False,
     }
     calls = [[{**unchanged, **fields}, LOADED] for fields in CONFIG_CASES.values()]
     return dict(zip(CONFIG_CASES, call_hud_function("configPayload", calls), strict=True))
@@ -98,3 +104,19 @@ def test_an_endpoint_or_model_is_sent_only_when_it_changed(sent: dict[str, dict[
 
 def test_no_model_sends_neither_endpoint_nor_model_nor_key(sent: dict[str, dict[str, Any]]) -> None:
     assert sent["no model picked"] == {"web_search_enabled": True, "provider": "none"}
+
+
+def test_a_blank_key_field_leaves_the_stored_key_alone(sent: dict[str, dict[str, Any]]) -> None:
+    # Toggling web search with the key field blank must not replace the stored key with an empty one.
+    for case in ("nothing changed", "web search toggled, key field blank", "provider switched, key field blank"):
+        assert "api_key" not in sent[case]
+
+
+def test_a_typed_key_is_sent(sent: dict[str, dict[str, Any]]) -> None:
+    assert sent["key typed"]["api_key"] == "sk-typed"
+
+
+def test_removing_the_stored_key_is_explicit(sent: dict[str, dict[str, Any]]) -> None:
+    assert sent["removal asked for"]["api_key"] == ""
+    # A key typed next to the request replaces the stored one, which also removes it.
+    assert sent["removal asked for and a key typed"]["api_key"] == "sk-typed"

@@ -463,6 +463,13 @@
       <div class="field-group">
         <label class="field-label">API Key (Optional for Local Ollama)</label>
         <input type="password" id="cfg-api-key" class="field-input" placeholder="Enter remote API key or leave blank for local Ollama">
+        <div id="cfg-key-stored" style="display:none; flex-direction:column; gap:4px; font-size:12.5px;">
+          <span class="faint">A key is stored. It is sent to the endpoint above.</span>
+          <label style="display:flex; align-items:center; gap:8px;">
+            <input type="checkbox" id="cfg-clear-key">
+            <span>Remove the stored key when saving</span>
+          </label>
+        </div>
       </div>
 
       <!-- Live Web Search Toggle -->
@@ -2263,7 +2270,7 @@
 
   // With no model there is nothing to point at, so the endpoint, model and key are not asked for.
   function setConfigFieldsEnabled(provider) {
-    for (const id of ['cfg-endpoint', 'cfg-model', 'cfg-api-key']) {
+    for (const id of ['cfg-endpoint', 'cfg-model', 'cfg-api-key', 'cfg-clear-key']) {
       document.getElementById(id).disabled = provider === 'none';
     }
   }
@@ -2298,6 +2305,14 @@
         if (llm.web_search_enabled !== undefined) {
           document.getElementById('cfg-web-search').checked = !!llm.web_search_enabled;
         }
+        // The server never sends the key, only whether it holds one. A blank field keeps it; removing it is a choice.
+        const keyField = document.getElementById('cfg-api-key');
+        keyField.value = '';
+        keyField.placeholder = llm.has_api_key === true
+          ? 'A key is stored. Leave this blank to keep it.'
+          : 'Enter remote API key or leave blank for local Ollama';
+        document.getElementById('cfg-clear-key').checked = false;
+        document.getElementById('cfg-key-stored').style.display = llm.has_api_key === true ? 'flex' : 'none';
         setConfigFieldsEnabled(select.value);
         loadedConfig = {
           base_url: document.getElementById('cfg-endpoint').value.trim(),
@@ -2317,8 +2332,13 @@
     if (form.provider !== 'none') {
       if (form.baseUrl !== loaded.base_url) payload.base_url = form.baseUrl;
       if (form.model !== loaded.model) payload.model = form.model;
-      // Sent even when empty: leaving a provider key behind would send it to the next endpoint.
-      payload.api_key = form.apiKey;
+      // A blank field leaves the stored key as it is. A key is sent only when one was typed, or removing it was asked
+      // for, which the server reads as an empty key.
+      if (form.apiKey) {
+        payload.api_key = form.apiKey;
+      } else if (form.clearKey) {
+        payload.api_key = '';
+      }
     }
     return payload;
   }
@@ -2368,6 +2388,7 @@
       baseUrl: document.getElementById('cfg-endpoint').value.trim(),
       model: document.getElementById('cfg-model').value.trim(),
       apiKey: document.getElementById('cfg-api-key').value.trim(),
+      clearKey: document.getElementById('cfg-clear-key').checked,
     }, loadedConfig);
 
     try {
