@@ -137,11 +137,11 @@
         <div class="panel-head">
           <div style="display:flex; align-items:center; gap:10px;">
             <h2>Continuous Narrative Stream &amp; Cursor</h2>
-            <span class="mono faint" style="font-size:11px; margin-left:8px;" id="header-doc-title">[BOOK: Night City Run]</span>
+            <span class="mono faint" style="font-size:11px; margin-left:8px;" id="header-doc-title">[No document]</span>
           </div>
           <div style="display:flex; align-items:center; gap:12px;">
             <div class="mono faint" style="font-size:12px;">
-              SENTENCE: <span class="num text-white" id="counter-sentence">1 / 8</span>
+              SENTENCE: <span class="num text-white" id="counter-sentence">0 / 0</span>
             </div>
             <button class="btn" style="min-height:30px; padding:0 8px; font-size:11px;" onclick="openDocumentUploadModal()">+ INGEST</button>
           </div>
@@ -231,9 +231,9 @@
               <span class="state-pill listening" id="env-status-pill"><i></i>PROMPT ENVELOPE ACTIVATED</span>
               <span class="mono faint" id="env-character-tag">DAVID MARTINEZ // SANTO DOMINGO</span>
             </div>
-            <div style="font-size:13.5px;"><span class="faint mono">Context:</span> <span class="mono text-white" id="env-local-ctx">"David Martinez stood at the edge of the catwalk..."</span></div>
-            <div style="font-size:13.5px;"><span class="faint mono">Query:</span> <span class="mono" style="color:var(--high);">"Wait, whose scav vehicle is idling down in the alley?"</span></div>
-            <div style="font-size:13.5px;"><span class="faint mono">Reply:</span> <span class="mono text-white">"The scav vehicle is an armored recon van belonging to the Maelstrom gang. Stay clear of their optical scanners."</span></div>
+            <div style="font-size:13.5px;"><span class="faint mono">Context:</span> <span class="mono text-white" id="env-local-ctx"></span></div>
+            <div style="font-size:13.5px;"><span class="faint mono">Query:</span> <span class="mono" style="color:var(--high);"></span></div>
+            <div style="font-size:13.5px;"><span class="faint mono">Reply:</span> <span class="mono text-white"></span></div>
             <div class="faint mono" style="font-size:11.5px; margin-top:2px;">↳ Resumption Cue: <em style="color:var(--ink);">"Returning to our story..."</em> (+4 words pre-roll)</div>
           </div>
 
@@ -499,18 +499,11 @@
     return '';
   }
 
-  // --- STORY DATASET ---
-  let STORY_PARAGRAPHS = [
-    "Chapter 1: Arrival in the Megabuilding.",
-    "The rain drummed ceaselessly against the reinforced plasteel windows of Watson.",
-    "Neon reflections in deep crimson and cyan bled across the flooded pavement below.",
-    "David Martinez stood at the edge of the catwalk, adjusting his yellow jacket against the cold gust.",
-    "Somewhere down in the alleyway, a heavy scav combat vehicle idled with a guttural diesel purr.",
-    "He knew the fixer wouldn't wait past midnight, and the cyberware chip in his pocket was growing warm.",
-    "Taking a steady breath, he stepped toward the emergency descent ladder."
-  ];
-
-  let currentSentenceIdx = 3;
+  // --- THE DOCUMENT ---
+  // The sentences of the document the server holds, as it last reported them. Empty until it reports one: the page has
+  // no text of its own to read.
+  let STORY_PARAGRAPHS = [];
+  let currentSentenceIdx = 0;
   let currentWordIdx = 0;
   let isPlaying = true;
   let currentCadence = 1.0;
@@ -669,6 +662,12 @@
     container.innerHTML = '';
     wordsArray = [];
 
+    if (STORY_PARAGRAPHS.length === 0) {
+      container.appendChild(textElement('p', 'narrative-p', 'No document loaded', 'color:var(--ink-3);'));
+      updateWordHighlight();
+      return;
+    }
+
     STORY_PARAGRAPHS.forEach((p, sIdx) => {
       const pEl = document.createElement('p');
       pEl.dataset.sidx = sIdx;
@@ -717,7 +716,7 @@
     });
 
     const counter = document.getElementById('counter-sentence');
-    if (counter) counter.innerText = `${currentSentenceIdx + 1} / ${STORY_PARAGRAPHS.length}`;
+    if (counter) counter.innerText = STORY_PARAGRAPHS.length ? `${currentSentenceIdx + 1} / ${STORY_PARAGRAPHS.length}` : '0 / 0';
 
     const currentPEl = document.querySelector(`.narrative-box p[data-sidx="${currentSentenceIdx}"]`);
     if (currentPEl) {
@@ -765,7 +764,7 @@
   }
 
   function nextSentence() {
-    if (!requireConnection()) return;
+    if (!requireConnection() || STORY_PARAGRAPHS.length === 0) return;
     // Queued clips belong to the sentence being left. Not while an answer is in progress: it is not part of the
     // narration and must finish.
     if (currentState === 'NARRATING') wsClient.stopAllAudio();
@@ -776,7 +775,7 @@
   }
 
   function prevSentence() {
-    if (!requireConnection()) return;
+    if (!requireConnection() || STORY_PARAGRAPHS.length === 0) return;
     // Queued clips belong to the sentence being left. Not while an answer is in progress: it is not part of the
     // narration and must finish.
     if (currentState === 'NARRATING') wsClient.stopAllAudio();
@@ -1520,6 +1519,7 @@
       this.stopAllAudio();
       this.stoppedBefore = 0;
       this.pendingSegment = null;
+      documentSyncTotal = null;
       updateWsStatusUI(true);
       if (statusError && statusError.clearOnConnect) dismissStatusError();
       this.reconnectDelayMs = RECONNECT_FIRST_MS;
@@ -1802,15 +1802,16 @@
       if (msg.word_offset !== undefined) {
         currentWordIdx = msg.word_offset;
       }
-      if (msg.sentence_text && STORY_PARAGRAPHS[currentSentenceIdx] !== msg.sentence_text) {
+      // A document of another length than the one shown (it was not loaded yet, or another tab loaded a new one) is
+      // fetched again. A sentence is patched only where the page has a sentence to patch.
+      if (msg.total_sentences !== undefined && msg.total_sentences !== STORY_PARAGRAPHS.length) {
+        requestDocumentSync(msg.total_sentences);
+      }
+      if (msg.sentence_text && currentSentenceIdx < STORY_PARAGRAPHS.length && STORY_PARAGRAPHS[currentSentenceIdx] !== msg.sentence_text) {
         STORY_PARAGRAPHS[currentSentenceIdx] = msg.sentence_text;
         renderNarrativeStream();
       } else {
         updateWordHighlight();
-      }
-      if (msg.total_sentences !== undefined) {
-        const counter = document.getElementById('counter-sentence');
-        if (counter) counter.innerText = `${currentSentenceIdx + 1} / ${msg.total_sentences}`;
       }
     }
 
@@ -2196,20 +2197,29 @@
     }
   }
 
+  // The sentence count a re-fetch was last asked for, so a count that stays different from the one shown asks once.
+  let documentSyncTotal = null;
+  function requestDocumentSync(total) {
+    if (total === documentSyncTotal) return;
+    documentSyncTotal = total;
+    syncDocumentFromServer();
+  }
+
+  // Shows the document the server holds, or the empty state when it holds none.
   async function syncDocumentFromServer() {
     try {
       const resp = await fetch(`${getApiBaseUrl()}/api/document`);
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data.sentences && data.sentences.length > 0) {
-          STORY_PARAGRAPHS = data.sentences;
-          currentSentenceIdx = data.current_sentence_idx || 0;
-          currentWordIdx = 0;
-          const docTitleEl = document.getElementById('header-doc-title');
-          if (docTitleEl) docTitleEl.innerText = `[BOOK: ${data.title || "Night City Run"}]`;
-          renderNarrativeStream();
-        }
-      }
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const sentences = Array.isArray(data.sentences) ? data.sentences.filter(text => typeof text === 'string') : [];
+      STORY_PARAGRAPHS = sentences;
+      currentSentenceIdx = Number.isInteger(data.current_sentence_idx)
+        ? Math.max(0, Math.min(data.current_sentence_idx, sentences.length - 1))
+        : 0;
+      currentWordIdx = 0;
+      const docTitleEl = document.getElementById('header-doc-title');
+      if (docTitleEl) docTitleEl.innerText = (sentences.length && data.title) ? `[BOOK: ${data.title}]` : '[No document]';
+      renderNarrativeStream();
     } catch (e) {
       console.warn("Could not load the document from the server:", e);
     }

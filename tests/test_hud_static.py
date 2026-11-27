@@ -37,6 +37,12 @@ REMOVED = [
     chr(0x2013),  # en dash
     # The audio banner was capitals, mono type and a product slogan.
     "NEURAL AUDIOBOOK",
+    # The built-in story and its title: the reader shows the server's document or says there is none.
+    "Arrival in the Megabuilding",
+    "Night City Run",
+    "stood at the edge of the catwalk",
+    "scav vehicle",
+    "let currentSentenceIdx = 3",
     # A fixed 3 s retry: the wait now grows from 1 s to 30 s.
     "reconnectInterval",
     # Assigned to when the server's document arrives: a const makes that throw, and the catch hid it.
@@ -51,6 +57,11 @@ def test_hud_has_no_simulation_second_server_or_invented_number(text: str) -> No
 
 def test_hud_audio_banner_says_what_to_do_in_plain_words() -> None:
     assert "Click anywhere to turn on sound." in HUD_SOURCE
+
+
+def test_hud_says_so_when_it_has_no_document() -> None:
+    assert "No document loaded" in HUD_SOURCE
+    assert "let STORY_PARAGRAPHS = [];" in HUD_SOURCE
 
 
 def test_hud_labels_the_online_speech_preview() -> None:
