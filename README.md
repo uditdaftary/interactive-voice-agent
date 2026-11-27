@@ -85,7 +85,7 @@ Questions that interrupt the narration go to a model served on this machine by [
    The Modelfile sets `num_ctx 2048` and leaves the chat template to the one embedded in the GGUF. Check that the reply is a plain sentence and not a reasoning transcript.
 3. Start the app. The defaults in the configuration table already point at `http://127.0.0.1:11434/v1` and the model name `voice-agent`.
 
-Without a reachable model the app says "My language model is offline. Check the model settings." and logs the cause (nothing listening, rejected key, server error, or an empty reply). The `builtin` provider is that same no-model mode on purpose. Greetings and the pause, resume and repeat commands are handled locally either way. Changes made through `/api/config` last until the server restarts.
+Without a reachable model the app reads the closest passage of the book aloud after "From the text:" (or says "My language model is offline. Check the model settings." when nothing matches), shows the cause in the HUD, and logs it (nothing listening, rejected key, server error, or an empty reply). The `none` provider is that same no-model mode on purpose, and makes no request. Greetings and the pause, resume and repeat commands are handled locally either way. Changes made through `/api/config` last until the server restarts.
 
 ## Project layout
 
@@ -138,7 +138,7 @@ Both optional backends are installed only through extras, so the base install an
 ## Limitations and roadmap
 
 - **Not offline by default.** See the network note in the quickstart.
-- **Answers need a local model.** Without a reachable Ollama model the app only answers a few local commands and otherwise says its model is offline. The Modelfile has not been run against a real Ollama install yet, so check the model's reply before relying on it.
+- **Answers need a local model.** Without a reachable Ollama model the app handles a few local commands, reads the closest passage of the book aloud for a question, and says so in the HUD. The Modelfile has not been run against a real Ollama install yet, so check the model's reply before relying on it.
 - **The ring buffer, voice activity detector, state machine and host microphone bridge are not wired into the web server.** The server detects speech with a simple energy threshold, and the `host` microphone option is stored as a setting but only browser audio is used. Wiring these in is the main open engineering item.
 - **Nothing measures the barge-in latency.** The server sends `null` for `latency_ms` and `flushed_samples`, and the UI shows "not measured". The Speak button still shows a placeholder figure the page makes up until the server's answer replaces it. The tests assert the ring buffer drain stays under 1 ms, which covers the buffer only, not microphone to silence.
 - **The word cursor is timed, not aligned.** Highlighting steps at an estimated words-per-second rate and holds on the last word until the browser reports the clip played, rather than following audio timestamps. The resume point after an interruption is that estimate, minus four words.
