@@ -417,3 +417,54 @@ async def test_the_awaited_form_tells_the_page_too(command: str) -> None:
     new = [m["state"] for m in socket.messages("state_sync")[syncs_before:]]
     assert new == (["PAUSED"] if command == "pause" else ["NARRATING"])
     await manager.tasks.cancel_all()
+
+
+# --- the resume cue ---------------------------------------------------------------------------------------------------
+
+
+def resume_cues(socket: PlayerSocket) -> list[dict[str, Any]]:
+    """The envelopes that tell the page narration is coming back from a question, a few words back."""
+    return [m for m in socket.messages("prompt_envelope") if m["state"] == "NARRATING"]
+
+
+@pytest.mark.parametrize("coming_from", ["LISTENING", "REPLYING", "PAUSED"])
+async def test_a_repeat_sends_no_resume_cue_because_it_rewinds_nothing(coming_from: str) -> None:
+    manager = ConnectionManager()
+    tts = FakeTts()
+    llm = BlockingLLM()
+    engine, _, _ = make_engine(manager, llm=llm, tts=tts)
+    socket = await tab(manager)
+    if coming_from == "LISTENING":
+        await narrating(manager, engine, tts)
+        manager.trigger_barge_in()
+    elif coming_from == "REPLYING":
+        engine.ask("who writes this book")
+        async with asyncio.timeout(5):
+            await llm.started.wait()
+    spoken_before = len(tts.calls)
+
+    engine.ask("repeat")
+    async with asyncio.timeout(5):
+        await tts.wait_for_calls(spoken_before + 1)
+    await delivered()
+
+    assert resume_cues(socket) == []
+    await manager.tasks.cancel_all()
+
+
+async def test_a_plain_resume_from_a_question_still_sends_the_cue() -> None:
+    manager = ConnectionManager()
+    tts = FakeTts()
+    engine, _, _ = make_engine(manager, tts=tts)
+    socket = await tab(manager)
+    await narrating(manager, engine, tts)
+    manager.trigger_barge_in()
+    spoken_before = len(tts.calls)
+
+    engine.start_narration()
+    async with asyncio.timeout(5):
+        await tts.wait_for_calls(spoken_before + 1)
+    await delivered()
+
+    assert [m["pre_roll_words"] for m in resume_cues(socket)] == [4]
+    await manager.tasks.cancel_all()

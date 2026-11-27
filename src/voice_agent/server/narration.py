@@ -228,8 +228,9 @@ class NarrationEngine:
                 # and a replacement reply (which cancels the old one by name) are not barge-ins.
                 self.manager.tasks.cancel("reply")
         elif new == "NARRATING":
-            # Coming back from a question or a listening window is announced to the HUD; a plain resume is not.
-            self._cue_pre_roll = old in ("LISTENING", "REPLYING")
+            # Coming back from a question or a listening window is announced to the HUD, with the words narration
+            # starts back by; a plain resume is not. A repeat starts at the sentence's first word, so it rewinds nothing.
+            self._cue_pre_roll = old in ("LISTENING", "REPLYING") and reason != "repeat"
             self._ensure_narration()
 
     def _restart_narration(self) -> None:
