@@ -336,8 +336,12 @@ KEY_FORM = {
 }
 
 
+SENT_LINE = "A key is stored. It is sent to the endpoint above."
+REPLACE_LINE = "The key you typed will replace the stored key."
+
+
 def key_field_texts(has_key: bool, changes: dict[str, Any]) -> dict[str, str]:
-    """What the note, the line saying the key is sent, and the field's placeholder show for a form with `changes`."""
+    """What the note, the line about the stored key, and the field's placeholder show for a form with `changes`."""
     script = (
         hud_function_source("destinationChanged")
         + hud_function_source("updateKeyNote")
@@ -347,7 +351,8 @@ def key_field_texts(has_key: bool, changes: dict[str, Any]) -> dict[str, str]:
         + "const document = { getElementById: (id) => fields[id] };"
         + "updateKeyNote();"
         + "process.stdout.write(JSON.stringify({ note: fields['cfg-key-note'].style.display,"
-        + " sent: fields['cfg-key-sent'].style.display, placeholder: fields['cfg-api-key'].placeholder }));"
+        + " sent: fields['cfg-key-sent'].style.display, sentText: fields['cfg-key-sent'].textContent,"
+        + " placeholder: fields['cfg-api-key'].placeholder }));"
     )
     done = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
     assert done.returncode == 0, done.stderr
@@ -359,16 +364,38 @@ def key_field_texts(has_key: bool, changes: dict[str, Any]) -> dict[str, str]:
 )
 def test_the_form_says_the_stored_key_is_removed_when_the_destination_changes(changes: dict[str, Any]) -> None:
     shown = key_field_texts(True, changes)
-    assert shown == {"note": "block", "sent": "none", "placeholder": "Enter a key for the new provider or endpoint"}
+    assert shown == {
+        "note": "block",
+        "sent": "none",
+        "sentText": SENT_LINE,
+        "placeholder": "Enter a key for the new provider or endpoint",
+    }
+
+
+def test_the_form_says_the_key_is_kept_and_sent_when_nothing_changes_it() -> None:
+    shown = key_field_texts(True, {})
+    assert shown == {
+        "note": "none",
+        "sent": "",
+        "sentText": SENT_LINE,
+        "placeholder": "A key is stored. Leave this blank to keep it.",
+    }
 
 
 @pytest.mark.parametrize(
     "changes",
-    [{}, {"provider": "groq", "providerPicked": True, "apiKey": "sk-new"}, {"clearKey": True, "apiKey": "sk-new"}],
+    [
+        {"apiKey": "sk-new"},
+        {"provider": "groq", "providerPicked": True, "apiKey": "sk-new"},
+        {"clearKey": True, "apiKey": "sk-new"},
+    ],
 )
-def test_the_form_keeps_saying_the_key_is_kept_when_nothing_drops_it(changes: dict[str, Any]) -> None:
+def test_the_form_says_a_typed_key_replaces_the_stored_one(changes: dict[str, Any]) -> None:
+    # With the remove box ticked as well, the typed key still wins: the save replaces the key, it does not only remove it.
     shown = key_field_texts(True, changes)
-    assert shown == {"note": "none", "sent": "", "placeholder": "A key is stored. Leave this blank to keep it."}
+    assert shown["note"] == "none"
+    assert shown["sent"] == ""
+    assert shown["sentText"] == REPLACE_LINE
 
 
 def test_the_form_says_nothing_about_a_key_when_none_is_stored() -> None:
@@ -402,7 +429,12 @@ def test_a_document_applied_by_an_upload_resets_the_count_a_cursor_update_asks_f
 def test_the_form_follows_the_remove_checkbox(changes: dict[str, Any]) -> None:
     # The checkbox explains itself, so no note, but the field and the line above it stop saying the key is kept or sent.
     shown = key_field_texts(True, changes)
-    assert shown == {"note": "none", "sent": "none", "placeholder": "The stored key will be removed"}
+    assert shown == {
+        "note": "none",
+        "sent": "none",
+        "sentText": SENT_LINE,
+        "placeholder": "The stored key will be removed",
+    }
 
 
 def test_a_document_reply_keeps_a_cursor_the_server_reported_while_it_was_on_its_way() -> None:

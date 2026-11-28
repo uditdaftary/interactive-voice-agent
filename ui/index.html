@@ -462,7 +462,7 @@
         <label class="field-label">API Key (Optional for Local Ollama)</label>
         <input type="password" id="cfg-api-key" class="field-input" placeholder="Enter remote API key or leave blank for local Ollama" oninput="updateKeyNote()">
         <div id="cfg-key-stored" style="display:none; flex-direction:column; gap:4px; font-size:12.5px;">
-          <span class="faint" id="cfg-key-sent">A key is stored. It is sent to the endpoint above.</span>
+          <span class="faint" id="cfg-key-sent"></span>
           <span id="cfg-key-note" style="display:none; color:var(--high);">The stored key will be removed because the provider or endpoint changed.</span>
           <label style="display:flex; align-items:center; gap:8px;">
             <input type="checkbox" id="cfg-clear-key" onchange="updateKeyNote()">
@@ -2432,9 +2432,9 @@
     };
   }
 
-  // Says so in the form when saving would remove the stored key: because removal was asked for, or because the provider
-  // or endpoint changed and no key was typed. What the key field and the line above it say follow, so none of the
-  // three claims the key is kept or sent while another says it is removed.
+  // Says so in the form what saving does to the stored key: removes it (asked for, or the provider or endpoint changed
+  // and no key was typed), replaces it (a key was typed), or keeps it. What the key field and the line above it say
+  // follow, so none of the three claims the key is kept or sent while another says otherwise.
   function updateKeyNote() {
     const note = document.getElementById('cfg-key-note');
     if (!note || !loadedConfig) return;
@@ -2443,7 +2443,11 @@
       && (form.clearKey || destinationChanged(form, loadedConfig));
     // The checkbox is its own explanation; the note is for a removal the user did not ask for.
     note.style.display = removing && !form.clearKey ? 'block' : 'none';
-    document.getElementById('cfg-key-sent').style.display = removing ? 'none' : '';
+    const sentLine = document.getElementById('cfg-key-sent');
+    sentLine.style.display = removing ? 'none' : '';
+    sentLine.textContent = loadedConfig.hasKey && form.provider !== 'none' && form.apiKey
+      ? 'The key you typed will replace the stored key.'
+      : 'A key is stored. It is sent to the endpoint above.';
     let placeholder = 'Enter remote API key or leave blank for local Ollama';
     if (loadedConfig.hasKey) {
       if (!removing) placeholder = 'A key is stored. Leave this blank to keep it.';
