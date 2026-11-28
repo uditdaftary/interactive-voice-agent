@@ -8,6 +8,18 @@
   <link rel="preload" href="fonts/archivo-latin-wdth-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="fonts/martian-mono-latin-wdth-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="app.css">
+  <style>
+    /* What the server reports about the model, the voice, speech recognition and the listening tab. */
+    .status-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+    .status-row:empty { display: none; }
+    .status-chip { border: 1px solid var(--hair-2); border-radius: 0; padding: 2px 8px; font-size: 12.5px; line-height: 1.5; color: var(--ink); }
+    .status-chip.warn { border-color: var(--high); color: var(--high); }
+    .status-chip.bad { border-color: var(--critical); color: var(--critical-ink); }
+    .status-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--critical); color: var(--critical-ink); padding: 6px 10px; margin-bottom: 12px; font-size: 13.5px; }
+    .status-dismiss { appearance: none; background: transparent; border: 1px solid var(--hair-2); border-radius: 0; color: var(--ink); min-height: 32px; padding: 0 12px; cursor: pointer; flex: none; }
+    .status-dismiss:hover { background: var(--raised); }
+    .audio-unlock-banner { font-family: var(--sans); font-size: 14px; font-weight: 500; }
+  </style>
 </head>
 <body>
 
@@ -36,10 +48,7 @@
     <div class="header-telemetry">
       <div class="item">
         <span class="faint">WS LINK:</span>
-        <span class="state-pill offline" id="ws-status-pill"><i></i>OFFLINE SIMULATION</span>
-      </div>
-      <div class="item" id="audio-elsewhere" style="display:none;">
-        <span>Audio is playing in another tab</span>
+        <span class="state-pill offline" id="ws-status-pill"><i></i>Connecting</span>
       </div>
       <div class="item">
         <span class="faint">INPUT:</span>
@@ -101,10 +110,16 @@
     </div>
   </header>
 
+  <div class="status-row" id="status-row" role="status" aria-label="Server status"></div>
+  <div class="status-error" id="status-error" role="alert" hidden>
+    <span id="status-error-text"></span>
+    <button type="button" class="status-dismiss" onclick="dismissStatusError()" aria-label="Dismiss this message">Dismiss</button>
+  </div>
+
   <!-- Audio Autoplay Unlock Alert Banner -->
   <div id="audio-unlock-banner" class="audio-unlock-banner" onclick="unlockAudioPlayback()">
-    <span>🎧 NEURAL AUDIOBOOK READY — CLICK ANYWHERE TO ENABLE SOUND [▶]</span>
-    <span style="font-weight:normal; opacity:0.8;">DISMISS ✕</span>
+    <span>Click anywhere to turn on sound.</span>
+    <span style="font-weight:normal; opacity:0.8;">Dismiss</span>
   </div>
 
   <!-- ========================================== -->
@@ -122,11 +137,11 @@
         <div class="panel-head">
           <div style="display:flex; align-items:center; gap:10px;">
             <h2>Continuous Narrative Stream &amp; Cursor</h2>
-            <span class="mono faint" style="font-size:11px; margin-left:8px;" id="header-doc-title">[BOOK: Night City Run]</span>
+            <span class="mono faint" style="font-size:11px; margin-left:8px;" id="header-doc-title">[No document]</span>
           </div>
           <div style="display:flex; align-items:center; gap:12px;">
             <div class="mono faint" style="font-size:12px;">
-              SENTENCE: <span class="num text-white" id="counter-sentence">1 / 8</span>
+              SENTENCE: <span class="num text-white" id="counter-sentence">0 / 0</span>
             </div>
             <button class="btn" style="min-height:30px; padding:0 8px; font-size:11px;" onclick="openDocumentUploadModal()">+ INGEST</button>
           </div>
@@ -186,9 +201,9 @@
             </button>
 
             <button type="button" class="btn" id="btn-handsfree-toggle" onclick="toggleHandsFree()" title="Auto-detect voice energy in browser mic">
-              <span style="font-size:11.5px;">⚡ AUTO-VOICE VAD: ON</span>
+              <span id="handsfree-label" style="font-size:11.5px;">⚡ AUTO-VOICE VAD: ON</span>
               <span class="tab">
-                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="4" fill="var(--high)"/><circle cx="8" cy="8" r="6"/></svg>
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle id="handsfree-dot" cx="8" cy="8" r="4" fill="var(--high)"/><circle cx="8" cy="8" r="6"/></svg>
               </span>
             </button>
           </div>
@@ -213,13 +228,11 @@
           <!-- Q&A Context Envelope (Appears upon Barge-In) -->
           <div id="dialogue-envelope" style="display:none;" class="envelope-box">
             <div style="display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--hair-2); padding-bottom:6px;">
-              <span class="state-pill listening" id="env-status-pill"><i></i>PROMPT ENVELOPE ACTIVATED</span>
-              <span class="mono faint" id="env-character-tag">DAVID MARTINEZ // SANTO DOMINGO</span>
+              <span class="state-pill listening" id="env-status-pill"><i></i></span>
             </div>
-            <div style="font-size:13.5px;"><span class="faint mono">Context:</span> <span class="mono text-white" id="env-local-ctx">"David Martinez stood at the edge of the catwalk..."</span></div>
-            <div style="font-size:13.5px;"><span class="faint mono">Query:</span> <span class="mono" style="color:var(--high);">"Wait, whose scav vehicle is idling down in the alley?"</span></div>
-            <div style="font-size:13.5px;"><span class="faint mono">Reply:</span> <span class="mono text-white">"The scav vehicle is an armored recon van belonging to the Maelstrom gang. Stay clear of their optical scanners."</span></div>
-            <div class="faint mono" style="font-size:11.5px; margin-top:2px;">↳ Resumption Cue: <em style="color:var(--ink);">"Returning to our story..."</em> (+4 words pre-roll)</div>
+            <div style="font-size:13.5px;"><span class="faint mono">Context:</span> <span class="mono text-white" id="env-local-ctx"></span></div>
+            <div style="font-size:13.5px;"><span class="faint mono">Query:</span> <span class="mono" style="color:var(--high);" id="env-query"></span></div>
+            <div style="font-size:13.5px;"><span class="faint mono">Reply:</span> <span class="mono text-white" id="env-reply"></span></div>
           </div>
 
           <!-- Mini Disruption Waveform Canvas -->
@@ -263,7 +276,7 @@
             </div>
             
             <div class="visualizer-overlay-right num" id="db-level-readout">
-              -14.2 dB
+              not measured
             </div>
           </div>
 
@@ -341,7 +354,7 @@
     </div>
     <div class="diag-cell">
       <span class="label">ACTIVE LLM ENGINE</span>
-      <span class="val num">Qwen 3.5 4B GGUF</span>
+      <span class="val num" id="diag-llm-engine">not reported</span>
     </div>
   </section>
 
@@ -349,11 +362,6 @@
   <!-- FOOTER STATUS                              -->
   <!-- ========================================== -->
   <footer class="footer-bar">
-    <div>
-      <span>OFFLINE RUNTIME: <strong style="color:var(--ink);">100% ZERO-CLOUD LOCAL EXECUTION</strong></span>
-      <span style="margin: 0 8px;">|</span>
-      <span>SPECS: 16GB RAM / 4-8GB VRAM</span>
-    </div>
     <div>
       <span>DESIGN LANGUAGE: <strong style="color:var(--ink);">KGCR CATALOG SHEET</strong> (0px Square / Archivo / Martian Mono)</span>
     </div>
@@ -431,28 +439,36 @@
       <div class="field-group">
         <label class="field-label">LLM Provider</label>
         <select id="cfg-provider" class="field-select" onchange="onProviderChange(this.value)">
-          <option value="builtin" selected>Built-in Agent (Zero Setup - 100% Native Python)</option>
-          <option value="ollama">Ollama (Local Daemon - http://localhost:11434)</option>
-          <option value="openai">OpenAI (api.openai.com)</option>
-          <option value="groq">Groq High-Speed (api.groq.com/openai/v1)</option>
-          <option value="together">Together AI / DeepSeek</option>
-          <option value="custom">Custom OpenAI-Compatible Endpoint</option>
+          <option value="none">No model (reads the closest passage)</option>
+          <option value="ollama" selected>Ollama (local)</option>
+          <option value="openai">OpenAI</option>
+          <option value="groq">Groq</option>
+          <option value="together">Together AI</option>
+          <option value="custom">Custom OpenAI-compatible endpoint</option>
         </select>
       </div>
 
       <div class="field-group">
         <label class="field-label">Endpoint URL</label>
-        <input type="text" id="cfg-endpoint" class="field-input" value="http://localhost:11434">
+        <input type="text" id="cfg-endpoint" class="field-input" value="http://localhost:11434/v1" oninput="updateKeyNote()">
       </div>
 
       <div class="field-group">
         <label class="field-label">Model Identifier</label>
-        <input type="text" id="cfg-model" class="field-input" value="llama3.2" placeholder="e.g. llama3.2, qwen2.5:7b, mistral, gpt-4o-mini">
+        <input type="text" id="cfg-model" class="field-input" value="voice-agent" placeholder="e.g. voice-agent, qwen2.5:7b, gpt-4o-mini">
       </div>
 
       <div class="field-group">
         <label class="field-label">API Key (Optional for Local Ollama)</label>
-        <input type="password" id="cfg-api-key" class="field-input" placeholder="Enter remote API key or leave blank for local Ollama">
+        <input type="password" id="cfg-api-key" class="field-input" placeholder="Enter remote API key or leave blank for local Ollama" oninput="updateKeyNote()">
+        <div id="cfg-key-stored" style="display:none; flex-direction:column; gap:4px; font-size:12.5px;">
+          <span class="faint" id="cfg-key-sent">A key is stored. It is sent to the endpoint above.</span>
+          <span id="cfg-key-note" style="display:none; color:var(--high);">The stored key will be removed because the provider or endpoint changed.</span>
+          <label style="display:flex; align-items:center; gap:8px;">
+            <input type="checkbox" id="cfg-clear-key" onchange="updateKeyNote()">
+            <span>Remove the stored key when saving</span>
+          </label>
+        </div>
       </div>
 
       <!-- Live Web Search Toggle -->
@@ -466,7 +482,7 @@
         </div>
       </div>
 
-      <div id="model-config-status" class="mono" style="font-size:12.5px; color:var(--high); display:none;"></div>
+      <div id="model-config-status" class="mono" role="alert" style="font-size:12.5px; color:var(--high); display:none;"></div>
     </div>
     <div class="modal-foot">
       <button class="btn" onclick="testModelConfig()">TEST ENDPOINT</button>
@@ -484,32 +500,21 @@
 <!-- JAVASCRIPT: LOGIC & WAVEFORM ENGINES       -->
 <!-- ========================================== -->
 <script>
+  // The page is served by the app, so every request goes to the origin it came from.
   function getApiBaseUrl() {
-    if (window.location.protocol.startsWith('http') && window.location.port === '8080') {
-      return 'http://localhost:8000';
-    }
     return '';
   }
 
-  // --- STORY DATASET ---
-  const STORY_PARAGRAPHS = [
-    "Chapter 1: Arrival in the Megabuilding.",
-    "The rain drummed ceaselessly against the reinforced plasteel windows of Watson.",
-    "Neon reflections in deep crimson and cyan bled across the flooded pavement below.",
-    "David Martinez stood at the edge of the catwalk, adjusting his yellow jacket against the cold gust.",
-    "Somewhere down in the alleyway, a heavy scav combat vehicle idled with a guttural diesel purr.",
-    "He knew the fixer wouldn't wait past midnight, and the cyberware chip in his pocket was growing warm.",
-    "Taking a steady breath, he stepped toward the emergency descent ladder."
-  ];
-
-  let currentSentenceIdx = 3;
+  // --- THE DOCUMENT ---
+  // The sentences of the document the server holds, as it last reported them. Empty until it reports one: the page has
+  // no text of its own to read.
+  let STORY_PARAGRAPHS = [];
+  let currentSentenceIdx = 0;
   let currentWordIdx = 0;
   let isPlaying = true;
   let currentCadence = 1.0;
   let currentState = 'NARRATING'; // NARRATING, PAUSED, LISTENING, REPLYING (BARGE_IN is a client-side flash only)
-  let narrativeTimer = null;
   let wordsArray = [];
-  let isLiveMode = false;
 
   // --- RESIDENT CHARACTER VOICES ---
   const VOICES = [
@@ -572,6 +577,15 @@
 
   let activeVoice = VOICES[2]; // Default to David Martinez
 
+  // An element with fixed styling and text set as text, never parsed as markup.
+  function textElement(tag, className, text, style) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (style) node.style.cssText = style;
+    node.textContent = text;
+    return node;
+  }
+
   function renderVoiceRoster() {
     const tbody = document.getElementById('voice-roster-body');
     if (!tbody) return;
@@ -582,28 +596,30 @@
       if (v.active) tr.className = 'selected';
       tr.onclick = () => selectVoice(v.id);
 
-      tr.innerHTML = `
-        <td style="padding-left:18px;">
-          <span style="display:block; width:8px; height:8px; background:${v.active ? 'var(--high)' : 'transparent'}; border:${v.active ? 'none' : '1px solid var(--ink-3)'};"></span>
-        </td>
-        <td>
-          <div style="display:flex; align-items:center; gap:8px;">
-            <strong style="font-weight:600; color:${v.active ? 'var(--high)' : 'var(--ink)'};">${v.name}</strong>
-            <span class="persona-tag">${v.role}</span>
-          </div>
-          <div class="persona-quote">"${v.quote}"</div>
-        </td>
-        <td class="mono mute">${v.timbre}</td>
-        <td class="mono num">${v.sr}</td>
-        <td class="mono num" style="text-align:right; padding-right:18px; color:${v.active ? 'var(--high)' : 'var(--ink-2)'};">${v.wpm}</td>
-      `;
+      // Every cell is built with textContent: a voice name or a quote is data, and must show as written.
+      const marker = textElement('td', '', '', 'padding-left:18px;');
+      marker.append(textElement('span', '', '',
+        `display:block; width:8px; height:8px; background:${v.active ? 'var(--high)' : 'transparent'}; border:${v.active ? 'none' : '1px solid var(--ink-3)'};`));
+
+      const persona = document.createElement('td');
+      const heading = textElement('div', '', '', 'display:flex; align-items:center; gap:8px;');
+      heading.append(
+        textElement('strong', '', v.name, `font-weight:600; color:${v.active ? 'var(--high)' : 'var(--ink)'};`),
+        textElement('span', 'persona-tag', v.role));
+      persona.append(heading, textElement('div', 'persona-quote', `"${v.quote}"`));
+
+      tr.append(
+        marker,
+        persona,
+        textElement('td', 'mono mute', v.timbre),
+        textElement('td', 'mono num', v.sr),
+        textElement('td', 'mono num', v.wpm,
+          `text-align:right; padding-right:18px; color:${v.active ? 'var(--high)' : 'var(--ink-2)'};`));
       tbody.appendChild(tr);
     });
 
     const activeEl = document.getElementById('header-active-voice');
     if (activeEl) activeEl.innerText = activeVoice.name;
-    const envCharTag = document.getElementById('env-character-tag');
-    if (envCharTag) envCharTag.innerText = `${activeVoice.name.toUpperCase()} // ${activeVoice.role.toUpperCase()}`;
   }
 
   function selectVoice(id, sendWs = true) {
@@ -649,6 +665,12 @@
     if (!container) return;
     container.innerHTML = '';
     wordsArray = [];
+
+    if (STORY_PARAGRAPHS.length === 0) {
+      container.appendChild(textElement('p', 'narrative-p', 'No document loaded', 'color:var(--ink-3);'));
+      updateWordHighlight();
+      return;
+    }
 
     STORY_PARAGRAPHS.forEach((p, sIdx) => {
       const pEl = document.createElement('p');
@@ -698,7 +720,7 @@
     });
 
     const counter = document.getElementById('counter-sentence');
-    if (counter) counter.innerText = `${currentSentenceIdx + 1} / ${STORY_PARAGRAPHS.length}`;
+    if (counter) counter.innerText = STORY_PARAGRAPHS.length ? `${currentSentenceIdx + 1} / ${STORY_PARAGRAPHS.length}` : '0 / 0';
 
     const currentPEl = document.querySelector(`.narrative-box p[data-sidx="${currentSentenceIdx}"]`);
     if (currentPEl) {
@@ -706,29 +728,12 @@
     }
   }
 
-  function clearNarrativeTimer() {
-    if (narrativeTimer !== null) {
-      clearTimeout(narrativeTimer);
-      narrativeTimer = null;
-    }
-  }
-
-  function advanceWordCursor() {
-    clearNarrativeTimer();
-    if (isLiveMode || !isPlaying || currentState !== 'NARRATING') return;
-
-    const currentParagraphWords = STORY_PARAGRAPHS[currentSentenceIdx].split(/\s+/);
-    updateWordHighlight();
-
-    currentWordIdx++;
-    if (currentWordIdx >= currentParagraphWords.length) {
-      currentWordIdx = 0;
-      currentSentenceIdx++;
-      if (currentSentenceIdx >= STORY_PARAGRAPHS.length) currentSentenceIdx = 0;
-    }
-
-    const delay = 220 / currentCadence;
-    narrativeTimer = setTimeout(advanceWordCursor, delay);
+  // Controls that need the server do nothing while it is away: the cursor and the state are the server's, and showing
+  // a change it has not confirmed would be a guess. They say so, and the message goes when the server is back.
+  function requireConnection() {
+    if (wsClient.isConnected) return true;
+    showStatusError('Not connected to the server. Nothing was sent.', { clearOnConnect: true });
+    return false;
   }
 
   let lastCadenceTimestamp = 0;
@@ -737,7 +742,6 @@
     if (now - lastCadenceTimestamp < 50) return;
     lastCadenceTimestamp = now;
 
-    clearNarrativeTimer();
     currentCadence = cadence;
     document.querySelectorAll('#cadence-btn-group button').forEach(b => b.classList.remove('active'));
     if (btnEl) {
@@ -751,60 +755,38 @@
     if (sendWs && wsClient && wsClient.isConnected) {
       wsClient.send({ type: 'set_cadence', cadence: cadence });
     }
-
-    if (!isLiveMode && isPlaying && currentState === 'NARRATING') {
-      advanceWordCursor();
-    }
   }
 
   function togglePlayPause() {
+    if (!requireConnection()) return;
     isPlaying = !isPlaying;
     const btnLabel = document.getElementById('btn-playback-label');
     if (btnLabel) {
       btnLabel.innerText = isPlaying ? 'PAUSE NARRATION' : 'RESUME NARRATION';
     }
-
-    if (isPlaying) {
-      if (!isLiveMode) advanceWordCursor();
-    } else {
-      clearNarrativeTimer();
-    }
-
-    if (wsClient && wsClient.isConnected) {
-      wsClient.send({ type: 'playback_control', action: isPlaying ? 'resume' : 'pause' });
-    }
+    wsClient.send({ type: 'playback_control', action: isPlaying ? 'resume' : 'pause' });
   }
 
   function nextSentence() {
-    clearNarrativeTimer();
+    if (!requireConnection() || STORY_PARAGRAPHS.length === 0) return;
     // Queued clips belong to the sentence being left. Not while an answer is in progress: it is not part of the
     // narration and must finish.
-    if (currentState === 'NARRATING' && wsClient) wsClient.stopAllAudio();
+    if (currentState === 'NARRATING') wsClient.stopAllAudio();
     currentSentenceIdx = (currentSentenceIdx + 1) % STORY_PARAGRAPHS.length;
     currentWordIdx = 0;
     renderNarrativeStream();
-    if (!isLiveMode && isPlaying && currentState === 'NARRATING') {
-      advanceWordCursor();
-    }
-    if (wsClient && wsClient.isConnected) {
-      wsClient.send({ type: 'playback_control', action: 'next' });
-    }
+    wsClient.send({ type: 'playback_control', action: 'next' });
   }
 
   function prevSentence() {
-    clearNarrativeTimer();
+    if (!requireConnection() || STORY_PARAGRAPHS.length === 0) return;
     // Queued clips belong to the sentence being left. Not while an answer is in progress: it is not part of the
     // narration and must finish.
-    if (currentState === 'NARRATING' && wsClient) wsClient.stopAllAudio();
+    if (currentState === 'NARRATING') wsClient.stopAllAudio();
     currentSentenceIdx = (currentSentenceIdx - 1 + STORY_PARAGRAPHS.length) % STORY_PARAGRAPHS.length;
     currentWordIdx = 0;
     renderNarrativeStream();
-    if (!isLiveMode && isPlaying && currentState === 'NARRATING') {
-      advanceWordCursor();
-    }
-    if (wsClient && wsClient.isConnected) {
-      wsClient.send({ type: 'playback_control', action: 'prev' });
-    }
+    wsClient.send({ type: 'playback_control', action: 'prev' });
   }
 
   // --- DIRECT MICROPHONE BARGE-IN & SPEECH RECOGNITION ---
@@ -832,29 +814,59 @@
 
   function toggleHandsFree() {
     handsFreeDetectionEnabled = !handsFreeDetectionEnabled;
-    const btn = document.getElementById('btn-handsfree-toggle');
-    if (btn) {
-      btn.innerHTML = handsFreeDetectionEnabled 
-        ? `<span>⚡ AUTO-VOICE VAD: ON</span><span class="tab"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="4" fill="var(--high)"/><circle cx="8" cy="8" r="6"/></svg></span>`
-        : `<span>⚡ AUTO-VOICE VAD: OFF</span><span class="tab"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6"/></svg></span>`;
-    }
+    const label = document.getElementById('handsfree-label');
+    if (label) label.textContent = handsFreeDetectionEnabled ? '⚡ AUTO-VOICE VAD: ON' : '⚡ AUTO-VOICE VAD: OFF';
+    const dot = document.getElementById('handsfree-dot');
+    if (dot) dot.style.display = handsFreeDetectionEnabled ? '' : 'none';
+  }
+
+  // The browser's own speech recognition is an online service: Chrome sends the audio to a third party. It runs only
+  // when the server's latest state_sync says web_speech_preview is true; a missing field, an older server and a lost
+  // connection all mean false.
+  let webSpeechPreview = false;
+  const SPEECH_PREVIEW_LABEL = 'Preview (uses an online service): ';
+
+  // The question box is the user's, with two exceptions: the page writes into it what the preview and the server heard.
+  // `pageWrittenText` is the last of that, so the box is cleared at the end of a turn only while it still holds exactly
+  // that text, and anything typed there is left alone. `previewTranscript` is what the preview heard, and the only text
+  // that goes to the server as a fallback: typed text never does.
+  let pageWrittenText = '';
+  let previewTranscript = '';
+
+  function putInQueryBox(text) {
+    const input = document.getElementById('interruption-query-input');
+    if (!input || !text) return;
+    input.value = text;
+    pageWrittenText = text;
+  }
+
+  // What the box should hold once a turn has ended.
+  function boxAfterTurn(boxValue, pageText) {
+    return (pageText && boxValue === pageText) ? '' : boxValue;
+  }
+
+  // The voice_end message: the preview transcript rides along only when the preview was allowed and heard something.
+  function voiceEndMessage(previewAllowed, transcript) {
+    const message = { type: 'voice_end' };
+    if (previewAllowed && transcript) message.fallback_query = transcript;
+    return message;
+  }
+
+  function setWebSpeechPreview(allowed) {
+    webSpeechPreview = allowed === true;
+    if (!webSpeechPreview) stopSpeechPreview();
   }
 
   function initSpeechRecognition() {
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRec) {
-      console.warn("Web Speech API not supported in this browser. Falling back to text prompt.");
+      console.warn("Web Speech API not supported in this browser, so there is no live preview.");
       return null;
     }
     const recognizer = new SpeechRec();
     recognizer.continuous = false;
     recognizer.interimResults = true;
     recognizer.lang = 'en-US';
-
-    recognizer.onstart = () => {
-      isVoiceListening = true;
-      updateBargeInButtonUI(true);
-    };
 
     recognizer.onresult = (event) => {
       let finalTranscript = '';
@@ -867,29 +879,63 @@
         }
       }
       const fullTranscript = (finalTranscript + ' ' + interimTranscript).trim() || finalTranscript.trim() || interimTranscript.trim();
-      const input = document.getElementById('interruption-query-input');
-      if (input && fullTranscript) input.value = fullTranscript;
+      if (fullTranscript) {
+        previewTranscript = fullTranscript;
+        putInQueryBox(fullTranscript);
+      }
 
       const ticker = document.getElementById('speech-ticker');
       if (ticker) {
         ticker.style.display = 'flex';
         const textEl = document.getElementById('speech-ticker-text');
-        if (textEl) textEl.innerText = fullTranscript || 'Listening to your voice...';
+        if (textEl) textEl.textContent = fullTranscript ? SPEECH_PREVIEW_LABEL + fullTranscript : 'Listening to your voice...';
       }
     };
 
     recognizer.onerror = (event) => {
       console.warn("Speech recognition notice:", event.error);
-      // Non-fatal preview notice; server-side STT continues recording via WebSocket PCM stream
+      // Non-fatal preview notice; the server keeps recording the PCM stream
     };
 
     recognizer.onend = () => {
-      // Do not kill voice barge-in session if browser Web Speech API times out;
-      // server-side Faster-Whisper continues buffering 16kHz PCM audio
-      if (isVoiceListening) {
-        try { recognizer.start(); } catch(e) {}
+      // The browser ends a recognition after a pause. The turn goes on, so the preview does too, if it is still allowed.
+      if (isVoiceListening && webSpeechPreview) {
+        try { recognizer.start(); } catch (e) { console.warn("Speech preview did not restart:", e); }
       }
     };
+
+    return recognizer;
+  }
+
+  function startSpeechPreview() {
+    if (!webSpeechPreview) return;
+    if (!speechRecognizer) speechRecognizer = initSpeechRecognition();
+    if (!speechRecognizer) return;
+    try {
+      speechRecognizer.start();
+    } catch (e) {
+      console.warn("Speech preview did not start, trying once more:", e);
+      try { speechRecognizer.abort(); } catch (err) { console.warn("Speech preview did not stop:", err); }
+      setTimeout(() => {
+        if (!webSpeechPreview || !isVoiceListening) return;
+        try { speechRecognizer.start(); } catch (err) { console.warn("Speech preview did not start:", err); }
+      }, 80);
+    }
+  }
+
+  function stopSpeechPreview() {
+    if (!speechRecognizer) return;
+    try { speechRecognizer.abort(); } catch (e) { console.warn("Speech preview did not stop:", e); }
+  }
+
+  // A turn that cannot go on, because the connection dropped: leave the listening state so the button does not stay stuck.
+  function abandonVoiceTurn() {
+    if (!isVoiceListening) return;
+    isVoiceListening = false;
+    stopSpeechPreview();
+    updateBargeInButtonUI(false);
+    const ticker = document.getElementById('speech-ticker');
+    if (ticker) ticker.style.display = 'none';
   }
 
   function updateBargeInButtonUI(listening) {
@@ -918,7 +964,9 @@
       return;
     }
 
+    if (!requireConnection()) return;
     isVoiceListening = true;
+    previewTranscript = '';
     updateBargeInButtonUI(true);
 
     unlockAudioPlayback();
@@ -947,27 +995,8 @@
       if (textEl) textEl.innerText = '🔴 RECORDING: Speak your question, then click STOP...';
     }
 
-    // 4. Initialize and trigger Speech Recognition (optional browser preview)
-    if (!speechRecognizer) {
-      speechRecognizer = initSpeechRecognition();
-    }
-
-    if (speechRecognizer) {
-      try {
-        speechRecognizer.start();
-      } catch (e) {
-        try { speechRecognizer.stop(); } catch(err) {}
-        setTimeout(() => {
-          try { speechRecognizer.start(); } catch(err) {}
-        }, 80);
-      }
-    } else {
-      const input = document.getElementById('interruption-query-input');
-      if (input) {
-        input.focus();
-        input.placeholder = "Speak aloud or type your question here...";
-      }
-    }
+    // 4. The browser's live preview, only when the server allows it
+    startSpeechPreview();
   }
 
   function stopDirectVoiceBargeIn() {
@@ -975,26 +1004,19 @@
     isVoiceListening = false;
     updateBargeInButtonUI(false);
 
-    if (speechRecognizer) {
-      try { speechRecognizer.stop(); } catch(e) {}
-    }
-
-    const input = document.getElementById('interruption-query-input');
-    const existingVal = input ? input.value.trim() : '';
+    stopSpeechPreview();
 
     const tickerText = document.getElementById('speech-ticker-text');
     if (tickerText) {
-      tickerText.innerText = '⚡ Transcribing voice via Faster-Whisper...';
+      tickerText.innerText = '⚡ Transcribing...';
     }
 
-    // Send voice_end over WebSocket to flush server accumulator and transcribe immediately
+    // Send voice_end over WebSocket to flush server accumulator and transcribe immediately. Only what the preview heard
+    // goes along as a fallback, never the text in the box.
     if (wsClient && wsClient.isConnected) {
-      wsClient.send({ type: 'voice_end', fallback_query: existingVal });
-    } else {
-      if (existingVal.length > 0) {
-        submitInterruptionQuery(existingVal);
-      }
+      wsClient.send(voiceEndMessage(webSpeechPreview, previewTranscript));
     }
+    previewTranscript = '';
   }
 
   // --- PRE-ROLL RESUMPTION CUES ---
@@ -1011,114 +1033,64 @@
 
   // --- BARGE-IN INTERRUPTION PROTOCOL ---
   function triggerBargeIn() {
-    if (wsClient && wsClient.isConnected) {
-      wsClient.send({ type: 'barge_in_trigger' });
-    }
+    if (!requireConnection()) return;
+    wsClient.send({ type: 'barge_in_trigger' });
 
-    clearTimeout(narrativeTimer);
-    narrativeTimer = null;
     currentState = 'BARGE_IN';
     updateStateUI();
 
-    const t0 = performance.now();
-    const measuredLatency = ((performance.now() - t0) + 0.04).toFixed(2);
-    document.getElementById('header-latency').innerText = `${measuredLatency} ms`;
-    document.getElementById('diag-latency').innerText = `${measuredLatency} ms`;
-
+    // The flush time comes from the server's barge_in message; until it arrives the tag carries no number.
     const flashTag = document.getElementById('bargein-flash-tag');
     if (flashTag) {
-      flashTag.innerText = `FLUSH: ${measuredLatency} ms`;
+      flashTag.innerText = 'FLUSH';
       flashTag.style.display = 'block';
     }
 
-    // In live mode with active WebSocket, let server drive LISTENING, REPLYING, and NARRATING states
-    if (wsClient && wsClient.isConnected) {
-      setTimeout(() => {
-        if (flashTag) flashTag.style.display = 'none';
-        if (currentState === 'BARGE_IN') {
-          currentState = 'LISTENING';
-          updateStateUI();
-        }
-      }, 300);
-      return;
-    }
-
-    // Offline / Local Simulation Mode: Step 2: Transition to Listening
+    // The server drives LISTENING, REPLYING and NARRATING from here.
     setTimeout(() => {
-      currentState = 'LISTENING';
-      updateStateUI();
-
-      const envelope = document.getElementById('dialogue-envelope');
-      if (envelope) {
-        envelope.style.display = 'grid';
-        const ctxEl = document.getElementById('env-local-ctx');
-        if (ctxEl) ctxEl.innerText = `"${STORY_PARAGRAPHS[currentSentenceIdx]}"`;
-      }
-
-      // Step 3: Transition to Replying
-      setTimeout(() => {
-        currentState = 'REPLYING';
+      if (flashTag) flashTag.style.display = 'none';
+      if (currentState === 'BARGE_IN') {
+        currentState = 'LISTENING';
         updateStateUI();
-
-        // Step 4: Resume story with 4-word pre-roll protocol
-        setTimeout(() => {
-          highlightPreRollWords(4);
-          currentState = 'NARRATING';
-          updateStateUI();
-          if (flashTag) flashTag.style.display = 'none';
-
-          setTimeout(() => {
-            document.querySelectorAll('.preroll').forEach(e => e.classList.remove('preroll'));
-            if (envelope) envelope.style.display = 'none';
-            if (!isLiveMode && isPlaying) {
-              advanceWordCursor();
-            }
-          }, 1400);
-
-        }, 2200);
-
-      }, 1800);
-
-    }, 400);
+      }
+    }, 300);
   }
+
+  // A state marker: the dot, then the text, which is set as text and never parsed as markup.
+  function setPill(pill, className, text) {
+    pill.className = className;
+    pill.replaceChildren(document.createElement('i'), text);
+  }
+
+  // The class of the marker and the word the barge-in panel shows, for each state the server reports.
+  const STATE_PILLS = new Map([
+    ['NARRATING', ['narrating', 'ARMED']],
+    ['BARGE_IN', ['bargein', 'FLUSHED']],
+    ['LISTENING', ['listening', 'LISTENING']],
+    ['REPLYING', ['replying', 'REPLYING']],
+    ['PAUSED', ['paused', 'PAUSED']],
+  ]);
 
   function updateStateUI() {
     const headPill = document.getElementById('header-state-pill');
     const bargePill = document.getElementById('bargein-status-pill');
+    const known = STATE_PILLS.get(currentState);
 
-    if (headPill) headPill.innerHTML = `<i></i>${currentState}`;
+    // A state this page does not know is shown as it came, with the marker it already had.
+    if (headPill) setPill(headPill, known ? `state-pill ${known[0]}` : headPill.className, String(currentState));
+    if (bargePill && known) setPill(bargePill, `state-pill ${known[0]}`, known[1]);
+  }
 
-    if (currentState === 'NARRATING') {
-      if (headPill) headPill.className = 'state-pill narrating';
-      if (bargePill) {
-        bargePill.className = 'state-pill narrating';
-        bargePill.innerHTML = `<i></i>ARMED`;
-      }
-    } else if (currentState === 'BARGE_IN') {
-      if (headPill) headPill.className = 'state-pill bargein';
-      if (bargePill) {
-        bargePill.className = 'state-pill bargein';
-        bargePill.innerHTML = `<i></i>FLUSHED`;
-      }
-    } else if (currentState === 'LISTENING') {
-      if (headPill) headPill.className = 'state-pill listening';
-      if (bargePill) {
-        bargePill.className = 'state-pill listening';
-        bargePill.innerHTML = `<i></i>LISTENING`;
-      }
-    } else if (currentState === 'REPLYING') {
-      if (headPill) headPill.className = 'state-pill replying';
-      if (bargePill) {
-        bargePill.className = 'state-pill replying';
-        bargePill.innerHTML = `<i></i>REPLYING`;
-      }
-    } else if (currentState === 'PAUSED') {
-      if (headPill) headPill.className = 'state-pill paused';
-      if (bargePill) {
-        bargePill.className = 'state-pill paused';
-        bargePill.innerHTML = `<i></i>PAUSED`;
-      }
-    }
+  // The state the question panel shows, from the state a prompt_envelope carries. Any other state shows nothing.
+  const ENVELOPE_STATE_PILLS = new Map([
+    ['LISTENING', ['listening', 'Listening']],
+    ['REPLYING', ['replying', 'Replying']],
+  ]);
+
+  function showEnvelopeState(state) {
+    const pill = document.getElementById('env-status-pill');
+    const known = ENVELOPE_STATE_PILLS.get(state);
+    if (pill && known) setPill(pill, `state-pill ${known[0]}`, known[1]);
   }
 
   // The server sends null for a latency it did not measure, and that is shown as such, never as a number.
@@ -1129,30 +1101,116 @@
     return text;
   }
 
+  // --- SERVER STATUS: CHIPS AND THE ERROR LINE ---
+  // Each table maps a status the server sends to [text, tone]. A status that is missing or not listed shows nothing:
+  // an older server sends none of these, and a value this page does not know is not worth guessing at. Maps, not
+  // objects, because the key is text from the server.
+  const MODEL_STATUS_CHIPS = new Map([
+    ['ok', ['Model ready', '']],
+    ['offline', ['Model offline, reading passages', 'warn']],
+    ['auth', ['Model key rejected', 'bad']],
+    ['error', ['Model error', 'bad']],
+    ['interrupted', ['Answer cut short', 'warn']],
+    ['none', ['No model, reading passages', '']],
+  ]);
+  const SPEECH_STATUS_CHIPS = new Map([
+    ['loading', ['Loading speech recognition', 'warn']],
+    ['unavailable', ['Speech recognition unavailable', 'bad']],
+    ['rejected', ["Didn't catch that", 'warn']],
+  ]);
+  const FALLBACK_VOICE_PREFIX = 'fallback:';
+
+  function statusChips(sync) {
+    const chips = [];
+    if (!sync) return chips;
+    const model = MODEL_STATUS_CHIPS.get(sync.llm_status);
+    if (model) chips.push(model);
+    if (sync.tts_status === 'unavailable') {
+      chips.push(['No voice output', 'bad']);
+    } else if (typeof sync.tts_status === 'string' && sync.tts_status.startsWith(FALLBACK_VOICE_PREFIX)) {
+      const name = sync.tts_status.slice(FALLBACK_VOICE_PREFIX.length).trim();
+      chips.push([name ? `Voice fallback: ${name}` : 'Voice fallback', 'warn']);
+    }
+    const speech = SPEECH_STATUS_CHIPS.get(sync.stt_status);
+    if (speech) chips.push(speech);
+    if (sync.mic_owner === false) chips.push(['Audio is playing in another tab', 'warn']);
+    return chips;
+  }
+
+  // The failure being shown, if any. The server reports a failure while the session is in the failed state and moves it
+  // after, so the line must outlive that move. `arrivedIn` is the state the failure arrived in; the first state_sync
+  // with a different state is the move, and its state becomes `settledState`. A sync that only changes a status and
+  // keeps the state is neither. The line clears on a later state_sync that leaves `settledState`, or when dismissed.
+  let statusError = null;
+
+  function showStatusError(text, { clearOnConnect = false } = {}) {
+    statusError = { text: String(text).slice(0, 200), arrivedIn: currentState, settledState: null, clearOnConnect };
+    renderStatusError();
+  }
+
+  function dismissStatusError() {
+    statusError = null;
+    renderStatusError();
+  }
+
+  function renderStatusError() {
+    const box = document.getElementById('status-error');
+    const text = document.getElementById('status-error-text');
+    if (!box || !text) return;
+    text.textContent = statusError ? statusError.text : '';
+    box.hidden = !statusError;
+  }
+
+  function errorDetail(msg) {
+    return (typeof msg.detail === 'string' && msg.detail) ? msg.detail : 'unknown error';
+  }
+
+  function capitalized(text) {
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
+  // The provider the server says it is using, or that it has not said.
+  function providerLabel(sync) {
+    const provider = sync ? sync.llm_provider : null;
+    if (typeof provider !== 'string' || !provider) return 'not reported';
+    return provider === 'none' ? 'No model' : provider;
+  }
+
+  // Draws the chips from the latest state_sync (null when there is none: the server is away, so nothing is known), and
+  // clears the error line when a sync shows the session has moved on.
+  let renderedChips = '';
+  function renderStatus(sync) {
+    const engine = document.getElementById('diag-llm-engine');
+    if (engine) engine.textContent = providerLabel(sync);
+    const row = document.getElementById('status-row');
+    const chips = statusChips(sync);
+    // Redrawn only when it changed: the row is a live region, and a state_sync arrives for many reasons.
+    if (row && JSON.stringify(chips) !== renderedChips) {
+      renderedChips = JSON.stringify(chips);
+      row.replaceChildren(...chips.map(([text, tone]) => {
+        const chip = document.createElement('span');
+        chip.className = tone ? `status-chip ${tone}` : 'status-chip';
+        chip.textContent = text;
+        return chip;
+      }));
+    }
+    if (statusError && sync && typeof sync.state === 'string') {
+      if (statusError.settledState === null) {
+        if (sync.state !== statusError.arrivedIn) statusError.settledState = sync.state;
+      } else if (sync.state !== statusError.settledState) {
+        statusError = null;
+      }
+    }
+    renderStatusError();
+  }
+
   function updateWsStatusUI(connected) {
     const pill = document.getElementById('ws-status-pill');
     if (!pill) return;
     if (connected) {
-      pill.className = 'state-pill connected';
-      pill.innerHTML = '<i></i>WS: CONNECTED';
+      setPill(pill, 'state-pill connected', 'Connected');
     } else {
-      pill.className = 'state-pill offline';
-      pill.innerHTML = '<i></i>OFFLINE SIMULATION';
-    }
-  }
-
-  function startSimulationLoop() {
-    isLiveMode = false;
-    if (isPlaying && currentState === 'NARRATING' && !narrativeTimer) {
-      advanceWordCursor();
-    }
-  }
-
-  function stopSimulationLoop() {
-    isLiveMode = true;
-    if (narrativeTimer) {
-      clearTimeout(narrativeTimer);
-      narrativeTimer = null;
+      setPill(pill, 'state-pill offline', 'Disconnected, retrying');
     }
   }
 
@@ -1174,35 +1232,6 @@
         bars[i].style.background = 'var(--ink-3)';
       }
     }
-  }
-
-  function generateSimulatedFFTBins(time, state, voiceFreqMod) {
-    const bins = new Array(16);
-    if (state === 'NARRATING') {
-      for (let i = 0; i < 16; i++) {
-        const dist = Math.abs(i - 5.5);
-        const envelope = Math.exp(-0.15 * dist * dist);
-        const mod = Math.sin(time * 6 + i * 0.8) * 0.2 + Math.cos(time * 3 + i * voiceFreqMod) * 0.15;
-        bins[i] = Math.max(0.06, Math.min(1.0, envelope * 0.9 + mod));
-      }
-    } else if (state === 'BARGE_IN') {
-      for (let i = 0; i < 16; i++) {
-        bins[i] = Math.min(1.0, 0.4 + Math.random() * 0.6);
-      }
-    } else if (state === 'LISTENING') {
-      for (let i = 0; i < 16; i++) {
-        bins[i] = Math.max(0.04, 0.1 + Math.sin(time * 2 + i) * 0.08);
-      }
-    } else if (state === 'REPLYING') {
-      for (let i = 0; i < 16; i++) {
-        const dist = Math.abs(i - 4);
-        const envelope = Math.exp(-0.2 * dist * dist);
-        bins[i] = Math.max(0.06, Math.min(0.9, envelope * 0.8 + Math.sin(time * 5 + i) * 0.15));
-      }
-    } else {
-      for (let i = 0; i < 16; i++) bins[i] = 0.05;
-    }
-    return bins;
   }
 
   // --- DYNAMIC VOICE GRAPH CANVAS ENGINE ---
@@ -1255,6 +1284,8 @@
     }
 
     const freqMod = activeVoice ? activeVoice.freqMod : 1.0;
+    // With the server away there is no state to draw: a flat line.
+    const online = wsClient.isConnected;
 
     // Wave 1: Primary Plot White Voice Waveform
     vCtx.lineWidth = 1.5;
@@ -1263,7 +1294,9 @@
     for (let x = 0; x < w; x += 3) {
       const norm = (x / w) * Math.PI * 6;
       let amp = 0;
-      if (currentState === 'NARRATING') {
+      if (!online) {
+        amp = 0;
+      } else if (currentState === 'NARRATING') {
         amp = (Math.sin(norm * freqMod + time * 3) * Math.cos(norm * 0.5 + time)) * 36;
       } else if (currentState === 'BARGE_IN') {
         amp = (Math.random() - 0.5) * 60; // Critical disruption
@@ -1285,7 +1318,9 @@
     for (let x = 0; x < w; x += 4) {
       const norm = (x / w) * Math.PI * 6;
       let amp = 0;
-      if (currentState === 'NARRATING') {
+      if (!online) {
+        amp = 0;
+      } else if (currentState === 'NARRATING') {
         amp = (Math.sin(norm * freqMod * 1.5 + time * 2.5 - 0.5)) * 24;
       } else if (currentState === 'BARGE_IN') {
         amp = (Math.random() - 0.5) * 40;
@@ -1298,32 +1333,17 @@
     }
     vCtx.stroke();
 
-    // Telemetry & FFT Animation
+    // The bars and the level come from the server's telemetry only. Without a fresh reading the bars sit at their
+    // floor and the level says it was not measured.
     const now = performance.now();
-    const hasFreshLiveTelemetry = wsClient && (now - wsClient.lastTelemetryTime < 300);
+    const hasFreshLiveTelemetry = online && (now - wsClient.lastTelemetryTime < 300);
 
-    if (hasFreshLiveTelemetry && wsClient.lastTelemetryBins) {
-      updateFFTBars(wsClient.lastTelemetryBins);
-    } else {
-      const simBins = generateSimulatedFFTBins(time, currentState, freqMod);
-      updateFFTBars(simBins);
-    }
+    updateFFTBars(hasFreshLiveTelemetry ? wsClient.lastTelemetryBins : null);
 
-    // dB Readout Update
     const dbEl = document.getElementById('db-level-readout');
     if (dbEl) {
-      if (hasFreshLiveTelemetry && wsClient.lastTelemetryRms !== null) {
-        dbEl.innerText = `${wsClient.lastTelemetryRms.toFixed(1)} dB`;
-      } else if (currentState === 'NARRATING') {
-        const db = (-14.0 + Math.sin(time * 5) * 2.5).toFixed(1);
-        dbEl.innerText = `${db} dB`;
-      } else if (currentState === 'BARGE_IN') {
-        dbEl.innerText = `-0.2 dB PEAK`;
-      } else if (currentState === 'LISTENING') {
-        dbEl.innerText = `-${(36.0 + Math.sin(time * 2) * 3).toFixed(1)} dB`;
-      } else {
-        dbEl.innerText = `-${(16.0 + Math.cos(time * 3) * 2).toFixed(1)} dB`;
-      }
+      const level = hasFreshLiveTelemetry ? wsClient.lastTelemetryRms : null;
+      dbEl.innerText = (level === null || level === undefined) ? 'not measured' : `${Number(level).toFixed(1)} dB`;
     }
 
     requestAnimationFrame(renderDynamicVoiceGraph);
@@ -1349,9 +1369,12 @@
     bCtx.strokeStyle = (currentState === 'BARGE_IN') ? 'var(--critical)' : (currentState === 'LISTENING') ? 'var(--high)' : 'var(--ink)';
 
     bCtx.beginPath();
+    const online = wsClient.isConnected;
     for (let x = 0; x < w; x += 3) {
       let amp = 0;
-      if (currentState === 'BARGE_IN') {
+      if (!online) {
+        amp = 0;
+      } else if (currentState === 'BARGE_IN') {
         amp = (Math.random() - 0.5) * 44; // Instantaneous disruption spike
       } else if (currentState === 'LISTENING') {
         amp = Math.sin(x * 0.05 + time * 3) * 16;
@@ -1367,13 +1390,20 @@
     requestAnimationFrame(renderBargeInCanvas);
   }
 
+  const TURN_STATES = new Set(['LISTENING', 'REPLYING', 'BARGE_IN']);
+
   // --- HUD WEBSOCKET & DUAL-MODE CLIENT ---
+  // A lost connection is retried after 1 s, then after twice as long each time up to 30 s, and the wait starts over at
+  // 1 s once a connection opens.
+  const RECONNECT_FIRST_MS = 1000;
+  const RECONNECT_MAX_MS = 30000;
+
   class HUDWebSocketClient {
     constructor() {
       this.ws = null;
       this.isConnected = false;
       this.reconnectTimer = null;
-      this.reconnectInterval = 3000;
+      this.reconnectDelayMs = RECONNECT_FIRST_MS;
       this.micSource = 'browser';
       this.audioContext = null;
       this.gainNode = null;
@@ -1399,14 +1429,8 @@
     }
 
     getWsUrl() {
-      if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
-        if (window.location.port === '8080') {
-          return 'ws://localhost:8000/ws';
-        }
-        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        return `${proto}//${window.location.host}/ws`;
-      }
-      return 'ws://localhost:8000/ws';
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${proto}//${window.location.host}/ws`;
     }
 
     initAudioContext() {
@@ -1488,8 +1512,6 @@
 
     setMicOwner(isOwner) {
       this.isMicOwner = isOwner !== false;
-      const note = document.getElementById('audio-elsewhere');
-      if (note) note.style.display = this.isMicOwner ? 'none' : 'flex';
     }
 
     reportPlayed(segment) {
@@ -1503,25 +1525,29 @@
       const url = this.getWsUrl();
 
       try {
-        this.ws = new WebSocket(url);
-        this.ws.binaryType = 'arraybuffer';
+        // Every handler ignores a socket that is no longer this.ws, so a late event from an old one cannot reach the
+        // state of the current one.
+        const ws = new WebSocket(url);
+        this.ws = ws;
+        ws.binaryType = 'arraybuffer';
 
-        this.ws.onopen = () => {
-          this.onConnected();
+        ws.onopen = () => {
+          if (this.ws === ws) this.onConnected();
         };
 
-        this.ws.onmessage = (event) => {
-          this.onMessage(event);
+        ws.onmessage = (event) => {
+          if (this.ws === ws) this.onMessage(event);
         };
 
-        this.ws.onclose = () => {
-          this.onDisconnected();
+        ws.onclose = () => {
+          if (this.ws === ws) this.onDisconnected();
         };
 
-        this.ws.onerror = () => {
-          // Handled gracefully, onclose will manage reconnection
+        ws.onerror = () => {
+          // onclose follows and schedules the retry.
         };
       } catch (e) {
+        console.warn("Could not open the WebSocket:", e);
         this.onDisconnected();
       }
     }
@@ -1534,8 +1560,10 @@
       this.stopAllAudio();
       this.stoppedBefore = 0;
       this.pendingSegment = null;
+      documentSyncTotal = null;
       updateWsStatusUI(true);
-      stopSimulationLoop();
+      if (statusError && statusError.clearOnConnect) dismissStatusError();
+      this.reconnectDelayMs = RECONNECT_FIRST_MS;
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
@@ -1558,14 +1586,19 @@
       this.isConnected = false;
       this.resumeOnFirstSync = false;
       updateWsStatusUI(false);
-      startSimulationLoop();
+      renderStatus(null);
+      setWebSpeechPreview(false);
+      abandonVoiceTurn();
       this.stopBrowserMicCapture();
 
       if (!this.reconnectTimer) {
+        const delay = this.reconnectDelayMs;
+        this.reconnectDelayMs = Math.min(delay * 2, RECONNECT_MAX_MS);
+        console.info(`Disconnected from the server. Retrying in ${delay} ms.`);
         this.reconnectTimer = setTimeout(() => {
           this.reconnectTimer = null;
           this.connect();
-        }, this.reconnectInterval);
+        }, delay);
       }
     }
 
@@ -1708,11 +1741,20 @@
         case 'user_speech_transcript':
           this.handleUserSpeechTranscript(msg);
           break;
+        case 'reply_error':
+          showStatusError(`Reply failed: ${errorDetail(msg)}`);
+          break;
+        case 'error':
+          showStatusError(msg.detail === 'playback stalled'
+            ? 'Playback stalled. Press play to continue.'
+            : capitalized(errorDetail(msg)));
+          break;
       }
     }
 
     handleStateSync(msg) {
-      clearNarrativeTimer();
+      renderStatus(msg);
+      setWebSpeechPreview(msg.web_speech_preview);
       if (this.resumeOnFirstSync) {
         this.resumeOnFirstSync = false;
         if (msg.state === 'PAUSED') {
@@ -1723,6 +1765,7 @@
         this.setMicOwner(msg.mic_owner);
       }
       if (msg.state) {
+        const stateBefore = currentState;
         currentState = msg.state;
         if (msg.state === 'NARRATING') {
           isPlaying = true;
@@ -1740,6 +1783,13 @@
           // leave "Transcribing..." on screen until the next voice turn.
           const speechTicker = document.getElementById('speech-ticker');
           if (speechTicker) speechTicker.style.display = 'none';
+          // Nor the text the page wrote into the question box for that turn. Only a sync that closes a turn clears it, and
+          // only while the box still holds exactly that text: a follow-up the user is typing stays.
+          if (TURN_STATES.has(stateBefore)) {
+            const queryBox = document.getElementById('interruption-query-input');
+            if (queryBox) queryBox.value = boxAfterTurn(queryBox.value, pageWrittenText);
+            pageWrittenText = '';
+          }
         }
       }
       if (msg.active_voice) {
@@ -1794,15 +1844,16 @@
       if (msg.word_offset !== undefined) {
         currentWordIdx = msg.word_offset;
       }
-      if (msg.sentence_text && STORY_PARAGRAPHS[currentSentenceIdx] !== msg.sentence_text) {
+      // A document of another length than the one shown (it was not loaded yet, or another tab loaded a new one) is
+      // fetched again. A sentence is patched only where the page has a sentence to patch.
+      if (msg.total_sentences !== undefined && msg.total_sentences !== STORY_PARAGRAPHS.length) {
+        requestDocumentSync(msg.total_sentences);
+      }
+      if (msg.sentence_text && currentSentenceIdx < STORY_PARAGRAPHS.length && STORY_PARAGRAPHS[currentSentenceIdx] !== msg.sentence_text) {
         STORY_PARAGRAPHS[currentSentenceIdx] = msg.sentence_text;
         renderNarrativeStream();
       } else {
         updateWordHighlight();
-      }
-      if (msg.total_sentences !== undefined) {
-        const counter = document.getElementById('counter-sentence');
-        if (counter) counter.innerText = `${currentSentenceIdx + 1} / ${msg.total_sentences}`;
       }
     }
 
@@ -1814,16 +1865,17 @@
         currentState = msg.state;
         updateStateUI();
         envelope.style.display = 'grid';
+        showEnvelopeState(msg.state);
         if (msg.context) {
           const ctxEl = document.getElementById('env-local-ctx');
           if (ctxEl) ctxEl.innerText = `"${msg.context}"`;
         }
         if (msg.query) {
-          const qEl = envelope.querySelector('div:nth-child(3) span:last-child');
+          const qEl = document.getElementById('env-query');
           if (qEl) qEl.innerText = `"${msg.query}"`;
         }
         if (msg.reply) {
-          const rEl = envelope.querySelector('div:nth-child(4) span:last-child');
+          const rEl = document.getElementById('env-reply');
           if (rEl) rEl.innerText = `"${msg.reply}"`;
         }
       } else {
@@ -1851,9 +1903,7 @@
       this.lastTelemetryTime = performance.now();
 
       if (msg.drain_latency_ms !== undefined) {
-        const latStr = `${Number(msg.drain_latency_ms).toFixed(2)} ms`;
-        document.getElementById('header-latency').innerText = latStr;
-        document.getElementById('diag-latency').innerText = latStr;
+        showLatency(msg.drain_latency_ms);
       }
     }
 
@@ -1862,10 +1912,7 @@
       const transcript = (msg.transcript !== undefined && msg.transcript !== null) ? String(msg.transcript) : '';
 
       // 1. Update query input field
-      const input = document.getElementById('interruption-query-input');
-      if (input && transcript) {
-        input.value = transcript;
-      }
+      putInQueryBox(transcript);
 
       // 2. Update speech recognition ticker
       const ticker = document.getElementById('speech-ticker');
@@ -1889,9 +1936,10 @@
         const envelope = document.getElementById('dialogue-envelope');
         if (envelope) {
           envelope.style.display = 'grid';
-          const qEl = envelope.querySelector('div:nth-child(3) span:last-child');
+          showEnvelopeState('LISTENING');
+          const qEl = document.getElementById('env-query');
           if (qEl) qEl.innerText = `"${cleanQuery}"`;
-          const rEl = envelope.querySelector('div:nth-child(4) span:last-child');
+          const rEl = document.getElementById('env-reply');
           if (rEl) rEl.innerText = `[Interpreting speech & formulating response...]`;
           const ctxEl = document.getElementById('env-local-ctx');
           if (ctxEl && typeof STORY_PARAGRAPHS !== 'undefined' && STORY_PARAGRAPHS[currentSentenceIdx]) {
@@ -2190,27 +2238,79 @@
     }
   }
 
+  // The sentence count a re-fetch was last asked for, so a count that stays different from the one shown asks once. A
+  // fetch that fails gives the count back, so the next cursor update asks again. ponytail: while /api/document keeps
+  // failing and the socket is up, that is one failed request per cursor update; add a minimum wait if it ever shows.
+  let documentSyncTotal = null;
+  function requestDocumentSync(total) {
+    if (total === documentSyncTotal) return;
+    documentSyncTotal = total;
+    syncDocumentFromServer();
+  }
+
+  // Counts the fetches of the document, so that only the newest one is applied: a reply that arrives after a newer fetch
+  // was started (the one made on connecting, say, and one made for a cursor update) is dropped, and must not move the
+  // cursor back.
+  let documentFetchSerial = 0;
+
+  // Shows the document the server holds, or the empty state when it holds none.
   async function syncDocumentFromServer() {
+    const mine = ++documentFetchSerial;
+    const failed = (why) => {
+      if (mine !== documentFetchSerial) return;
+      documentSyncTotal = null;
+      console.warn("Could not load the document from the server:", why);
+    };
     try {
       const resp = await fetch(`${getApiBaseUrl()}/api/document`);
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data.sentences && data.sentences.length > 0) {
-          STORY_PARAGRAPHS = data.sentences;
-          currentSentenceIdx = data.current_sentence_idx || 0;
-          currentWordIdx = 0;
-          const docTitleEl = document.getElementById('header-doc-title');
-          if (docTitleEl) docTitleEl.innerText = `[BOOK: ${data.title || "Night City Run"}]`;
-          renderNarrativeStream();
-        }
+      if (!resp.ok) {
+        failed(`HTTP ${resp.status}`);
+        return;
       }
-    } catch (e) {}
+      const data = await resp.json();
+      if (mine !== documentFetchSerial) return;
+      const sentences = Array.isArray(data.sentences) ? data.sentences.filter(text => typeof text === 'string') : [];
+      STORY_PARAGRAPHS = sentences;
+      currentSentenceIdx = Number.isInteger(data.current_sentence_idx)
+        ? Math.max(0, Math.min(data.current_sentence_idx, sentences.length - 1))
+        : 0;
+      currentWordIdx = 0;
+      const docTitleEl = document.getElementById('header-doc-title');
+      if (docTitleEl) docTitleEl.innerText = (sentences.length && data.title) ? `[BOOK: ${data.title}]` : '[No document]';
+      renderNarrativeStream();
+    } catch (e) {
+      failed(e);
+    }
   }
 
   // --- MODEL & LIVE WEB SEARCH CONFIG MODAL ---
+  // [endpoint, model] a provider starts with. `custom` keeps what is typed, and `none` needs neither.
+  const PROVIDER_DEFAULTS = new Map([
+    ['ollama', ['http://localhost:11434/v1', 'voice-agent']],
+    ['openai', ['https://api.openai.com/v1', 'gpt-4o-mini']],
+    ['groq', ['https://api.groq.com/openai/v1', 'llama-3.3-70b-versatile']],
+    ['together', ['https://api.together.xyz/v1', 'deepseek-ai/DeepSeek-R1-Distill-Llama-70B']],
+  ]);
+  const CONFIG_FIELD_NAMES = new Map([
+    ['provider', 'Provider'],
+    ['base_url', 'Endpoint URL'],
+    ['model', 'Model'],
+    ['api_key', 'API key'],
+  ]);
+
+  function showConfigStatus(text, isError = false) {
+    const statusEl = document.getElementById('model-config-status');
+    if (!statusEl) return;
+    statusEl.style.display = 'block';
+    statusEl.style.color = isError ? 'var(--critical-ink)' : 'var(--high)';
+    statusEl.textContent = text;
+  }
+
   function openModelConfigModal() {
     const modal = document.getElementById('model-config-modal');
     if (modal) modal.style.display = 'flex';
+    const statusEl = document.getElementById('model-config-status');
+    if (statusEl) statusEl.style.display = 'none';
     fetchModelConfig();
   }
 
@@ -2219,59 +2319,155 @@
     if (modal) modal.style.display = 'none';
   }
 
+  // With no model there is nothing to point at, so the endpoint, model and key are not asked for.
+  function setConfigFieldsEnabled(provider) {
+    for (const id of ['cfg-endpoint', 'cfg-model', 'cfg-api-key', 'cfg-clear-key']) {
+      document.getElementById(id).disabled = provider === 'none';
+    }
+  }
+
+  // What the server reported the last time the form was opened, and whether the user has picked a provider since. A
+  // save sends only what differs from the first and, for the provider, only a pick.
+  let loadedConfig = null;
+  let providerPicked = false;
+
   async function fetchModelConfig() {
+    loadedConfig = null;
+    providerPicked = false;
     try {
       const resp = await fetch(`${getApiBaseUrl()}/api/config`);
       if (resp.ok) {
         const data = await resp.json();
         const llm = data.llm || {};
-        if (llm.provider) document.getElementById('cfg-provider').value = llm.provider;
+        const select = document.getElementById('cfg-provider');
+        for (const extra of select.querySelectorAll('option[data-extra]')) extra.remove();
+        // A provider this form has no option for (the server still accepts others) is shown as itself, so that saving
+        // does not move the server to whatever option happened to be selected.
+        if (typeof llm.provider === 'string' && llm.provider && ![...select.options].some(option => option.value === llm.provider)) {
+          const extra = document.createElement('option');
+          extra.value = llm.provider;
+          extra.textContent = `${llm.provider} (set on the server)`;
+          extra.dataset.extra = 'true';
+          select.appendChild(extra);
+        }
+        if (typeof llm.provider === 'string' && llm.provider) select.value = llm.provider;
         if (llm.base_url) document.getElementById('cfg-endpoint').value = llm.base_url;
         if (llm.model) document.getElementById('cfg-model').value = llm.model;
         if (llm.web_search_enabled !== undefined) {
           document.getElementById('cfg-web-search').checked = !!llm.web_search_enabled;
         }
+        // The server never sends the key, only whether it holds one. A blank field keeps it; removing it is a choice.
+        const keyField = document.getElementById('cfg-api-key');
+        keyField.value = '';
+        document.getElementById('cfg-clear-key').checked = false;
+        document.getElementById('cfg-key-stored').style.display = llm.has_api_key === true ? 'flex' : 'none';
+        setConfigFieldsEnabled(select.value);
+        loadedConfig = {
+          provider: select.value,
+          base_url: document.getElementById('cfg-endpoint').value.trim(),
+          model: document.getElementById('cfg-model').value.trim(),
+          hasKey: llm.has_api_key === true,
+        };
+        updateKeyNote();
       }
-    } catch (e) {}
-  }
-
-  function onProviderChange(val) {
-    const endpointInput = document.getElementById('cfg-endpoint');
-    const modelInput = document.getElementById('cfg-model');
-    if (val === 'builtin') {
-      endpointInput.value = 'in-process';
-      modelInput.value = 'builtin-assistant';
-    } else if (val === 'ollama') {
-      endpointInput.value = 'http://localhost:11434';
-      modelInput.value = 'llama3.2';
-    } else if (val === 'openai') {
-      endpointInput.value = 'https://api.openai.com/v1';
-      modelInput.value = 'gpt-4o-mini';
-    } else if (val === 'groq') {
-      endpointInput.value = 'https://api.groq.com/openai/v1';
-      modelInput.value = 'llama-3.3-70b-versatile';
-    } else if (val === 'together') {
-      endpointInput.value = 'https://api.together.xyz/v1';
-      modelInput.value = 'deepseek-ai/DeepSeek-R1-Distill-Llama-70B';
+    } catch (e) {
+      console.warn("Could not load the model settings:", e);
     }
   }
 
-  async function saveModelConfig() {
-    const provider = document.getElementById('cfg-provider').value;
-    const base_url = document.getElementById('cfg-endpoint').value.trim();
-    const model = document.getElementById('cfg-model').value.trim();
-    const api_key = document.getElementById('cfg-api-key').value.trim();
-    const web_search_enabled = document.getElementById('cfg-web-search').checked;
+  // Whether a save points the model somewhere else: another provider than the one the server reported, picked by the
+  // user, or another endpoint.
+  function destinationChanged(form, loaded) {
+    return (form.providerPicked && form.provider !== loaded.provider) || form.baseUrl !== loaded.base_url;
+  }
 
-    const payload = {
-      provider,
-      base_url,
-      endpoint: base_url,
-      model,
-      model_name: model,
-      api_key,
-      web_search_enabled
+  // The body of a save: only what the user changed. `form` holds the field values and whether a provider was picked;
+  // `loaded` the provider, endpoint and model the server reported.
+  function configPayload(form, loaded) {
+    const payload = { web_search_enabled: form.webSearch };
+    if (form.providerPicked) payload.provider = form.provider;
+    if (form.provider !== 'none') {
+      if (form.baseUrl !== loaded.base_url) payload.base_url = form.baseUrl;
+      if (form.model !== loaded.model) payload.model = form.model;
+      // A typed key is sent. A blank field keeps the stored key, unless removing it was asked for or the model is being
+      // pointed somewhere else: a key must not travel to a host it was not entered for, so then it is dropped, which
+      // the server reads from an empty key.
+      if (form.apiKey) {
+        payload.api_key = form.apiKey;
+      } else if (form.clearKey || destinationChanged(form, loaded)) {
+        payload.api_key = '';
+      }
+    }
+    return payload;
+  }
+
+  function readConfigForm() {
+    return {
+      provider: document.getElementById('cfg-provider').value,
+      providerPicked,
+      webSearch: document.getElementById('cfg-web-search').checked,
+      baseUrl: document.getElementById('cfg-endpoint').value.trim(),
+      model: document.getElementById('cfg-model').value.trim(),
+      apiKey: document.getElementById('cfg-api-key').value.trim(),
+      clearKey: document.getElementById('cfg-clear-key').checked,
     };
+  }
+
+  // Says so in the form when saving would drop a stored key because the destination changed.
+  function updateKeyNote() {
+    const note = document.getElementById('cfg-key-note');
+    if (!note || !loadedConfig) return;
+    const form = readConfigForm();
+    const dropped = loadedConfig.hasKey && form.provider !== 'none' && !form.apiKey && !form.clearKey
+      && destinationChanged(form, loadedConfig);
+    note.style.display = dropped ? 'block' : 'none';
+    // What the field and the line above it say must agree with the note: a key being dropped is not kept or sent.
+    document.getElementById('cfg-key-sent').style.display = dropped ? 'none' : '';
+    document.getElementById('cfg-api-key').placeholder = !loadedConfig.hasKey
+      ? 'Enter remote API key or leave blank for local Ollama'
+      : dropped ? 'Enter a key for the new provider or endpoint' : 'A key is stored. Leave this blank to keep it.';
+  }
+
+  function onProviderChange(val) {
+    providerPicked = true;
+    const defaults = PROVIDER_DEFAULTS.get(val);
+    if (defaults) {
+      document.getElementById('cfg-endpoint').value = defaults[0];
+      document.getElementById('cfg-model').value = defaults[1];
+    }
+    setConfigFieldsEnabled(val);
+    updateKeyNote();
+  }
+
+  // The server's reason for a 422, as one line. The reply names each rejected field with a message; it also echoes the
+  // value that was sent, which can be the API key, so only the field and the message are read.
+  async function rejectionMessage(resp) {
+    let detail = null;
+    try {
+      detail = (await resp.json()).detail;
+    } catch (e) {
+      console.warn("The rejection from the server was not readable:", e);
+    }
+    if (typeof detail === 'string' && detail) return detail;
+    if (Array.isArray(detail)) {
+      const lines = detail
+        .filter(item => item && typeof item.msg === 'string')
+        .map(item => {
+          const field = Array.isArray(item.loc) ? CONFIG_FIELD_NAMES.get(item.loc[item.loc.length - 1]) : null;
+          const reason = item.msg.replace(/^Value error, /, '');
+          return field ? `${field}: ${reason}` : reason;
+        });
+      if (lines.length > 0) return lines.join('. ');
+    }
+    return 'The server did not accept these settings.';
+  }
+
+  async function saveModelConfig() {
+    if (!loadedConfig) {
+      showConfigStatus('The current settings could not be loaded, so nothing was saved. Reload the page and try again.', true);
+      return;
+    }
+    const payload = configPayload(readConfigForm(), loadedConfig);
 
     try {
       const resp = await fetch(`${getApiBaseUrl()}/api/config`, {
@@ -2284,18 +2480,18 @@
           wsClient.send({ type: 'update_config', ...payload });
         }
         closeModelConfigModal();
+      } else if (resp.status === 422) {
+        showConfigStatus(await rejectionMessage(resp), true);
+      } else {
+        showConfigStatus(`The server answered with HTTP ${resp.status}.`, true);
       }
     } catch (err) {
-      alert(`Failed to save config: ${err.message}`);
+      showConfigStatus(`Could not reach the server: ${err.message}`, true);
     }
   }
 
   async function testModelConfig() {
-    const statusEl = document.getElementById('model-config-status');
-    if (statusEl) {
-      statusEl.style.display = 'block';
-      statusEl.innerText = 'Testing connection and prompt completion...';
-    }
+    showConfigStatus('Sending a test question...');
     const t0 = performance.now();
     try {
       const resp = await fetch(`${getApiBaseUrl()}/api/ask`, {
@@ -2305,24 +2501,25 @@
       });
       const t1 = performance.now();
       if (resp.ok) {
-        if (statusEl) {
-          statusEl.innerText = `Connected! Latency: ${(t1 - t0).toFixed(1)} ms. Interruption Q&A pipeline active.`;
-        }
+        showConfigStatus(`The server took the question in ${(t1 - t0).toFixed(1)} ms. The status row shows whether the model could answer it.`);
       } else {
-        if (statusEl) statusEl.innerText = `Error: Server returned HTTP ${resp.status}`;
+        showConfigStatus(`Error: Server returned HTTP ${resp.status}`, true);
       }
     } catch (e) {
-      if (statusEl) statusEl.innerText = `Connection failed: ${e.message}`;
+      showConfigStatus(`Connection failed: ${e.message}`, true);
     }
   }
 
   // --- AD-HOC VOICE & TEXT INTERRUPTION WITH WEB SEARCH GROUNDING ---
-  async function submitInterruptionQuery(overrideQuery) {
+  function submitInterruptionQuery() {
     const input = document.getElementById('interruption-query-input');
-    const query = (overrideQuery || (input ? input.value : '')).trim();
+    const query = (input ? input.value : '').trim();
     if (!query) return;
+    // The question stays in the box until there is a server to take it.
+    if (!requireConnection()) return;
 
     if (input) input.value = '';
+    pageWrittenText = '';
 
     // 1. Immediately disrupt audio and update UI to LISTENING / INTERRUPTED
     if (wsClient) {
@@ -2336,26 +2533,15 @@
     const envelope = document.getElementById('dialogue-envelope');
     if (envelope) {
       envelope.style.display = 'grid';
-      const qEl = envelope.querySelector('div:nth-child(3) span:last-child');
+      showEnvelopeState('LISTENING');
+      const qEl = document.getElementById('env-query');
       if (qEl) qEl.innerText = `"${query}"`;
-      const rEl = envelope.querySelector('div:nth-child(4) span:last-child');
-      if (rEl) rEl.innerText = `[Searching live web via DuckDuckGo & formulating response...]`;
+      const rEl = document.getElementById('env-reply');
+      if (rEl) rEl.innerText = `[Formulating a response...]`;
     }
 
-    // 3. Send over WebSocket if connected, otherwise call /api/ask
-    if (wsClient && wsClient.isConnected) {
-      wsClient.send({ type: 'query_interruption', query: query });
-    } else {
-      try {
-        await fetch(`${getApiBaseUrl()}/api/ask`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: query })
-        });
-      } catch (err) {
-        console.warn("REST ask error:", err);
-      }
-    }
+    // 3. The server answers over the socket
+    wsClient.send({ type: 'query_interruption', query: query });
   }
 
   // Expose controller API for testing and programmatic automation
@@ -2414,7 +2600,7 @@
   window.addEventListener('DOMContentLoaded', () => {
     renderVoiceRoster();
     renderNarrativeStream();
-    startSimulationLoop();
+    renderStatus(null);
     renderDynamicVoiceGraph();
     renderBargeInCanvas();
 
