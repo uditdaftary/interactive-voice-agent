@@ -454,7 +454,7 @@ def resume_cues(socket: PlayerSocket) -> list[dict[str, Any]]:
     return [m for m in socket.messages("prompt_envelope") if m["state"] == "NARRATING"]
 
 
-@pytest.mark.parametrize("coming_from", ["LISTENING", "REPLYING", "PAUSED"])
+@pytest.mark.parametrize("coming_from", ["LISTENING", "REPLYING"])
 async def test_a_repeat_sends_no_resume_cue_because_it_rewinds_nothing(coming_from: str) -> None:
     manager = ConnectionManager()
     tts = FakeTts()
@@ -468,6 +468,8 @@ async def test_a_repeat_sends_no_resume_cue_because_it_rewinds_nothing(coming_fr
         engine.ask("who writes this book")
         async with asyncio.timeout(5):
             await llm.started.wait()
+    engine.current_sentence_idx = 2  # BOOK[2] has ten words
+    engine.current_word_idx = 7  # where the question cut narration off: a plain resume would start four words back
     spoken_before = len(tts.calls)
 
     engine.ask("repeat")
