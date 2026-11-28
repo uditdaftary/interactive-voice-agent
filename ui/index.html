@@ -1939,7 +1939,7 @@
         const envelope = document.getElementById('dialogue-envelope');
         if (envelope) {
           envelope.style.display = 'grid';
-          showEnvelopeState('LISTENING');
+          showEnvelopeState(null);  // no prompt_envelope has sent a state for this question yet
           const qEl = document.getElementById('env-query');
           if (qEl) qEl.innerText = `"${cleanQuery}"`;
           const rEl = document.getElementById('env-reply');
@@ -2543,7 +2543,7 @@
     const envelope = document.getElementById('dialogue-envelope');
     if (envelope) {
       envelope.style.display = 'grid';
-      showEnvelopeState('LISTENING');
+      showEnvelopeState(null);  // no prompt_envelope has sent a state for this question yet
       const qEl = document.getElementById('env-query');
       if (qEl) qEl.innerText = `"${query}"`;
       const rEl = document.getElementById('env-reply');
