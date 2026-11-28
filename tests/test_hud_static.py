@@ -166,3 +166,11 @@ def test_hud_never_writes_server_data_as_markup() -> None:
 @pytest.mark.parametrize("call", ["insertAdjacentHTML", "document.write", "eval(", "new Function("])
 def test_hud_has_no_other_markup_or_code_sink(call: str) -> None:
     assert call not in HUD_SOURCE
+
+
+def test_the_question_panel_fields_are_found_by_id_not_by_position() -> None:
+    # A selector by position matched the state label once a tag before it was removed, and the reply was written there.
+    assert "nth-child" not in HUD_SOURCE
+    for field in ("env-query", "env-reply"):
+        assert f'id="{field}"' in HUD_SOURCE
+        assert f"getElementById('{field}')" in HUD_SOURCE

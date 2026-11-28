@@ -231,8 +231,8 @@
               <span class="state-pill listening" id="env-status-pill"><i></i></span>
             </div>
             <div style="font-size:13.5px;"><span class="faint mono">Context:</span> <span class="mono text-white" id="env-local-ctx"></span></div>
-            <div style="font-size:13.5px;"><span class="faint mono">Query:</span> <span class="mono" style="color:var(--high);"></span></div>
-            <div style="font-size:13.5px;"><span class="faint mono">Reply:</span> <span class="mono text-white"></span></div>
+            <div style="font-size:13.5px;"><span class="faint mono">Query:</span> <span class="mono" style="color:var(--high);" id="env-query"></span></div>
+            <div style="font-size:13.5px;"><span class="faint mono">Reply:</span> <span class="mono text-white" id="env-reply"></span></div>
           </div>
 
           <!-- Mini Disruption Waveform Canvas -->
@@ -1871,11 +1871,11 @@
           if (ctxEl) ctxEl.innerText = `"${msg.context}"`;
         }
         if (msg.query) {
-          const qEl = envelope.querySelector('div:nth-child(3) span:last-child');
+          const qEl = document.getElementById('env-query');
           if (qEl) qEl.innerText = `"${msg.query}"`;
         }
         if (msg.reply) {
-          const rEl = envelope.querySelector('div:nth-child(4) span:last-child');
+          const rEl = document.getElementById('env-reply');
           if (rEl) rEl.innerText = `"${msg.reply}"`;
         }
       } else {
@@ -1937,9 +1937,9 @@
         if (envelope) {
           envelope.style.display = 'grid';
           showEnvelopeState('LISTENING');
-          const qEl = envelope.querySelector('div:nth-child(3) span:last-child');
+          const qEl = document.getElementById('env-query');
           if (qEl) qEl.innerText = `"${cleanQuery}"`;
-          const rEl = envelope.querySelector('div:nth-child(4) span:last-child');
+          const rEl = document.getElementById('env-reply');
           if (rEl) rEl.innerText = `[Interpreting speech & formulating response...]`;
           const ctxEl = document.getElementById('env-local-ctx');
           if (ctxEl && typeof STORY_PARAGRAPHS !== 'undefined' && STORY_PARAGRAPHS[currentSentenceIdx]) {
@@ -2534,9 +2534,9 @@
     if (envelope) {
       envelope.style.display = 'grid';
       showEnvelopeState('LISTENING');
-      const qEl = envelope.querySelector('div:nth-child(3) span:last-child');
+      const qEl = document.getElementById('env-query');
       if (qEl) qEl.innerText = `"${query}"`;
-      const rEl = envelope.querySelector('div:nth-child(4) span:last-child');
+      const rEl = document.getElementById('env-reply');
       if (rEl) rEl.innerText = `[Formulating a response...]`;
     }
 
