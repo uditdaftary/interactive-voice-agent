@@ -4,7 +4,10 @@ and onset persistence for conversational voice agents.
 """
 
 from typing import Any, Generator, List, Optional, Union
+import logging
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 try:
     from scipy.signal import lfilter
@@ -85,6 +88,10 @@ class VoiceActivityDetector:
         self._is_playback_active = False
         self._reference_ducking_threshold: Optional[float] = None
 
+        # Per-frame fallbacks: each is logged once per instance.
+        self._unconvertible_input_logged = False
+        self._lfilter_fallback_logged = False
+
     @property
     def is_playback_active(self) -> bool:
         """Indicates whether speaker playback is currently active."""
@@ -141,7 +148,11 @@ class VoiceActivityDetector:
         if not isinstance(chunk, np.ndarray):
             try:
                 chunk = np.asarray(chunk)
-            except Exception:  # noqa: BLE001  # S3.3 RC4
+            except (TypeError, ValueError):
+                # Runs per frame: the first unconvertible input is logged, later ones are dropped silently.
+                if not self._unconvertible_input_logged:
+                    self._unconvertible_input_logged = True
+                    logger.debug("Dropping audio input of type %s that cannot be converted to an array", type(chunk).__name__)
                 return np.empty(0, dtype=np.float32)
 
         if chunk.size == 0:
@@ -184,8 +195,11 @@ class VoiceActivityDetector:
             try:
                 y, self._filter_zi = lfilter(self._b, self._a, centered, zi=self._filter_zi)
                 return y.astype(np.float32)
-            except Exception:  # noqa: BLE001, S110  # S3.3 RC4
-                pass
+            except (TypeError, ValueError):
+                # lfilter raises ValueError on a shape or state mismatch and TypeError on non-numeric input. Runs per frame: log once.
+                if not self._lfilter_fallback_logged:
+                    self._lfilter_fallback_logged = True
+                    logger.debug("scipy lfilter rejected a frame; using the pure-Python high-pass loop")
             # Fallback pure-numpy/python loop
             y = np.empty_like(centered)
             px, py = self._prev_x, self._prev_y
