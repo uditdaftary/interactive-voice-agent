@@ -461,3 +461,41 @@ def test_an_envelope_with_no_query_clears_the_question_before_it() -> None:
         {"context": '"A line."', "query": "", "reply": '"I did not catch that."'},
         {"context": '"A line."', "query": '"And Maine?"', "reply": '"I did not catch that."'},
     ]
+
+
+# --- the words narration goes back over ------------------------------------------------------------------------------
+
+
+def marked_pre_roll_words(count: int | None, stop_word: int, sentence_words: int = 12) -> dict[str, Any]:
+    """Which words of sentence 2 the page marks for a cue of `count` words, narration having stopped at `stop_word`."""
+    argument = "" if count is None else str(count)
+    script = (
+        hud_function_source("highlightPreRollWords")
+        + f"let currentSentenceIdx = 2; let currentWordIdx = {stop_word};"
+        + "const word = (s, w) => {"
+        + "  const el = { dataset: { sIdx: String(s), wIdx: String(w) }, marked: false, classList: { add: () => { el.marked = true; } } };"
+        + "  return el;"
+        + "};"
+        + f"const wordsArray = [word(1, 5), ...Array.from({{ length: {sentence_words} }}, (_, w) => word(2, w))];"
+        + f"highlightPreRollWords({argument});"
+        + "process.stdout.write(JSON.stringify({ cursor: currentWordIdx,"
+        + " marked: wordsArray.filter((el) => el.marked).map((el) => el.dataset.sIdx + ':' + el.dataset.wIdx) }));"
+    )
+    done = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def test_a_cue_marks_exactly_the_words_it_goes_back_over() -> None:
+    # Five words back from word 7 are words 2 to 6; the word narration stopped at is not one of them.
+    shown = marked_pre_roll_words(5, 7)
+    assert shown == {"cursor": 2, "marked": ["2:2", "2:3", "2:4", "2:5", "2:6"]}
+
+
+def test_a_cue_longer_than_the_sentence_so_far_marks_only_the_words_before_the_stop() -> None:
+    assert marked_pre_roll_words(5, 3) == {"cursor": 0, "marked": ["2:0", "2:1", "2:2"]}
+    assert marked_pre_roll_words(5, 0) == {"cursor": 0, "marked": []}
+
+
+def test_a_cue_with_no_count_goes_back_four_words() -> None:
+    assert marked_pre_roll_words(None, 9)["marked"] == ["2:5", "2:6", "2:7", "2:8"]
