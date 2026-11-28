@@ -194,6 +194,7 @@ DOCUMENT_HARNESS = """
 let STORY_PARAGRAPHS = [];
 let currentSentenceIdx = 0;
 let currentWordIdx = 0;
+let cursorMoves = 0;
 let documentSyncTotal = null;
 let documentFetchSerial = 0;
 const getApiBaseUrl = () => '';
@@ -299,28 +300,28 @@ def test_a_superseded_fetch_that_fails_does_not_give_back_the_newer_ones_count()
 # --- the state the question panel shows ------------------------------------------------------------------------------
 
 
-def test_the_question_panel_shows_only_the_state_the_server_sent() -> None:
+def test_the_question_panel_labels_only_a_state_it_knows_and_shows_no_label_for_any_other() -> None:
     table_start = HUD_SOURCE.index("const ENVELOPE_STATE_PILLS")
     table = HUD_SOURCE[table_start : HUD_SOURCE.index("]);", table_start) + 3]
     script = (
         "const setPill = (pill, className, text) => { pill.className = className; pill.text = text; };"
-        + "const pill = { className: 'state-pill listening', text: '' };"
+        + "const pill = { className: 'state-pill listening', text: '', style: {} };"
         + "const document = { getElementById: () => pill };"
         + table
         + hud_function_source("showEnvelopeState")
         + "const shown = [];"
         + "for (const state of ['LISTENING', 'REPLYING', 'NARRATING', undefined]) {"
-        + "  showEnvelopeState(state); shown.push([pill.className, pill.text]);"
+        + "  showEnvelopeState(state); shown.push([pill.className, pill.text, pill.style.display]);"
         + "}"
         + "process.stdout.write(JSON.stringify(shown));"
     )
     done = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout) == [
-        ["state-pill listening", "Listening"],
-        ["state-pill replying", "Replying"],
-        ["state-pill replying", "Replying"],  # a state with no entry leaves what was shown
-        ["state-pill replying", "Replying"],
+        ["state-pill listening", "Listening", ""],
+        ["state-pill replying", "Replying", ""],
+        ["state-pill replying", "Replying", "none"],  # a state with no entry shows no label
+        ["state-pill replying", "Replying", "none"],  # nor does none
     ]
 
 
@@ -363,7 +364,7 @@ def test_the_form_says_the_stored_key_is_removed_when_the_destination_changes(ch
 
 @pytest.mark.parametrize(
     "changes",
-    [{}, {"provider": "groq", "providerPicked": True, "apiKey": "sk-new"}, {"clearKey": True, "baseUrl": "x"}],
+    [{}, {"provider": "groq", "providerPicked": True, "apiKey": "sk-new"}, {"clearKey": True, "apiKey": "sk-new"}],
 )
 def test_the_form_keeps_saying_the_key_is_kept_when_nothing_drops_it(changes: dict[str, Any]) -> None:
     shown = key_field_texts(True, changes)
@@ -374,3 +375,89 @@ def test_the_form_says_nothing_about_a_key_when_none_is_stored() -> None:
     shown = key_field_texts(False, {"baseUrl": "https://api.other.test/v1"})
     assert shown["note"] == "none"
     assert shown["placeholder"] == "Enter remote API key or leave blank for local Ollama"
+
+
+def test_a_document_applied_by_an_upload_resets_the_count_a_cursor_update_asks_for() -> None:
+    result = run_document_scenario(
+        """
+        // A cursor update reports 5 sentences while 3 are shown, and the fetch for it is applied.
+        queued.push(ok(doc('Old', ['A.', 'B.', 'C.'], 0)));
+        requestDocumentSync(5);
+        await settle();
+        // An upload in this tab then replaces it with 2 sentences.
+        queued.push(ok(doc('Mine', ['X.', 'Y.'], 0)));
+        await syncDocumentFromServer();
+        const afterUpload = { latch: documentSyncTotal, shown: STORY_PARAGRAPHS.length };
+        // Another tab loads a document of 5 sentences: it must be fetched, although 5 was asked for before.
+        queued.push(ok(doc('Theirs', ['1.', '2.', '3.', '4.', '5.'], 0)));
+        requestDocumentSync(5);
+        await settle();
+        return { afterUpload, shown: STORY_PARAGRAPHS.length, unused: queued.length };
+        """
+    )
+    assert result == {"afterUpload": {"latch": 2, "shown": 2}, "shown": 5, "unused": 0}
+
+
+@pytest.mark.parametrize("changes", [{"clearKey": True}, {"clearKey": True, "baseUrl": "https://api.other.test/v1"}])
+def test_the_form_follows_the_remove_checkbox(changes: dict[str, Any]) -> None:
+    # The checkbox explains itself, so no note, but the field and the line above it stop saying the key is kept or sent.
+    shown = key_field_texts(True, changes)
+    assert shown == {"note": "none", "sent": "none", "placeholder": "The stored key will be removed"}
+
+
+def test_a_document_reply_keeps_a_cursor_the_server_reported_while_it_was_on_its_way() -> None:
+    result = run_document_scenario(
+        """
+        const slow = later();
+        queued.push(slow.reply);
+        const fetched = syncDocumentFromServer();
+        // A cursor_update arrives while the fetch is out, newer than the position the reply will hold.
+        cursorMoves += 1; currentSentenceIdx = 2; currentWordIdx = 4;
+        slow.release({ ok: true, status: 200, json: async () => doc('Book', ['A.', 'B.', 'C.', 'D.'], 0) });
+        await fetched;
+        const kept = { idx: currentSentenceIdx, word: currentWordIdx };
+        // A position past the end of the new document is brought back into it.
+        const late = later();
+        queued.push(late.reply);
+        const clamped = syncDocumentFromServer();
+        cursorMoves += 1; currentSentenceIdx = 9; currentWordIdx = 1;
+        late.release({ ok: true, status: 200, json: async () => doc('Book', ['A.', 'B.'], 0) });
+        await clamped;
+        const pastTheEnd = { idx: currentSentenceIdx, word: currentWordIdx };
+        // With no cursor update in between, the reply's position is used, from its first word.
+        queued.push(ok(doc('Book', ['A.', 'B.', 'C.'], 1)));
+        currentWordIdx = 7;
+        await syncDocumentFromServer();
+        return { kept, pastTheEnd, fromReply: { idx: currentSentenceIdx, word: currentWordIdx } };
+        """
+    )
+    assert result == {
+        "kept": {"idx": 2, "word": 4},
+        "pastTheEnd": {"idx": 1, "word": 1},
+        "fromReply": {"idx": 1, "word": 0},
+    }
+
+
+# --- the text of the question panel ----------------------------------------------------------------------------------
+
+
+def test_an_envelope_with_no_query_clears_the_question_before_it() -> None:
+    script = (
+        hud_function_source("showEnvelopeText")
+        + "const fields = { 'env-local-ctx': {}, 'env-query': {}, 'env-reply': {} };"
+        + "const document = { getElementById: (id) => fields[id] };"
+        + "const read = () => ({ context: fields['env-local-ctx'].innerText, query: fields['env-query'].innerText,"
+        + " reply: fields['env-reply'].innerText });"
+        + "const shown = [];"
+        + "showEnvelopeText({ context: 'A line.', query: 'Who is Lucy?', reply: 'A friend.' }); shown.push(read());"
+        + "showEnvelopeText({ context: 'A line.', query: '', reply: 'I did not catch that.' }); shown.push(read());"
+        + "showEnvelopeText({ query: 'And Maine?' }); shown.push(read());"
+        + "process.stdout.write(JSON.stringify(shown));"
+    )
+    done = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == [
+        {"context": '"A line."', "query": '"Who is Lucy?"', "reply": '"A friend."'},
+        {"context": '"A line."', "query": "", "reply": '"I did not catch that."'},
+        {"context": '"A line."', "query": '"And Maine?"', "reply": '"I did not catch that."'},
+    ]

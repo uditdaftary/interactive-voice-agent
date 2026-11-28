@@ -511,6 +511,9 @@
   let STORY_PARAGRAPHS = [];
   let currentSentenceIdx = 0;
   let currentWordIdx = 0;
+  // How many times the server has set the cursor (a state_sync or a cursor_update), so that a document fetched while
+  // one arrived can keep that newer position instead of the one the fetch started with.
+  let cursorMoves = 0;
   let isPlaying = true;
   let currentCadence = 1.0;
   let currentState = 'NARRATING'; // NARRATING, PAUSED, LISTENING, REPLYING (BARGE_IN is a client-side flash only)
@@ -1081,7 +1084,8 @@
     if (bargePill && known) setPill(bargePill, `state-pill ${known[0]}`, known[1]);
   }
 
-  // The state the question panel shows, from the state a prompt_envelope carries. Any other state shows nothing.
+  // The state the question panel shows, from the state a prompt_envelope carries. Any other state, or none, shows no
+  // label, so a label is never left over from an earlier message.
   const ENVELOPE_STATE_PILLS = new Map([
     ['LISTENING', ['listening', 'Listening']],
     ['REPLYING', ['replying', 'Replying']],
@@ -1089,8 +1093,22 @@
 
   function showEnvelopeState(state) {
     const pill = document.getElementById('env-status-pill');
+    if (!pill) return;
     const known = ENVELOPE_STATE_PILLS.get(state);
-    if (pill && known) setPill(pill, `state-pill ${known[0]}`, known[1]);
+    pill.style.display = known ? '' : 'none';
+    if (known) setPill(pill, `state-pill ${known[0]}`, known[1]);
+  }
+
+  // Shows what a prompt_envelope says in the question panel. The query is shown as the message has it, empty included:
+  // the line for speech it did not recognize has no query, and the question before it is not one it answers. A message
+  // without a context or a reply leaves those as they were.
+  function showEnvelopeText(msg) {
+    const contextEl = document.getElementById('env-local-ctx');
+    const queryEl = document.getElementById('env-query');
+    const replyEl = document.getElementById('env-reply');
+    if (contextEl && msg.context) contextEl.innerText = `"${msg.context}"`;
+    if (queryEl) queryEl.innerText = msg.query ? `"${msg.query}"` : '';
+    if (replyEl && msg.reply) replyEl.innerText = `"${msg.reply}"`;
   }
 
   // The server sends null for a latency it did not measure, and that is shown as such, never as a number.
@@ -1807,6 +1825,7 @@
       if (msg.sentence_idx !== undefined) {
         currentSentenceIdx = msg.sentence_idx;
         currentWordIdx = msg.word_offset || 0;
+        cursorMoves += 1;
         updateWordHighlight();
       }
     }
@@ -1840,9 +1859,11 @@
       }
       if (msg.sentence_idx !== undefined) {
         currentSentenceIdx = msg.sentence_idx;
+        cursorMoves += 1;
       }
       if (msg.word_offset !== undefined) {
         currentWordIdx = msg.word_offset;
+        cursorMoves += 1;
       }
       // A document of another length than the one shown (it was not loaded yet, or another tab loaded a new one) is
       // fetched again. A sentence is patched only where the page has a sentence to patch.
@@ -1866,18 +1887,7 @@
         updateStateUI();
         envelope.style.display = 'grid';
         showEnvelopeState(msg.state);
-        if (msg.context) {
-          const ctxEl = document.getElementById('env-local-ctx');
-          if (ctxEl) ctxEl.innerText = `"${msg.context}"`;
-        }
-        if (msg.query) {
-          const qEl = document.getElementById('env-query');
-          if (qEl) qEl.innerText = `"${msg.query}"`;
-        }
-        if (msg.reply) {
-          const rEl = document.getElementById('env-reply');
-          if (rEl) rEl.innerText = `"${msg.reply}"`;
-        }
+        showEnvelopeText(msg);
       } else {
         currentState = 'NARRATING';
         isPlaying = true;
@@ -1936,7 +1946,7 @@
         const envelope = document.getElementById('dialogue-envelope');
         if (envelope) {
           envelope.style.display = 'grid';
-          showEnvelopeState('LISTENING');
+          showEnvelopeState(null);  // no prompt_envelope has sent a state for this question yet
           const qEl = document.getElementById('env-query');
           if (qEl) qEl.innerText = `"${cleanQuery}"`;
           const rEl = document.getElementById('env-reply');
@@ -2238,8 +2248,9 @@
     }
   }
 
-  // The sentence count a re-fetch was last asked for, so a count that stays different from the one shown asks once. A
-  // fetch that fails gives the count back, so the next cursor update asks again. ponytail: while /api/document keeps
+  // The sentence count the page shows, or has asked for and not yet received, so a count that stays different from the
+  // one shown asks once. A document applied by any fetch sets it to the count shown; a fetch that fails gives the count
+  // back, so the next cursor update asks again. ponytail: while /api/document keeps
   // failing and the socket is up, that is one failed request per cursor update; add a minimum wait if it ever shows.
   let documentSyncTotal = null;
   function requestDocumentSync(total) {
@@ -2256,6 +2267,7 @@
   // Shows the document the server holds, or the empty state when it holds none.
   async function syncDocumentFromServer() {
     const mine = ++documentFetchSerial;
+    const cursorBefore = cursorMoves;
     const failed = (why) => {
       if (mine !== documentFetchSerial) return;
       documentSyncTotal = null;
@@ -2271,10 +2283,13 @@
       if (mine !== documentFetchSerial) return;
       const sentences = Array.isArray(data.sentences) ? data.sentences.filter(text => typeof text === 'string') : [];
       STORY_PARAGRAPHS = sentences;
-      currentSentenceIdx = Number.isInteger(data.current_sentence_idx)
-        ? Math.max(0, Math.min(data.current_sentence_idx, sentences.length - 1))
-        : 0;
-      currentWordIdx = 0;
+      documentSyncTotal = sentences.length;
+      // The reply holds the position the server had when the fetch started. One the server reported since is newer, and
+      // is kept, so the highlight does not jump back.
+      const cursorMovedSince = cursorMoves !== cursorBefore;
+      const wanted = cursorMovedSince ? currentSentenceIdx : data.current_sentence_idx;
+      currentSentenceIdx = Number.isInteger(wanted) ? Math.max(0, Math.min(wanted, sentences.length - 1)) : 0;
+      if (!cursorMovedSince) currentWordIdx = 0;
       const docTitleEl = document.getElementById('header-doc-title');
       if (docTitleEl) docTitleEl.innerText = (sentences.length && data.title) ? `[BOOK: ${data.title}]` : '[No document]';
       renderNarrativeStream();
@@ -2413,19 +2428,24 @@
     };
   }
 
-  // Says so in the form when saving would drop a stored key because the destination changed.
+  // Says so in the form when saving would remove the stored key: because removal was asked for, or because the provider
+  // or endpoint changed and no key was typed. What the key field and the line above it say follow, so none of the
+  // three claims the key is kept or sent while another says it is removed.
   function updateKeyNote() {
     const note = document.getElementById('cfg-key-note');
     if (!note || !loadedConfig) return;
     const form = readConfigForm();
-    const dropped = loadedConfig.hasKey && form.provider !== 'none' && !form.apiKey && !form.clearKey
-      && destinationChanged(form, loadedConfig);
-    note.style.display = dropped ? 'block' : 'none';
-    // What the field and the line above it say must agree with the note: a key being dropped is not kept or sent.
-    document.getElementById('cfg-key-sent').style.display = dropped ? 'none' : '';
-    document.getElementById('cfg-api-key').placeholder = !loadedConfig.hasKey
-      ? 'Enter remote API key or leave blank for local Ollama'
-      : dropped ? 'Enter a key for the new provider or endpoint' : 'A key is stored. Leave this blank to keep it.';
+    const removing = loadedConfig.hasKey && form.provider !== 'none' && !form.apiKey
+      && (form.clearKey || destinationChanged(form, loadedConfig));
+    // The checkbox is its own explanation; the note is for a removal the user did not ask for.
+    note.style.display = removing && !form.clearKey ? 'block' : 'none';
+    document.getElementById('cfg-key-sent').style.display = removing ? 'none' : '';
+    let placeholder = 'Enter remote API key or leave blank for local Ollama';
+    if (loadedConfig.hasKey) {
+      if (!removing) placeholder = 'A key is stored. Leave this blank to keep it.';
+      else placeholder = form.clearKey ? 'The stored key will be removed' : 'Enter a key for the new provider or endpoint';
+    }
+    document.getElementById('cfg-api-key').placeholder = placeholder;
   }
 
   function onProviderChange(val) {
@@ -2533,7 +2553,7 @@
     const envelope = document.getElementById('dialogue-envelope');
     if (envelope) {
       envelope.style.display = 'grid';
-      showEnvelopeState('LISTENING');
+      showEnvelopeState(null);  // no prompt_envelope has sent a state for this question yet
       const qEl = document.getElementById('env-query');
       if (qEl) qEl.innerText = `"${query}"`;
       const rEl = document.getElementById('env-reply');

@@ -174,3 +174,9 @@ def test_the_question_panel_fields_are_found_by_id_not_by_position() -> None:
     for field in ("env-query", "env-reply"):
         assert f'id="{field}"' in HUD_SOURCE
         assert f"getElementById('{field}')" in HUD_SOURCE
+
+
+def test_the_question_panel_label_is_never_given_a_state_the_page_made_up() -> None:
+    # The label follows a prompt_envelope, so a question shown before one arrives must not claim a state.
+    calls = re.findall(r"(?<!function )showEnvelopeState\(([^)]*)\)", HUD_SOURCE)
+    assert sorted(calls) == ["msg.state", "null", "null"]
