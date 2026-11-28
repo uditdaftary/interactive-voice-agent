@@ -242,6 +242,7 @@ def test_adaptive_noise_floor():
         
     # Noise floor should have tracked downwards
     assert vad.noise_floor_dbfs < -62.0
+    assert vad.noise_floor_dbfs >= -90.0
 
 
 def test_unconvertible_input_falls_back_to_empty_frame(caplog) -> None:
@@ -256,4 +257,3 @@ def test_unconvertible_input_falls_back_to_empty_frame(caplog) -> None:
     messages = [record.getMessage() for record in caplog.records]
     assert len(messages) == 1
     assert "list" in messages[0]
-    assert vad.noise_floor_dbfs >= -90.0
