@@ -1099,6 +1099,18 @@
     if (known) setPill(pill, `state-pill ${known[0]}`, known[1]);
   }
 
+  // Shows what a prompt_envelope says in the question panel. The query is shown as the message has it, empty included:
+  // the line for speech it did not recognize has no query, and the question before it is not one it answers. A message
+  // without a context or a reply leaves those as they were.
+  function showEnvelopeText(msg) {
+    const contextEl = document.getElementById('env-local-ctx');
+    const queryEl = document.getElementById('env-query');
+    const replyEl = document.getElementById('env-reply');
+    if (contextEl && msg.context) contextEl.innerText = `"${msg.context}"`;
+    if (queryEl) queryEl.innerText = msg.query ? `"${msg.query}"` : '';
+    if (replyEl && msg.reply) replyEl.innerText = `"${msg.reply}"`;
+  }
+
   // The server sends null for a latency it did not measure, and that is shown as such, never as a number.
   function showLatency(ms) {
     const text = (ms === null || ms === undefined) ? 'not measured' : `${Number(ms).toFixed(2)} ms`;
@@ -1875,18 +1887,7 @@
         updateStateUI();
         envelope.style.display = 'grid';
         showEnvelopeState(msg.state);
-        if (msg.context) {
-          const ctxEl = document.getElementById('env-local-ctx');
-          if (ctxEl) ctxEl.innerText = `"${msg.context}"`;
-        }
-        if (msg.query) {
-          const qEl = document.getElementById('env-query');
-          if (qEl) qEl.innerText = `"${msg.query}"`;
-        }
-        if (msg.reply) {
-          const rEl = document.getElementById('env-reply');
-          if (rEl) rEl.innerText = `"${msg.reply}"`;
-        }
+        showEnvelopeText(msg);
       } else {
         currentState = 'NARRATING';
         isPlaying = true;

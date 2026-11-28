@@ -436,3 +436,28 @@ def test_a_document_reply_keeps_a_cursor_the_server_reported_while_it_was_on_its
         "pastTheEnd": {"idx": 1, "word": 1},
         "fromReply": {"idx": 1, "word": 0},
     }
+
+
+# --- the text of the question panel ----------------------------------------------------------------------------------
+
+
+def test_an_envelope_with_no_query_clears_the_question_before_it() -> None:
+    script = (
+        hud_function_source("showEnvelopeText")
+        + "const fields = { 'env-local-ctx': {}, 'env-query': {}, 'env-reply': {} };"
+        + "const document = { getElementById: (id) => fields[id] };"
+        + "const read = () => ({ context: fields['env-local-ctx'].innerText, query: fields['env-query'].innerText,"
+        + " reply: fields['env-reply'].innerText });"
+        + "const shown = [];"
+        + "showEnvelopeText({ context: 'A line.', query: 'Who is Lucy?', reply: 'A friend.' }); shown.push(read());"
+        + "showEnvelopeText({ context: 'A line.', query: '', reply: 'I did not catch that.' }); shown.push(read());"
+        + "showEnvelopeText({ query: 'And Maine?' }); shown.push(read());"
+        + "process.stdout.write(JSON.stringify(shown));"
+    )
+    done = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == [
+        {"context": '"A line."', "query": '"Who is Lucy?"', "reply": '"A friend."'},
+        {"context": '"A line."', "query": "", "reply": '"I did not catch that."'},
+        {"context": '"A line."', "query": '"And Maine?"', "reply": '"I did not catch that."'},
+    ]
