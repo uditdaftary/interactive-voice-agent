@@ -354,6 +354,9 @@ def test_e2e_voice_barge_in_stt_transcription(e2e_system) -> None:
             # Start narration, so the speech below interrupts it.
             ws.send_json({"type": "playback_control", "action": "resume"})
             next_message("state_sync", state="NARRATING")
+            # A resume cue is sent only when the restart rewinds, so interrupt past the sentence's first word.
+            while next_message("cursor_update")["word_offset"] < 1:
+                pass
 
             # 1. Send speech audio frames while NARRATING to trigger VAD barge-in
             t = np.linspace(0, 0.03, 720, endpoint=False)

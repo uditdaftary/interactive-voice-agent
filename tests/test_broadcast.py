@@ -172,3 +172,59 @@ def test_sync_broadcast_with_closed_loop_warns(caplog: pytest.LogCaptureFixture)
         ConnectionManager().broadcast_json_sync({"type": "ping"}, loop=loop)
 
     assert [record.levelname for record in caplog.records] == ["WARNING"]
+
+
+def test_failing_audio_sink_is_logged_once_and_keeps_receiving(caplog: pytest.LogCaptureFixture) -> None:
+    manager = ConnectionManager()
+    received: list[bytes] = []
+
+    def failing_sink(frame: bytes) -> None:
+        received.append(frame)
+        raise RuntimeError("sink broke")
+
+    manager.register_audio_sink(failing_sink)
+    with caplog.at_level(logging.ERROR):
+        manager.on_audio_frame(b"\x00\x00")
+        manager.on_audio_frame(b"\x01\x00")
+
+    assert received == [b"\x00\x00", b"\x01\x00"]
+    errors = [record for record in caplog.records if "audio sink" in record.getMessage()]
+    assert len(errors) == 1
+    assert errors[0].exc_info is not None
+
+
+def test_replacing_the_audio_sink_logs_the_new_sink_failure(caplog: pytest.LogCaptureFixture) -> None:
+    manager = ConnectionManager()
+    seen: list[str] = []
+
+    def first_sink(frame: bytes) -> None:
+        seen.append("first")
+        raise RuntimeError("first sink broke")
+
+    def second_sink(frame: bytes) -> None:
+        seen.append("second")
+        raise RuntimeError("second sink broke")
+
+    manager.register_audio_sink(first_sink)
+    with caplog.at_level(logging.ERROR):
+        manager.on_audio_frame(b"\x00\x00")
+        manager.register_audio_sink(second_sink)
+        manager.on_audio_frame(b"\x00\x00")
+
+    assert seen == ["first", "second"]
+    errors = [record for record in caplog.records if "audio sink" in record.getMessage()]
+    assert len(errors) == 2
+
+
+def test_failing_voice_change_callback_is_logged_and_does_not_raise(caplog: pytest.LogCaptureFixture) -> None:
+    manager = ConnectionManager()
+
+    def failing_callback(voice_id: str) -> None:
+        raise RuntimeError("voice callback broke")
+
+    manager.register_voice_change_callback(failing_callback)
+    with caplog.at_level(logging.ERROR):
+        manager.set_voice("calm")
+
+    assert manager.active_voice == "calm"
+    assert [record.getMessage() for record in caplog.records] == ["Error executing voice_change_callback"]

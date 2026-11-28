@@ -11,7 +11,7 @@ import json
 import logging
 import threading
 from dataclasses import dataclass
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from voice_agent.orchestrator.state_machine import SessionState, SessionStateName
@@ -66,6 +66,8 @@ class ConnectionManager:
         self._explicit_owner: Optional[WebSocket] = None
         self._owner_listeners: List[Callable[[], None]] = []
         self._ignored_logged: set[WebSocket] = set()
+        # The audio sink runs for every client PCM frame: each sink's first failure is logged, keyed by id.
+        self._audio_sinks_logged: set[int] = set()
         self.tasks = TaskRegistry()
         # Audio: one clip at a time goes out, each announced just before its blob; `_generation` orders everything
         # audible (see `stop_audio`).
@@ -137,8 +139,9 @@ class ConnectionManager:
         for ws in sockets:
             try:
                 await ws.close()
-            except Exception:  # noqa: BLE001, S110  # S3.3 RC4
-                pass
+            except (RuntimeError, OSError, WebSocketDisconnect) as error:
+                # Starlette raises RuntimeError on a socket already closed, WebSocketDisconnect or OSError when the client has gone.
+                logger.debug("Closing a WebSocket during shutdown failed (%s)", type(error).__name__)
 
     @property
     def connection_count(self) -> int:
@@ -259,8 +262,8 @@ class ConnectionManager:
         if cb is not None:
             try:
                 cb(voice_id)
-            except Exception as e:  # noqa: BLE001  # S3.3 RC4
-                logger.error(f"Error executing voice_change_callback: {e}")
+            except Exception:  # noqa: BLE001  # one failing listener must not stop the others
+                logger.exception("Error executing voice_change_callback")
 
     @property
     def mic_source(self) -> str:
@@ -275,8 +278,8 @@ class ConnectionManager:
         if cb is not None:
             try:
                 cb(source)
-            except Exception as e:  # noqa: BLE001  # S3.3 RC4
-                logger.error(f"Error executing mic_source_change_callback: {e}")
+            except Exception:  # noqa: BLE001  # one failing listener must not stop the others
+                logger.exception("Error executing mic_source_change_callback")
 
     @property
     def cadence(self) -> float:
@@ -359,8 +362,8 @@ class ConnectionManager:
         if cb is not None:
             try:
                 cb(flushed_samples, latency_ms)
-            except Exception as e:  # noqa: BLE001  # S3.3 RC4
-                logger.error(f"Error executing barge_in_callback: {e}")
+            except Exception:  # noqa: BLE001  # one failing listener must not stop the others
+                logger.exception("Error executing barge_in_callback")
 
         return event
 
@@ -499,6 +502,8 @@ class ConnectionManager:
         """Register a callback sink to receive client Web Audio PCM frames."""
         with self._lock:
             self._audio_sink = callback
+            # Only the current sink's id is kept; a replaced sink's entry goes with it.
+            self._audio_sinks_logged.clear()
 
     def register_barge_in_callback(self, callback: Callable[[Optional[int], Optional[float]], Any]) -> None:
         """Register a callback invoked when barge-in is triggered."""
@@ -523,8 +528,10 @@ class ConnectionManager:
         if sink is not None:
             try:
                 sink(frame_bytes)
-            except Exception as e:  # noqa: BLE001  # S3.3 RC4
-                logger.error(f"Error in audio sink callback: {e}")
+            except Exception:  # noqa: BLE001  # one failing listener must not stop the others
+                if id(sink) not in self._audio_sinks_logged:
+                    self._audio_sinks_logged.add(id(sink))
+                    logger.exception("Error in audio sink callback; later failures of this sink are not logged")
 
     # ========================================================================
     # Messaging & Broadcasting
@@ -624,8 +631,8 @@ class ConnectionManager:
                 logger.warning(f"Background WebSocket broadcast error: {exc}")
         except (asyncio.CancelledError, concurrent.futures.CancelledError):
             pass
-        except Exception as e:  # noqa: BLE001  # S3.3 RC4
-            logger.debug(f"Error inspecting broadcast future: {e}")
+        except Exception as e:  # noqa: BLE001  # a done-callback must not raise into the event loop, and the future's type is not known here
+            logger.debug("Error inspecting broadcast future (%s)", type(e).__name__)
 
     @staticmethod
     def _usable_loop(loop: Optional[asyncio.AbstractEventLoop], caller: str) -> Optional[asyncio.AbstractEventLoop]:

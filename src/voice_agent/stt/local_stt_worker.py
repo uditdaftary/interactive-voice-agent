@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import ctypes
 import io
 import json
 import os
@@ -35,6 +36,7 @@ import queue
 import sys
 import threading
 import time
+import traceback
 
 # Run by path (python -I .../local_stt_worker.py), so the package root is not on sys.path yet.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -79,8 +81,9 @@ def use_utf8() -> None:
         try:
             if isinstance(stream, io.TextIOWrapper):
                 stream.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:  # noqa: BLE001, S110  # S3.3 RC4
-            pass
+        except (OSError, ValueError) as error:
+            # reconfigure raises ValueError on a closed stream; the stream keeps its console code page.
+            log(f"stream not reconfigured to UTF-8: {type(error).__name__}")
 
 
 def send(payload: dict) -> None:
@@ -105,7 +108,8 @@ def lower_priority(level: str = "below") -> None:
                 log(f"priority {level} not set")
         else:
             os.nice(5)
-    except Exception as error:  # noqa: BLE001  # S3.3 RC4
+    except OSError as error:
+        # os.nice raises OSError (PermissionError when refused); the worker keeps its base priority.
         log(f"priority not lowered: {error}")
 
 
@@ -156,13 +160,14 @@ def set_priority(level: str) -> bool:
         # sys.platform (not os.name) so mypy skips this Windows-only branch when checking on Linux.
         if sys.platform != "win32":
             return False
-        import ctypes
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.GetCurrentProcess.restype = ctypes.c_void_p
         kernel32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         kernel32.SetPriorityClass.restype = ctypes.c_int
         return bool(kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), PRIORITY_CLASSES[level]))
-    except Exception:  # noqa: BLE001  # S3.3 RC4
+    except (OSError, AttributeError, ctypes.ArgumentError) as error:
+        # OSError: kernel32 cannot be loaded. AttributeError: a symbol is missing. ArgumentError: a call does not match its argtypes.
+        log(f"SetPriorityClass not applied: {type(error).__name__}: {error}")
         return False
 
 
@@ -444,7 +449,8 @@ def main() -> int:
         engine = Engine(args.model, threads, args.kind)
         # The first decode pays for the runtime's one-off set-up; do it before the first recording needs it.
         engine.decode((np.random.default_rng(1).standard_normal(SAMPLE_RATE) * 600).astype(np.int16))
-    except Exception as error:  # noqa: BLE001  # S3.3 RC4
+    except Exception as error:  # noqa: BLE001  # any failure loading or warming the engine is reported to the parent as a load failure; the libraries raise their own types
+        traceback.print_exc(file=sys.stderr)
         send({"type": "error", "message": f"load failed: {type(error).__name__}: {error}"})
         return 3
     worker = Worker(engine)
@@ -452,6 +458,8 @@ def main() -> int:
     messages: "queue.Queue[dict | None]" = queue.Queue()
     threading.Thread(target=reader, args=(messages,), daemon=True).start()
     gate = PriorityGate(args.priority)
+    # Audio ops arrive per chunk, so a failing op's traceback is written once per op kind; every failure is still reported.
+    reported_failures: set[str] = set()
     while True:
         try:
             first = messages.get(timeout=gate.timeout())
@@ -485,7 +493,10 @@ def main() -> int:
                         log("priority high")
                 elif op == "quit":
                     return 0
-            except Exception as error:  # noqa: BLE001  # S3.3 RC4
+            except Exception as error:  # noqa: BLE001  # one failing op is answered with an error and the worker keeps serving the rest
+                if op not in reported_failures:
+                    reported_failures.add(op)
+                    traceback.print_exc(file=sys.stderr)
                 send({"type": "error", "id": request_id, "message": f"{op} failed: {type(error).__name__}: {error}"})
         if None in batch:
             return 0

@@ -25,6 +25,7 @@ Comprehensive empirical test suite covering:
 
 import asyncio
 import contextlib
+import logging
 import threading
 import time
 import numpy as np
@@ -527,3 +528,37 @@ def test_rapid_barge_in_websocket_flooding() -> None:
 
             assert manager.generation == 100
             assert manager.state == "LISTENING"
+
+
+def test_failing_listeners_are_logged_and_the_others_still_run(caplog) -> None:
+    bridge = HybridMicrophoneBridge(source="browser")
+    frame_sizes: list[int] = []
+    barge_in_events: list[object] = []
+
+    def failing_frame_listener(frame: np.ndarray) -> None:
+        raise RuntimeError("frame listener broke")
+
+    def other_failing_frame_listener(frame: np.ndarray) -> None:
+        raise RuntimeError("second frame listener broke")
+
+    def failing_barge_in_listener(event: object) -> None:
+        raise RuntimeError("barge-in listener broke")
+
+    bridge.add_frame_callback(failing_frame_listener)
+    bridge.add_frame_callback(other_failing_frame_listener)
+    bridge.add_frame_callback(lambda frame: frame_sizes.append(frame.size))
+    bridge.add_barge_in_callback(failing_barge_in_listener)
+    bridge.add_barge_in_callback(barge_in_events.append)
+
+    with caplog.at_level(logging.ERROR, logger="voice_agent.audio.hybrid"):
+        for _ in range(3):
+            bridge._process_calibrated_frame(np.zeros(480, dtype=np.float32))
+        bridge.trigger_manual_barge_in()
+
+    assert frame_sizes == [480, 480, 480]
+    assert len(barge_in_events) == 1
+    messages = [record.getMessage() for record in caplog.records]
+    # Each frame listener runs for every 30 ms frame, so each one's failure is logged once, and a second listener is not hidden by the first.
+    assert sum("frame callback" in message for message in messages) == 2
+    assert sum("barge-in callback" in message for message in messages) == 1
+    assert all(record.exc_info for record in caplog.records)

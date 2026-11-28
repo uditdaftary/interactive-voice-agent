@@ -128,6 +128,9 @@ class HybridMicrophoneBridge:
         self._barge_in_callbacks: List[Callable[[BargeInEvent], None]] = []
         self._vad_callbacks: List[Callable[[VADTelemetry], None]] = []
         self._frame_callbacks: List[Callable[[np.ndarray], None]] = []
+        # Frame and VAD listeners run for every 30 ms frame, so each listener's first failure is logged, keyed by id.
+        self._frame_listeners_logged: set[int] = set()
+        self._vad_listeners_logged: set[int] = set()
 
         # Speech state tracking for onset detection
         self._speech_in_progress = False
@@ -288,8 +291,10 @@ class HybridMicrophoneBridge:
         for cb in self._frame_callbacks:
             try:
                 cb(frame)
-            except Exception as e:  # noqa: BLE001  # S3.3 RC4
-                logger.error(f"Error in frame callback: {e}")
+            except Exception:  # noqa: BLE001  # one failing listener must not stop the others
+                if id(cb) not in self._frame_listeners_logged:
+                    self._frame_listeners_logged.add(id(cb))
+                    logger.exception("Error in frame callback; later failures of this listener are not logged")
 
         # Evaluate VAD step
         self.vad._step_frame(frame)
@@ -313,8 +318,10 @@ class HybridMicrophoneBridge:
         for vad_cb in self._vad_callbacks:
             try:
                 vad_cb(telemetry)
-            except Exception as e:  # noqa: BLE001  # S3.3 RC4
-                logger.error(f"Error in VAD callback: {e}")
+            except Exception:  # noqa: BLE001  # one failing listener must not stop the others
+                if id(vad_cb) not in self._vad_listeners_logged:
+                    self._vad_listeners_logged.add(id(vad_cb))
+                    logger.exception("Error in VAD callback; later failures of this listener are not logged")
 
         # Check for speech onset to trigger sub-50ms barge-in interruption
         consecutive = getattr(self.vad, "_consecutive_speech_frames", 0)
@@ -355,8 +362,8 @@ class HybridMicrophoneBridge:
         for cb in self._barge_in_callbacks:
             try:
                 cb(event)
-            except Exception as e:  # noqa: BLE001  # S3.3 RC4
-                logger.error(f"Error in barge-in callback: {e}")
+            except Exception:  # noqa: BLE001  # one failing listener must not stop the others
+                logger.exception("Error in barge-in callback")
 
         return event
 
@@ -424,6 +431,8 @@ class HybridMicrophoneBridge:
         with self._lock:
             if callback in self._vad_callbacks:
                 self._vad_callbacks.remove(callback)
+                # The id is freed with the callback; a later listener reusing it must get its own first log.
+                self._vad_listeners_logged.discard(id(callback))
 
     def add_frame_callback(self, callback: Callable[[np.ndarray], None]) -> None:
         """Register callback receiving calibrated 30ms 16kHz audio frames."""
@@ -471,7 +480,9 @@ class HybridMicrophoneBridge:
         else:
             try:
                 arr = np.asarray(data)
-            except Exception:  # noqa: BLE001  # S3.3 RC4
+            except (TypeError, ValueError):
+                # Static method: no instance to hold a first-failure flag, so this DEBUG line is per call.
+                logger.debug("Dropping audio input of type %s that cannot be converted to an array", type(data).__name__)
                 return np.empty(0, dtype=np.float32)
 
         if arr.size == 0:
@@ -548,8 +559,8 @@ class HybridMicrophoneBridge:
             self._host_stream = stream
             return True
 
-        except (ImportError, Exception) as e:  # noqa: BLE001  # S3.3 RC4
-            logger.debug(f"Failed to initialize host sounddevice: {e}")
+        except Exception as e:  # noqa: BLE001  # sounddevice raises PortAudioError, an Exception rather than OSError, when no device is usable
+            logger.info("Host sounddevice unavailable (%s): %s", type(e).__name__, e)
             self._host_stream = None
             return False
 
@@ -559,8 +570,8 @@ class HybridMicrophoneBridge:
             try:
                 self._host_stream.stop()
                 self._host_stream.close()
-            except Exception as e:  # noqa: BLE001  # S3.3 RC4
-                logger.debug(f"Error closing sounddevice stream: {e}")
+            except Exception as e:  # noqa: BLE001  # sounddevice raises PortAudioError, an Exception rather than OSError, on stream errors
+                logger.debug("Error closing sounddevice stream (%s)", type(e).__name__)
             finally:
                 self._host_stream = None
 
