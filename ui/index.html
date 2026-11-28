@@ -2291,7 +2291,9 @@
       const cursorMovedSince = cursorMoves !== cursorBefore;
       const wanted = cursorMovedSince ? currentSentenceIdx : data.current_sentence_idx;
       currentSentenceIdx = Number.isInteger(wanted) ? Math.max(0, Math.min(wanted, sentences.length - 1)) : 0;
-      if (!cursorMovedSince) currentWordIdx = 0;
+      // A word belongs to the sentence it was reported for: one brought back to the end of a shorter document starts
+      // over at its first word.
+      currentWordIdx = cursorMovedSince && currentSentenceIdx === wanted ? currentWordIdx : 0;
       const docTitleEl = document.getElementById('header-doc-title');
       if (docTitleEl) docTitleEl.innerText = (sentences.length && data.title) ? `[BOOK: ${data.title}]` : '[No document]';
       renderNarrativeStream();

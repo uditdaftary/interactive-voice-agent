@@ -416,7 +416,7 @@ def test_a_document_reply_keeps_a_cursor_the_server_reported_while_it_was_on_its
         slow.release({ ok: true, status: 200, json: async () => doc('Book', ['A.', 'B.', 'C.', 'D.'], 0) });
         await fetched;
         const kept = { idx: currentSentenceIdx, word: currentWordIdx };
-        // A position past the end of the new document is brought back into it.
+        // A position past the end of the new document is brought back into it, to the first word of the last sentence.
         const late = later();
         queued.push(late.reply);
         const clamped = syncDocumentFromServer();
@@ -433,7 +433,7 @@ def test_a_document_reply_keeps_a_cursor_the_server_reported_while_it_was_on_its
     )
     assert result == {
         "kept": {"idx": 2, "word": 4},
-        "pastTheEnd": {"idx": 1, "word": 1},
+        "pastTheEnd": {"idx": 1, "word": 0},
         "fromReply": {"idx": 1, "word": 0},
     }
 
