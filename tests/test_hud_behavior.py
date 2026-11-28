@@ -374,3 +374,24 @@ def test_the_form_says_nothing_about_a_key_when_none_is_stored() -> None:
     shown = key_field_texts(False, {"baseUrl": "https://api.other.test/v1"})
     assert shown["note"] == "none"
     assert shown["placeholder"] == "Enter remote API key or leave blank for local Ollama"
+
+
+def test_a_document_applied_by_an_upload_resets_the_count_a_cursor_update_asks_for() -> None:
+    result = run_document_scenario(
+        """
+        // A cursor update reports 5 sentences while 3 are shown, and the fetch for it is applied.
+        queued.push(ok(doc('Old', ['A.', 'B.', 'C.'], 0)));
+        requestDocumentSync(5);
+        await settle();
+        // An upload in this tab then replaces it with 2 sentences.
+        queued.push(ok(doc('Mine', ['X.', 'Y.'], 0)));
+        await syncDocumentFromServer();
+        const afterUpload = { latch: documentSyncTotal, shown: STORY_PARAGRAPHS.length };
+        // Another tab loads a document of 5 sentences: it must be fetched, although 5 was asked for before.
+        queued.push(ok(doc('Theirs', ['1.', '2.', '3.', '4.', '5.'], 0)));
+        requestDocumentSync(5);
+        await settle();
+        return { afterUpload, shown: STORY_PARAGRAPHS.length, unused: queued.length };
+        """
+    )
+    assert result == {"afterUpload": {"latch": 2, "shown": 2}, "shown": 5, "unused": 0}

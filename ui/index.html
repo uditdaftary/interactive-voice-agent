@@ -2238,8 +2238,9 @@
     }
   }
 
-  // The sentence count a re-fetch was last asked for, so a count that stays different from the one shown asks once. A
-  // fetch that fails gives the count back, so the next cursor update asks again. ponytail: while /api/document keeps
+  // The sentence count the page shows, or has asked for and not yet received, so a count that stays different from the
+  // one shown asks once. A document applied by any fetch sets it to the count shown; a fetch that fails gives the count
+  // back, so the next cursor update asks again. ponytail: while /api/document keeps
   // failing and the socket is up, that is one failed request per cursor update; add a minimum wait if it ever shows.
   let documentSyncTotal = null;
   function requestDocumentSync(total) {
@@ -2271,6 +2272,7 @@
       if (mine !== documentFetchSerial) return;
       const sentences = Array.isArray(data.sentences) ? data.sentences.filter(text => typeof text === 'string') : [];
       STORY_PARAGRAPHS = sentences;
+      documentSyncTotal = sentences.length;
       currentSentenceIdx = Number.isInteger(data.current_sentence_idx)
         ? Math.max(0, Math.min(data.current_sentence_idx, sentences.length - 1))
         : 0;
