@@ -233,8 +233,9 @@ def search_web_sync(query: str, max_results: int = 8) -> str:
 
     try:
         results = list(DDGS().text(query, max_results=max_results))
-    except Exception as exc:  # noqa: BLE001  # S3.3 RC4
-        logger.warning("Live web search failed for query %r: %s", query, exc)
+    except Exception as exc:  # noqa: BLE001  # web search fails soft by design: DDGS raises its own and assorted exception types
+        # The query is user speech or text, so only the exception type is logged.
+        logger.warning("Live web search failed (%s); no results", type(exc).__name__)
         return ""
     lines = []
     for result in results:
