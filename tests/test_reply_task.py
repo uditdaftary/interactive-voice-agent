@@ -465,6 +465,10 @@ async def test_narration_restarted_after_an_interruption_cues_before_its_first_c
     await start_narrating(engine, tts)
     await socket.wait_until(lambda: ("cursor_update", "") in socket.seen())
     mark = len(socket.texts)
+    # Narration is cut off in the middle of a sentence: only a restart that goes back is cued.
+    manager.session.add_listener(
+        lambda old, new, reason: setattr(engine, "current_word_idx", 3) if new in ("LISTENING", "REPLYING") else None
+    )
 
     if how == "answer":
         engine.ask("who is lucy")
