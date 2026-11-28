@@ -327,6 +327,9 @@ async def test_continue_while_narrating_tells_the_page_and_narrates_on_for_it() 
     await socket.wait_for_clips(1)
     await delivered()
     generation = socket.clips[0].generation
+    last_word = len(BOOK[0].split()) - 1
+    await socket.wait_until(lambda: any(m["word_offset"] == last_word for m in socket.messages("cursor_update")))
+    await delivered()
     syncs_before = len(socket.messages("state_sync"))
     stops_before = len(socket.messages("audio_stop"))
 
@@ -476,13 +479,20 @@ async def test_a_repeat_sends_no_resume_cue_because_it_rewinds_nothing(coming_fr
     await manager.tasks.cancel_all()
 
 
-async def test_a_plain_resume_from_a_question_still_sends_the_cue() -> None:
+@pytest.mark.parametrize(
+    ("word_idx", "cues"),
+    [(0, []), (2, [2]), (4, [4]), (7, [4])],
+    ids=["first-word-no-cue", "two-words-in", "four-words-in", "mid-sentence"],
+)
+async def test_the_resume_cue_names_how_far_back_narration_really_starts(word_idx: int, cues: list[int]) -> None:
     manager = ConnectionManager()
     tts = FakeTts()
     engine, _, _ = make_engine(manager, tts=tts)
     socket = await tab(manager)
     await narrating(manager, engine, tts)
     manager.trigger_barge_in()
+    engine.current_sentence_idx = 2  # BOOK[2] has ten words
+    engine.current_word_idx = word_idx
     spoken_before = len(tts.calls)
 
     engine.start_narration()
@@ -490,5 +500,5 @@ async def test_a_plain_resume_from_a_question_still_sends_the_cue() -> None:
         await tts.wait_for_calls(spoken_before + 1)
     await delivered()
 
-    assert [m["pre_roll_words"] for m in resume_cues(socket)] == [4]
+    assert [m["pre_roll_words"] for m in resume_cues(socket)] == cues
     await manager.tasks.cancel_all()

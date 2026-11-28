@@ -227,9 +227,10 @@ class NarrationEngine:
                 # and a replacement reply (which cancels the old one by name) are not barge-ins.
                 self.manager.tasks.cancel("reply")
         elif new == "NARRATING":
-            # Coming back from a question or a listening window is announced to the HUD, with the words narration
-            # starts back by; a plain resume is not. A repeat starts at the sentence's first word, so it rewinds nothing.
-            self._cue_pre_roll = old in ("LISTENING", "REPLYING") and reason != "repeat"
+            # Coming back from a question or a listening window is announced to the HUD, with the number of words
+            # narration really starts back by (the loop works that out; none when it starts at a first word). A resume
+            # from a pause is not announced.
+            self._cue_pre_roll = old in ("LISTENING", "REPLYING")
             self._ensure_narration()
 
     def _restart_narration(self) -> None:
@@ -464,15 +465,18 @@ class NarrationEngine:
         generation = self.manager.generation  # before the first await: this loop belongs to the audio that follows the last stop
         feeder: asyncio.Task[None] | None = None
         try:
+            start = self._restart_point()
             if self._cue_pre_roll:
                 self._cue_pre_roll = False
-                # Queued behind the state_sync that started this loop, ahead of the first cursor_update.
-                await self.manager.broadcast_json(PromptEnvelopeMessage(
-                    state="NARRATING",
-                    context=self.sentences[self.current_sentence_idx % len(self.sentences)] if self.sentences else "",
-                    pre_roll_words=RESUME_PRE_ROLL_WORDS,
-                ))
-            start = self._restart_point()
+                # The cursor is still where narration stopped: the words between it and the start are the rewind.
+                words_back = self.current_word_idx - start[1] if start[0] == self.current_sentence_idx else 0
+                if words_back > 0:
+                    # Queued behind the state_sync that started this loop, ahead of the first cursor_update.
+                    await self.manager.broadcast_json(PromptEnvelopeMessage(
+                        state="NARRATING",
+                        context=self.sentences[start[0]],
+                        pre_roll_words=words_back,
+                    ))
             await self._show_word(start[0], start[1])  # the sentence is on screen while its audio is being made
             clips: asyncio.Queue[_Clip | Exception] = asyncio.Queue()
             room = asyncio.Semaphore(2)  # the clip playing and the one queued behind it
@@ -569,7 +573,7 @@ class NarrationEngine:
         # Queued before the restarted loop exists, so the page hears the state before the loop's first cursor_update.
         manager.broadcast_state_sync()
         if restart_narration:
-            self._cue_pre_roll = intent == "resume"  # a repeat starts at the first word and rewinds nothing
+            self._cue_pre_roll = True
             self._ensure_narration()
 
     def _repeat_sentence(self) -> None:
