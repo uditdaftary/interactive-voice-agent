@@ -1101,16 +1101,16 @@
     if (known) setPill(pill, `state-pill ${known[0]}`, known[1]);
   }
 
-  // Shows what a prompt_envelope says in the question panel. The query is shown as the message has it, empty included:
-  // the line for speech it did not recognize has no query, and the question before it is not one it answers. A message
-  // without a context or a reply leaves those as they were.
+  // Shows what a prompt_envelope says in the question panel. The query and the reply are shown as the message has them,
+  // empty included: the line for speech it did not recognize has no query, and the envelope that says it is searching has
+  // no reply yet, and the question and answer before them are not theirs. A message without a context leaves it as it was.
   function showEnvelopeText(msg) {
     const contextEl = document.getElementById('env-local-ctx');
     const queryEl = document.getElementById('env-query');
     const replyEl = document.getElementById('env-reply');
     if (contextEl && msg.context) contextEl.innerText = `"${msg.context}"`;
     if (queryEl) queryEl.innerText = msg.query ? `"${msg.query}"` : '';
-    if (replyEl && msg.reply) replyEl.innerText = `"${msg.reply}"`;
+    if (replyEl) replyEl.innerText = msg.reply ? `"${msg.reply}"` : '';
   }
 
   // The server sends null for a latency it did not measure, and that is shown as such, never as a number.

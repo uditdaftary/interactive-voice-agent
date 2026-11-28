@@ -493,8 +493,24 @@ def test_an_envelope_with_no_query_clears_the_question_before_it() -> None:
     assert json.loads(done.stdout) == [
         {"context": '"A line."', "query": '"Who is Lucy?"', "reply": '"A friend."'},
         {"context": '"A line."', "query": "", "reply": '"I did not catch that."'},
-        {"context": '"A line."', "query": '"And Maine?"', "reply": '"I did not catch that."'},
+        {"context": '"A line."', "query": '"And Maine?"', "reply": ""},
     ]
+
+
+def test_an_envelope_with_a_query_and_no_reply_clears_the_answer_before_it() -> None:
+    # The server sends one of these while it searches for the answer to a new question.
+    script = (
+        hud_function_source("showEnvelopeText")
+        + "const fields = { 'env-local-ctx': {}, 'env-query': {}, 'env-reply': {} };"
+        + "const document = { getElementById: (id) => fields[id] };"
+        + "showEnvelopeText({ context: 'A line.', query: 'Who is Lucy?', reply: 'A friend.' });"
+        + "showEnvelopeText({ context: 'Searching for: Where is Maine?', query: 'Where is Maine?', reply: '' });"
+        + "process.stdout.write(JSON.stringify({ query: fields['env-query'].innerText,"
+        + " reply: fields['env-reply'].innerText }));"
+    )
+    done = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == {"query": '"Where is Maine?"', "reply": ""}
 
 
 # --- the words narration goes back over ------------------------------------------------------------------------------
