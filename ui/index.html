@@ -2415,19 +2415,24 @@
     };
   }
 
-  // Says so in the form when saving would drop a stored key because the destination changed.
+  // Says so in the form when saving would remove the stored key: because removal was asked for, or because the provider
+  // or endpoint changed and no key was typed. What the key field and the line above it say follow, so none of the
+  // three claims the key is kept or sent while another says it is removed.
   function updateKeyNote() {
     const note = document.getElementById('cfg-key-note');
     if (!note || !loadedConfig) return;
     const form = readConfigForm();
-    const dropped = loadedConfig.hasKey && form.provider !== 'none' && !form.apiKey && !form.clearKey
-      && destinationChanged(form, loadedConfig);
-    note.style.display = dropped ? 'block' : 'none';
-    // What the field and the line above it say must agree with the note: a key being dropped is not kept or sent.
-    document.getElementById('cfg-key-sent').style.display = dropped ? 'none' : '';
-    document.getElementById('cfg-api-key').placeholder = !loadedConfig.hasKey
-      ? 'Enter remote API key or leave blank for local Ollama'
-      : dropped ? 'Enter a key for the new provider or endpoint' : 'A key is stored. Leave this blank to keep it.';
+    const removing = loadedConfig.hasKey && form.provider !== 'none' && !form.apiKey
+      && (form.clearKey || destinationChanged(form, loadedConfig));
+    // The checkbox is its own explanation; the note is for a removal the user did not ask for.
+    note.style.display = removing && !form.clearKey ? 'block' : 'none';
+    document.getElementById('cfg-key-sent').style.display = removing ? 'none' : '';
+    let placeholder = 'Enter remote API key or leave blank for local Ollama';
+    if (loadedConfig.hasKey) {
+      if (!removing) placeholder = 'A key is stored. Leave this blank to keep it.';
+      else placeholder = form.clearKey ? 'The stored key will be removed' : 'Enter a key for the new provider or endpoint';
+    }
+    document.getElementById('cfg-api-key').placeholder = placeholder;
   }
 
   function onProviderChange(val) {

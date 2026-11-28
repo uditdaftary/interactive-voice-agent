@@ -363,7 +363,7 @@ def test_the_form_says_the_stored_key_is_removed_when_the_destination_changes(ch
 
 @pytest.mark.parametrize(
     "changes",
-    [{}, {"provider": "groq", "providerPicked": True, "apiKey": "sk-new"}, {"clearKey": True, "baseUrl": "x"}],
+    [{}, {"provider": "groq", "providerPicked": True, "apiKey": "sk-new"}, {"clearKey": True, "apiKey": "sk-new"}],
 )
 def test_the_form_keeps_saying_the_key_is_kept_when_nothing_drops_it(changes: dict[str, Any]) -> None:
     shown = key_field_texts(True, changes)
@@ -395,3 +395,10 @@ def test_a_document_applied_by_an_upload_resets_the_count_a_cursor_update_asks_f
         """
     )
     assert result == {"afterUpload": {"latch": 2, "shown": 2}, "shown": 5, "unused": 0}
+
+
+@pytest.mark.parametrize("changes", [{"clearKey": True}, {"clearKey": True, "baseUrl": "https://api.other.test/v1"}])
+def test_the_form_follows_the_remove_checkbox(changes: dict[str, Any]) -> None:
+    # The checkbox explains itself, so no note, but the field and the line above it stop saying the key is kept or sent.
+    shown = key_field_texts(True, changes)
+    assert shown == {"note": "none", "sent": "none", "placeholder": "The stored key will be removed"}
