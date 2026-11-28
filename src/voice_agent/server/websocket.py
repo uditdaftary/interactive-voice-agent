@@ -360,7 +360,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     except WebSocketDisconnect:
         logger.info("Client disconnected via WebSocketDisconnect.")
-    except Exception as exc:  # noqa: BLE001  # S3.3 RC4
-        logger.warning(f"WebSocket session terminated with exception: {exc}")
+    except Exception:  # noqa: BLE001  # top-level session handler: a failure ends this session only, and is logged with its traceback
+        logger.exception("WebSocket session terminated with exception")
     finally:
         manager.disconnect(websocket)
