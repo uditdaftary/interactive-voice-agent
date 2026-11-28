@@ -462,7 +462,7 @@
         <label class="field-label">API Key (Optional for Local Ollama)</label>
         <input type="password" id="cfg-api-key" class="field-input" placeholder="Enter remote API key or leave blank for local Ollama" oninput="updateKeyNote()">
         <div id="cfg-key-stored" style="display:none; flex-direction:column; gap:4px; font-size:12.5px;">
-          <span class="faint" id="cfg-key-sent">A key is stored. It is sent to the endpoint above.</span>
+          <span class="faint" id="cfg-key-sent"></span>
           <span id="cfg-key-note" style="display:none; color:var(--high);">The stored key will be removed because the provider or endpoint changed.</span>
           <label style="display:flex; align-items:center; gap:8px;">
             <input type="checkbox" id="cfg-clear-key" onchange="updateKeyNote()">
@@ -1023,12 +1023,14 @@
   }
 
   // --- PRE-ROLL RESUMPTION CUES ---
+  // Marks the `count` words narration goes back over: the ones before the word it stopped at, which is not one of them.
   function highlightPreRollWords(count = 4) {
-    currentWordIdx = Math.max(0, currentWordIdx - count);
+    const stopWord = currentWordIdx;
+    currentWordIdx = Math.max(0, stopWord - count);
     wordsArray.forEach(el => {
       const s = parseInt(el.dataset.sIdx, 10);
       const w = parseInt(el.dataset.wIdx, 10);
-      if (s === currentSentenceIdx && w >= currentWordIdx && w <= currentWordIdx + count) {
+      if (s === currentSentenceIdx && w >= currentWordIdx && w < stopWord) {
         el.classList.add('preroll');
       }
     });
@@ -1099,16 +1101,16 @@
     if (known) setPill(pill, `state-pill ${known[0]}`, known[1]);
   }
 
-  // Shows what a prompt_envelope says in the question panel. The query is shown as the message has it, empty included:
-  // the line for speech it did not recognize has no query, and the question before it is not one it answers. A message
-  // without a context or a reply leaves those as they were.
+  // Shows what a prompt_envelope says in the question panel. The query and the reply are shown as the message has them,
+  // empty included: the line for speech it did not recognize has no query, and the envelope that says it is searching has
+  // no reply yet, and the question and answer before them are not theirs. A message without a context leaves it as it was.
   function showEnvelopeText(msg) {
     const contextEl = document.getElementById('env-local-ctx');
     const queryEl = document.getElementById('env-query');
     const replyEl = document.getElementById('env-reply');
     if (contextEl && msg.context) contextEl.innerText = `"${msg.context}"`;
     if (queryEl) queryEl.innerText = msg.query ? `"${msg.query}"` : '';
-    if (replyEl && msg.reply) replyEl.innerText = `"${msg.reply}"`;
+    if (replyEl) replyEl.innerText = msg.reply ? `"${msg.reply}"` : '';
   }
 
   // The server sends null for a latency it did not measure, and that is shown as such, never as a number.
@@ -1857,19 +1859,8 @@
         currentState = 'NARRATING';
         updateStateUI();
       }
-      if (msg.sentence_idx !== undefined) {
-        currentSentenceIdx = msg.sentence_idx;
-        cursorMoves += 1;
-      }
-      if (msg.word_offset !== undefined) {
-        currentWordIdx = msg.word_offset;
-        cursorMoves += 1;
-      }
-      // A document of another length than the one shown (it was not loaded yet, or another tab loaded a new one) is
-      // fetched again. A sentence is patched only where the page has a sentence to patch.
-      if (msg.total_sentences !== undefined && msg.total_sentences !== STORY_PARAGRAPHS.length) {
-        requestDocumentSync(msg.total_sentences);
-      }
+      moveCursorFor(msg);
+      // A sentence is patched only where the page has a sentence to patch.
       if (msg.sentence_text && currentSentenceIdx < STORY_PARAGRAPHS.length && STORY_PARAGRAPHS[currentSentenceIdx] !== msg.sentence_text) {
         STORY_PARAGRAPHS[currentSentenceIdx] = msg.sentence_text;
         renderNarrativeStream();
@@ -2289,12 +2280,32 @@
       const cursorMovedSince = cursorMoves !== cursorBefore;
       const wanted = cursorMovedSince ? currentSentenceIdx : data.current_sentence_idx;
       currentSentenceIdx = Number.isInteger(wanted) ? Math.max(0, Math.min(wanted, sentences.length - 1)) : 0;
-      if (!cursorMovedSince) currentWordIdx = 0;
+      // A word belongs to the sentence it was reported for: one brought back to the end of a shorter document starts
+      // over at its first word.
+      currentWordIdx = cursorMovedSince && currentSentenceIdx === wanted ? currentWordIdx : 0;
       const docTitleEl = document.getElementById('header-doc-title');
       if (docTitleEl) docTitleEl.innerText = (sentences.length && data.title) ? `[BOOK: ${data.title}]` : '[No document]';
       renderNarrativeStream();
     } catch (e) {
       failed(e);
+    }
+  }
+
+  // Sets the cursor from a cursor_update. A document of another length than the one shown (it was not loaded yet, or
+  // another tab loaded a new one) is fetched again, and that fetch is started first: the position the update names is
+  // then newer than the fetch's reply, which holds the sentence but no word, and is kept. Counted first, it was not, and
+  // a reply naming the same sentence moved the highlight back to the first word.
+  function moveCursorFor(msg) {
+    if (msg.total_sentences !== undefined && msg.total_sentences !== STORY_PARAGRAPHS.length) {
+      requestDocumentSync(msg.total_sentences);
+    }
+    if (msg.sentence_idx !== undefined) {
+      currentSentenceIdx = msg.sentence_idx;
+      cursorMoves += 1;
+    }
+    if (msg.word_offset !== undefined) {
+      currentWordIdx = msg.word_offset;
+      cursorMoves += 1;
     }
   }
 
@@ -2428,9 +2439,9 @@
     };
   }
 
-  // Says so in the form when saving would remove the stored key: because removal was asked for, or because the provider
-  // or endpoint changed and no key was typed. What the key field and the line above it say follow, so none of the
-  // three claims the key is kept or sent while another says it is removed.
+  // Says so in the form what saving does to the stored key: removes it (asked for, or the provider or endpoint changed
+  // and no key was typed), replaces it (a key was typed), or keeps it. What the key field and the line above it say
+  // follow, so none of the three claims the key is kept or sent while another says otherwise.
   function updateKeyNote() {
     const note = document.getElementById('cfg-key-note');
     if (!note || !loadedConfig) return;
@@ -2439,7 +2450,11 @@
       && (form.clearKey || destinationChanged(form, loadedConfig));
     // The checkbox is its own explanation; the note is for a removal the user did not ask for.
     note.style.display = removing && !form.clearKey ? 'block' : 'none';
-    document.getElementById('cfg-key-sent').style.display = removing ? 'none' : '';
+    const sentLine = document.getElementById('cfg-key-sent');
+    sentLine.style.display = removing ? 'none' : '';
+    sentLine.textContent = loadedConfig.hasKey && form.provider !== 'none' && form.apiKey
+      ? 'The key you typed will replace the stored key.'
+      : 'A key is stored. It is sent to the endpoint above.';
     let placeholder = 'Enter remote API key or leave blank for local Ollama';
     if (loadedConfig.hasKey) {
       if (!removing) placeholder = 'A key is stored. Leave this blank to keep it.';

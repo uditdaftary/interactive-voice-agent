@@ -225,6 +225,8 @@ def run_document_scenario(body: str) -> Any:
         + "\n"
         + hud_function_source("syncDocumentFromServer")
         + "\n"
+        + hud_function_source("moveCursorFor")
+        + "\n"
         + DOCUMENT_HARNESS
         + "\n(async () => {"
         + body
@@ -336,8 +338,12 @@ KEY_FORM = {
 }
 
 
+SENT_LINE = "A key is stored. It is sent to the endpoint above."
+REPLACE_LINE = "The key you typed will replace the stored key."
+
+
 def key_field_texts(has_key: bool, changes: dict[str, Any]) -> dict[str, str]:
-    """What the note, the line saying the key is sent, and the field's placeholder show for a form with `changes`."""
+    """What the note, the line about the stored key, and the field's placeholder show for a form with `changes`."""
     script = (
         hud_function_source("destinationChanged")
         + hud_function_source("updateKeyNote")
@@ -347,7 +353,8 @@ def key_field_texts(has_key: bool, changes: dict[str, Any]) -> dict[str, str]:
         + "const document = { getElementById: (id) => fields[id] };"
         + "updateKeyNote();"
         + "process.stdout.write(JSON.stringify({ note: fields['cfg-key-note'].style.display,"
-        + " sent: fields['cfg-key-sent'].style.display, placeholder: fields['cfg-api-key'].placeholder }));"
+        + " sent: fields['cfg-key-sent'].style.display, sentText: fields['cfg-key-sent'].textContent,"
+        + " placeholder: fields['cfg-api-key'].placeholder }));"
     )
     done = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
     assert done.returncode == 0, done.stderr
@@ -359,16 +366,38 @@ def key_field_texts(has_key: bool, changes: dict[str, Any]) -> dict[str, str]:
 )
 def test_the_form_says_the_stored_key_is_removed_when_the_destination_changes(changes: dict[str, Any]) -> None:
     shown = key_field_texts(True, changes)
-    assert shown == {"note": "block", "sent": "none", "placeholder": "Enter a key for the new provider or endpoint"}
+    assert shown == {
+        "note": "block",
+        "sent": "none",
+        "sentText": SENT_LINE,
+        "placeholder": "Enter a key for the new provider or endpoint",
+    }
+
+
+def test_the_form_says_the_key_is_kept_and_sent_when_nothing_changes_it() -> None:
+    shown = key_field_texts(True, {})
+    assert shown == {
+        "note": "none",
+        "sent": "",
+        "sentText": SENT_LINE,
+        "placeholder": "A key is stored. Leave this blank to keep it.",
+    }
 
 
 @pytest.mark.parametrize(
     "changes",
-    [{}, {"provider": "groq", "providerPicked": True, "apiKey": "sk-new"}, {"clearKey": True, "apiKey": "sk-new"}],
+    [
+        {"apiKey": "sk-new"},
+        {"provider": "groq", "providerPicked": True, "apiKey": "sk-new"},
+        {"clearKey": True, "apiKey": "sk-new"},
+    ],
 )
-def test_the_form_keeps_saying_the_key_is_kept_when_nothing_drops_it(changes: dict[str, Any]) -> None:
+def test_the_form_says_a_typed_key_replaces_the_stored_one(changes: dict[str, Any]) -> None:
+    # With the remove box ticked as well, the typed key still wins: the save replaces the key, it does not only remove it.
     shown = key_field_texts(True, changes)
-    assert shown == {"note": "none", "sent": "", "placeholder": "A key is stored. Leave this blank to keep it."}
+    assert shown["note"] == "none"
+    assert shown["sent"] == ""
+    assert shown["sentText"] == REPLACE_LINE
 
 
 def test_the_form_says_nothing_about_a_key_when_none_is_stored() -> None:
@@ -402,7 +431,12 @@ def test_a_document_applied_by_an_upload_resets_the_count_a_cursor_update_asks_f
 def test_the_form_follows_the_remove_checkbox(changes: dict[str, Any]) -> None:
     # The checkbox explains itself, so no note, but the field and the line above it stop saying the key is kept or sent.
     shown = key_field_texts(True, changes)
-    assert shown == {"note": "none", "sent": "none", "placeholder": "The stored key will be removed"}
+    assert shown == {
+        "note": "none",
+        "sent": "none",
+        "sentText": SENT_LINE,
+        "placeholder": "The stored key will be removed",
+    }
 
 
 def test_a_document_reply_keeps_a_cursor_the_server_reported_while_it_was_on_its_way() -> None:
@@ -416,7 +450,7 @@ def test_a_document_reply_keeps_a_cursor_the_server_reported_while_it_was_on_its
         slow.release({ ok: true, status: 200, json: async () => doc('Book', ['A.', 'B.', 'C.', 'D.'], 0) });
         await fetched;
         const kept = { idx: currentSentenceIdx, word: currentWordIdx };
-        // A position past the end of the new document is brought back into it.
+        // A position past the end of the new document is brought back into it, to the first word of the last sentence.
         const late = later();
         queued.push(late.reply);
         const clamped = syncDocumentFromServer();
@@ -433,7 +467,7 @@ def test_a_document_reply_keeps_a_cursor_the_server_reported_while_it_was_on_its
     )
     assert result == {
         "kept": {"idx": 2, "word": 4},
-        "pastTheEnd": {"idx": 1, "word": 1},
+        "pastTheEnd": {"idx": 1, "word": 0},
         "fromReply": {"idx": 1, "word": 0},
     }
 
@@ -459,5 +493,83 @@ def test_an_envelope_with_no_query_clears_the_question_before_it() -> None:
     assert json.loads(done.stdout) == [
         {"context": '"A line."', "query": '"Who is Lucy?"', "reply": '"A friend."'},
         {"context": '"A line."', "query": "", "reply": '"I did not catch that."'},
-        {"context": '"A line."', "query": '"And Maine?"', "reply": '"I did not catch that."'},
+        {"context": '"A line."', "query": '"And Maine?"', "reply": ""},
     ]
+
+
+def test_an_envelope_with_a_query_and_no_reply_clears_the_answer_before_it() -> None:
+    # The server sends one of these while it searches for the answer to a new question.
+    script = (
+        hud_function_source("showEnvelopeText")
+        + "const fields = { 'env-local-ctx': {}, 'env-query': {}, 'env-reply': {} };"
+        + "const document = { getElementById: (id) => fields[id] };"
+        + "showEnvelopeText({ context: 'A line.', query: 'Who is Lucy?', reply: 'A friend.' });"
+        + "showEnvelopeText({ context: 'Searching for: Where is Maine?', query: 'Where is Maine?', reply: '' });"
+        + "process.stdout.write(JSON.stringify({ query: fields['env-query'].innerText,"
+        + " reply: fields['env-reply'].innerText }));"
+    )
+    done = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == {"query": '"Where is Maine?"', "reply": ""}
+
+
+# --- the words narration goes back over ------------------------------------------------------------------------------
+
+
+def marked_pre_roll_words(count: int | None, stop_word: int, sentence_words: int = 12) -> dict[str, Any]:
+    """Which words of sentence 2 the page marks for a cue of `count` words, narration having stopped at `stop_word`."""
+    argument = "" if count is None else str(count)
+    script = (
+        hud_function_source("highlightPreRollWords")
+        + f"let currentSentenceIdx = 2; let currentWordIdx = {stop_word};"
+        + "const word = (s, w) => {"
+        + "  const el = { dataset: { sIdx: String(s), wIdx: String(w) }, marked: false, classList: { add: () => { el.marked = true; } } };"
+        + "  return el;"
+        + "};"
+        + f"const wordsArray = [word(1, 5), ...Array.from({{ length: {sentence_words} }}, (_, w) => word(2, w))];"
+        + f"highlightPreRollWords({argument});"
+        + "process.stdout.write(JSON.stringify({ cursor: currentWordIdx,"
+        + " marked: wordsArray.filter((el) => el.marked).map((el) => el.dataset.sIdx + ':' + el.dataset.wIdx) }));"
+    )
+    done = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def test_a_cue_marks_exactly_the_words_it_goes_back_over() -> None:
+    # Five words back from word 7 are words 2 to 6; the word narration stopped at is not one of them.
+    shown = marked_pre_roll_words(5, 7)
+    assert shown == {"cursor": 2, "marked": ["2:2", "2:3", "2:4", "2:5", "2:6"]}
+
+
+def test_a_cue_longer_than_the_sentence_so_far_marks_only_the_words_before_the_stop() -> None:
+    assert marked_pre_roll_words(5, 3) == {"cursor": 0, "marked": ["2:0", "2:1", "2:2"]}
+    assert marked_pre_roll_words(5, 0) == {"cursor": 0, "marked": []}
+
+
+def test_a_cue_with_no_count_goes_back_four_words() -> None:
+    assert marked_pre_roll_words(None, 9)["marked"] == ["2:5", "2:6", "2:7", "2:8"]
+
+
+def test_the_cursor_update_that_starts_a_refetch_keeps_its_word() -> None:
+    result = run_document_scenario(
+        """
+        // Three sentences are shown; the update says the document has 8 and the cursor is at sentence 3, word 5.
+        STORY_PARAGRAPHS = ['A.', 'B.', 'C.'];
+        const slow = later();
+        queued.push(slow.reply);
+        moveCursorFor({ sentence_idx: 3, word_offset: 5, total_sentences: 8 });
+        // The reply names the same sentence, and has no word.
+        slow.release({ ok: true, status: 200, json: async () => doc('Book', ['1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.'], 3) });
+        await settle();
+        const sameSentence = { idx: currentSentenceIdx, word: currentWordIdx, shown: STORY_PARAGRAPHS.length };
+        // An update for a document of the length shown does not fetch, and moves the cursor.
+        moveCursorFor({ sentence_idx: 4, word_offset: 1, total_sentences: 8 });
+        return { sameSentence, next: { idx: currentSentenceIdx, word: currentWordIdx }, unused: queued.length };
+        """
+    )
+    assert result == {
+        "sameSentence": {"idx": 3, "word": 5, "shown": 8},
+        "next": {"idx": 4, "word": 1},
+        "unused": 0,
+    }
