@@ -85,7 +85,7 @@ Questions that interrupt the narration go to a model served on this machine by [
    The Modelfile sets `num_ctx 2048` and leaves the chat template to the one embedded in the GGUF. Check that the reply is a plain sentence and not a reasoning transcript.
 3. Start the app. The defaults in the configuration table already point at `http://127.0.0.1:11434/v1` and the model name `voice-agent`.
 
-Without a reachable model the app says "My language model is offline. Check the model settings." and logs the cause (nothing listening, rejected key, server error, or an empty reply). The `builtin` provider is that same no-model mode on purpose. Greetings and the pause, resume and repeat commands are handled locally either way. Changes made through `/api/config` last until the server restarts.
+Without a reachable model the app reads the closest passage of the book aloud after "From the text:" (or says "My language model is offline. Check the model settings." when nothing matches), shows the cause in the HUD, and logs it (nothing listening, rejected key, server error, or an empty reply). The `none` provider is that same no-model mode on purpose, and makes no request. Greetings and the pause, resume and repeat commands are handled locally either way. Changes made through `/api/config` last until the server restarts.
 
 ## Project layout
 
@@ -119,9 +119,10 @@ Settings are read from environment variables (see `.env.example`; the app does n
 | `VOICE_AGENT_WEB_SEARCH` | `true` | Ground answers with DuckDuckGo results; `0`, `false` or `no` turns it off |
 | `VOICE_AGENT_STT_INITIAL_PROMPT` | empty | Names or terms that bias Whisper decoding |
 | `VOICE_AGENT_TTS_PRIMARY` | `edge` | `edge`, `pyttsx3` or `pocket`; the other backends are the fallbacks |
-| `VOICE_AGENT_STT_BACKEND` | `whisper` | `whisper` or `moonshine`; the server still transcribes with Whisper (see below) |
+| `VOICE_AGENT_STT_BACKEND` | `whisper` | `whisper` or `moonshine`; the backend the server transcribes with |
 | `VOICE_AGENT_MOONSHINE_MODEL_DIR` | `models/stt/moonshine-tiny-en-int8` | Folder with the Moonshine model files |
 | `VOICE_AGENT_BARGE_IN_LISTEN_S` | `8.0` | Seconds the app waits for you after an interruption before it goes back to what it was doing; extended while you speak. After a click on Speak, the turn ends when you click Stop; only if Stop never comes does the wait start, after 30 seconds |
+| `VOICE_AGENT_WEB_SPEECH_PREVIEW` | `false` | Show the browser's Web Speech preview and let it answer a turn the server heard nothing in. Chrome sends that audio to Google, so it needs internet; only `1`, `true`, `yes` or `on` enable it |
 
 The provider, model, voice, cadence and microphone source can also be changed at runtime from the UI or with `POST /api/config`.
 
@@ -132,12 +133,12 @@ How long the server waits for the browser to report a clip played is `Settings.p
 Both optional backends are installed only through extras, so the base install and CI never need them.
 
 - **Pocket TTS** (`pip install -e ".[pocket]"`, which pulls in PyTorch): set `VOICE_AGENT_TTS_PRIMARY=pocket`. Each voice is cloned from `models/voices/<voice_id>.wav` on the CPU. The clips must be 16-bit PCM WAV. A voice without a file speaks in `v-male`, with a warning. The model loads on the first sentence. Its voice-cloning weights on Hugging Face (`kyutai/pocket-tts`) are gated: accept the licence on that page and log in with the Hugging Face CLI before first use. Without access the backend reports an error and the chain falls back to edge-tts or pyttsx3. Voice clips are never committed to this repository.
-- **Moonshine STT** (`pip install -e ".[moonshine]"`): set `VOICE_AGENT_STT_BACKEND=moonshine`. Place the Moonshine Tiny English int8 model files (`preprocess.onnx`, `encode.int8.onnx`, `uncached_decode.int8.onnx`, `cached_decode.int8.onnx`, `tokens.txt`) in `models/stt/moonshine-tiny-en-int8`, or point `VOICE_AGENT_MOONSHINE_MODEL_DIR` at them. A local worker process runs the model on the CPU and restarts after a failure. The server does not read `VOICE_AGENT_STT_BACKEND` yet, so it still uses Whisper; the setting is ready for when the server wiring lands.
+- **Moonshine STT** (`pip install -e ".[moonshine]"`): set `VOICE_AGENT_STT_BACKEND=moonshine`. Place the Moonshine Tiny English int8 model files (`preprocess.onnx`, `encode.int8.onnx`, `uncached_decode.int8.onnx`, `cached_decode.int8.onnx`, `tokens.txt`) in `models/stt/moonshine-tiny-en-int8`, or point `VOICE_AGENT_MOONSHINE_MODEL_DIR` at them. A local worker process runs the model on the CPU and restarts after a failure.
 
 ## Limitations and roadmap
 
 - **Not offline by default.** See the network note in the quickstart.
-- **Answers need a local model.** Without a reachable Ollama model the app only answers a few local commands and otherwise says its model is offline. The Modelfile has not been run against a real Ollama install yet, so check the model's reply before relying on it.
+- **Answers need a local model.** Without a reachable Ollama model the app handles a few local commands, reads the closest passage of the book aloud for a question, and says so in the HUD. The Modelfile has not been run against a real Ollama install yet, so check the model's reply before relying on it.
 - **The ring buffer, voice activity detector, state machine and host microphone bridge are not wired into the web server.** The server detects speech with a simple energy threshold, and the `host` microphone option is stored as a setting but only browser audio is used. Wiring these in is the main open engineering item.
 - **Nothing measures the barge-in latency.** The server sends `null` for `latency_ms` and `flushed_samples`, and the UI shows "not measured". The Speak button still shows a placeholder figure the page makes up until the server's answer replaces it. The tests assert the ring buffer drain stays under 1 ms, which covers the buffer only, not microphone to silence.
 - **The word cursor is timed, not aligned.** Highlighting steps at an estimated words-per-second rate and holds on the last word until the browser reports the clip played, rather than following audio timestamps. The resume point after an interruption is that estimate, minus four words.

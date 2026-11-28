@@ -109,6 +109,18 @@ class TtsBackend(Protocol):
         ...
 
 
+class Synthesizer(Protocol):
+    """What the narration engine speaks through: the chain of backends, or a test's stand-in.
+
+    `status` says how the last call ended: "ok", "fallback:<name>" or "unavailable"."""
+
+    status: str
+
+    async def synthesize(self, text: str, voice_id: str, cadence: float) -> SpeechAudio | None:
+        """None when no audio could be made; the narration then moves on without sound for that sentence."""
+        ...
+
+
 class EdgeTtsBackend:
     """Microsoft's neural voices through edge-tts. Needs the network; the chain falls back to pyttsx3 when it is unreachable."""
 
@@ -360,18 +372,18 @@ def _wav_bytes(samples: np.ndarray, sample_rate: int) -> bytes:
 
 
 class ChainedTts:
-    """Tries each backend in order. `status` says how the last call ended: "ok", "fallback:<name>" or "unavailable"."""
+    """Tries each backend in order. `status` says how the last call ended: "ok", "fallback:<name>" or "unavailable".
+    Until the first call nothing has failed, so it starts at "ok"."""
 
     def __init__(self, backends: Sequence[TtsBackend]) -> None:
         if not backends:
             raise ValueError("ChainedTts needs at least one backend")
         self.backends = list(backends)
-        self.status = "unavailable"
+        self.status = "ok"
 
     async def synthesize(self, text: str, voice_id: str, cadence: float) -> SpeechAudio | None:
         if not text.strip():
-            self.status = "unavailable"
-            return None
+            return None  # nothing to say is not a backend failing, so the status stays as it was
         for index, backend in enumerate(self.backends):
             try:
                 audio = await backend.synthesize(text, voice_id, cadence)

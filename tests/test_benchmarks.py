@@ -28,8 +28,7 @@ from scipy.signal import resample_poly
 from voice_agent.audio.hybrid import HybridMicrophoneBridge
 from voice_agent.audio.loopback import VirtualAudioDevice
 from voice_agent.audio.ring_buffer import AudioRingBuffer
-from voice_agent.stt.backends import STT_UNAVAILABLE
-from voice_agent.stt.recognizer import STTEngine
+from voice_agent.stt.backends import STT_UNAVAILABLE, WhisperBackend
 from voice_agent.vad.energy_vad import VoiceActivityDetector
 
 
@@ -193,7 +192,7 @@ def test_generation_fencing_rejection_overhead_benchmark() -> None:
 @pytest.mark.network  # a cold Hugging Face cache needs a one-time tiny.en download, which the guard would block
 def test_benchmark_whisper_real() -> None:
     """Transcribe 2s of real speech with the real tiny.en model; median of 3 runs must be < 2,000ms."""
-    engine = STTEngine(model_size="tiny.en", device="cpu", compute_type="int8")
+    backend = WhisperBackend(model_size="tiny.en", device="cpu", compute_type="int8")
 
     with wave.open(str(VOICE_SAMPLE), "rb") as wf:
         source_rate = wf.getframerate()
@@ -203,14 +202,14 @@ def test_benchmark_whisper_real() -> None:
     speech_pcm = np.clip(speech_16k, -32768, 32767).astype(np.int16).tobytes()
 
     # The model loads on first use; that first decode is not part of the latency under test.
-    if engine.backend.transcribe(speech_pcm, sample_rate=16000).rejected_reason == STT_UNAVAILABLE:
+    if backend.transcribe(speech_pcm, sample_rate=16000).rejected_reason == STT_UNAVAILABLE:
         pytest.skip("Whisper tiny.en could not be loaded (not in the Hugging Face cache and the Hub is unreachable)")
 
     times_ms = []
     transcripts = []
     for _ in range(3):
         t0 = time.perf_counter()
-        transcripts.append(engine.transcribe(speech_pcm, sample_rate=16000))
+        transcripts.append(backend.transcribe(speech_pcm, sample_rate=16000).text)
         times_ms.append((time.perf_counter() - t0) * 1000.0)
 
     median_ms = float(np.median(times_ms))

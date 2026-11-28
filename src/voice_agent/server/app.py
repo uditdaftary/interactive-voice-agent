@@ -25,7 +25,7 @@ from voice_agent.server.connection_manager import (
     default_connection_manager,
 )
 from voice_agent.server import security
-from voice_agent.server.narration import NarrationEngine, SearchFn, TtsFn
+from voice_agent.server.narration import NarrationEngine, SearchFn
 from voice_agent.server.schemas import (
     AskRequest,
     ConfigUpdateRequest,
@@ -34,6 +34,8 @@ from voice_agent.server.schemas import (
 )
 from voice_agent.server.websocket import router as websocket_router
 from voice_agent.settings import Settings, load_settings
+from voice_agent.stt.backends import build_stt_backend
+from voice_agent.tts.backends import Synthesizer
 import asyncio
 
 logger = logging.getLogger(__name__)
@@ -117,14 +119,13 @@ def _stored_stt_engine(app: FastAPI) -> Any:
     return engine
 
 
-def _construct_stt_engine(initial_prompt: str) -> Any:
-    """Runs in the build thread: constructs the engine and loads Whisper here, so no caller's thread pays for the model."""
-    from voice_agent.stt.recognizer import STTEngine
-
-    engine = STTEngine(initial_prompt=initial_prompt)
-    # A failed load is logged by the backend and retried after its cooldown; the engine is stored either way.
-    engine.load()
-    return engine
+def _construct_stt_engine(settings: Settings) -> tuple[Any, bool]:
+    """Runs in the build thread: builds the backend the settings choose and loads its model here, so no caller's thread
+    pays for it. Returns the backend and whether its model is loaded."""
+    backend = build_stt_backend(settings)
+    load = getattr(backend, "load", None)  # Whisper loads a model; Moonshine starts its worker on the first utterance
+    # A failed load is logged by the backend and retried after its cooldown; the backend is stored either way.
+    return backend, True if load is None else bool(load())
 
 
 async def _build_stt_engine(app: FastAPI) -> Any:
@@ -132,13 +133,24 @@ async def _build_stt_engine(app: FastAPI) -> Any:
     if settings is None:
         # An app built without create_app has no settings on its state; it takes the environment's, as create_app would.
         settings = load_settings()
+    narration: Any = getattr(app.state, "narration_engine", None)
+    if narration is not None:
+        narration.set_stt_status("loading")
+    status = "ok"  # a build that was cancelled learned nothing
     try:
-        engine = await asyncio.to_thread(_construct_stt_engine, settings.stt_initial_prompt)
+        engine, loaded = await asyncio.to_thread(_construct_stt_engine, settings)
         app.state.stt_engine = engine
+        if not loaded:
+            status = "unavailable"
         return engine
+    except Exception:
+        status = "unavailable"
+        raise
     finally:
         # Success is now served from app.state.stt_engine; after a failure the next caller retries.
         app.state.stt_build = None
+        if narration is not None:
+            narration.set_stt_status(status)
 
 
 async def ensure_stt_engine(app: FastAPI) -> Any:
@@ -182,7 +194,7 @@ def create_app(
     *,
     settings: Optional[Settings] = None,
     llm_client: Optional[Any] = None,
-    tts: Optional[TtsFn] = None,
+    tts: Optional[Synthesizer] = None,
     search: Optional[SearchFn] = None,
     allowed_hosts: Optional[list[str]] = None,
 ) -> FastAPI:
@@ -192,11 +204,11 @@ def create_app(
         ui_dir: Path to static dashboard UI directory. Defaults to project `ui/`.
         connection_manager: Custom ConnectionManager instance. Defaults to a new one, so apps never share a session.
         narration_engine: Custom NarrationEngine instance. Defaults to new instance.
-        stt_engine: Custom STT engine (any object with a `transcribe` method). Defaults to the connection manager's engine,
-            else one is built on first use.
+        stt_engine: Custom STT backend (any `SttBackend`). Defaults to the connection manager's, else the backend the
+            settings choose is built on first use.
         settings: Timing and endpoint settings for the default NarrationEngine. Defaults to `load_settings()`.
         llm_client: LLM client for the default NarrationEngine. Defaults to one built from `settings`.
-        tts: Async speech synthesizer for the default NarrationEngine. Defaults to `synthesize_sentence`.
+        tts: Speech synthesizer for the default NarrationEngine. Defaults to the TTS chain the settings choose.
         search: Async web search for the default NarrationEngine. Defaults to `search_web`.
         The last four are ignored when `narration_engine` is supplied.
         allowed_hosts: Host header names the server answers to. Defaults to loopback only; tests add `testserver`.
@@ -337,7 +349,7 @@ def create_app(
         eng: NarrationEngine = app.state.narration_engine
         mgr: ConnectionManager = app.state.connection_manager
 
-        eng.llm.update_config(
+        eng.configure_llm(
             base_url=body.base_url,
             api_key=body.api_key,
             provider=body.provider,
@@ -417,12 +429,10 @@ def create_app(
         except InvalidAudio as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         stt = await ensure_stt_engine(app)
-        transcript = await asyncio.to_thread(stt.transcribe, pcm_data)
-        if transcript is None:
-            transcript = ""
+        transcript = await asyncio.to_thread(stt.transcribe, pcm_data, STT_SAMPLE_RATE)
 
         return {
-            "transcript": transcript,
+            "transcript": transcript.text,
             "duration_sec": duration_sec,
             "status": "ok",
         }

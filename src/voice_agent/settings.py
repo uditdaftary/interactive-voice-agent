@@ -15,6 +15,7 @@ from voice_agent.stt.backends import STT_BACKEND_NAMES
 from voice_agent.tts.backends import TTS_BACKEND_NAMES
 
 _FALSE_SPELLINGS = frozenset({"0", "false", "no"})
+_TRUE_SPELLINGS = frozenset({"1", "true", "yes", "on"})
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,10 @@ class Settings:
     # a stalled test, not be waved through.
     playback_ack_timeout_s: float = 30.0
 
+    # The browser's Web Speech preview sends the microphone to the browser vendor's servers, so it is off unless chosen.
+    # It is the only source of a `fallback_query`, which the server otherwise ignores.
+    web_speech_preview: bool = False
+
 
 def _one_of(env_name: str, raw: str | None, default: str, names: tuple[str, ...]) -> str:
     """Case-insensitive, stored lower case. Any other name fails here, at load, not at the first use."""
@@ -91,6 +96,13 @@ def _env_bool(raw: str | None, default: bool) -> bool:
     return raw.strip().lower() not in _FALSE_SPELLINGS
 
 
+def _env_opt_in(raw: str | None, default: bool) -> bool:
+    """For a setting that sends data off this machine: only an explicit yes turns it on, so an empty value never does."""
+    if raw is None:
+        return default
+    return raw.strip().lower() in _TRUE_SPELLINGS
+
+
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     """Build Settings from `VOICE_AGENT_*` variables; anything unset keeps its default."""
     source = os.environ if env is None else env
@@ -108,4 +120,5 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         barge_in_listen_s=_positive_seconds(
             source.get("VOICE_AGENT_BARGE_IN_LISTEN_S"), defaults.barge_in_listen_s, "VOICE_AGENT_BARGE_IN_LISTEN_S"
         ),
+        web_speech_preview=_env_opt_in(source.get("VOICE_AGENT_WEB_SPEECH_PREVIEW"), defaults.web_speech_preview),
     )

@@ -19,6 +19,7 @@ from fakes import (
     FakeSearch,
     FakeStt,
     FakeTts,
+    FunctionTts,
     PlayerSocket,
     wait_for_state,
     wait_until,
@@ -148,7 +149,7 @@ async def test_tts_error_pauses_with_error() -> None:
         raise RuntimeError("synthesis exploded")
 
     manager = ConnectionManager()
-    engine = make_engine(manager, tts=broken_tts)
+    engine = make_engine(manager, tts=FunctionTts(broken_tts))
     socket = await connected(manager)
 
     engine.start_narration()

@@ -262,6 +262,23 @@ class StateSyncMessage(BaseProtocolMessage):
         default=True,
         description="True when this connection owns the microphone and the audio; false for every other tab",
     )
+    llm_status: str = Field(
+        default="ok",
+        description="How the last model request ended: ok, offline, auth, error, interrupted; none when no model is configured",
+    )
+    llm_provider: str = Field(default="", description="Provider name of the language model endpoint; none is the no-model mode")
+    tts_status: str = Field(
+        default="ok",
+        description="ok, fallback:<backend> when a later backend spoke, unavailable when every backend failed",
+    )
+    stt_status: str = Field(
+        default="ok",
+        description="ok, loading while the recognizer starts, unavailable when it cannot run, rejected when the last audio was not speech",
+    )
+    web_speech_preview: bool = Field(
+        default=False,
+        description="True when the browser's Web Speech preview (which sends audio to the browser vendor) may be used",
+    )
 
 
 class VADEventMessage(BaseProtocolMessage):
@@ -524,7 +541,10 @@ def parse_client_message(raw: Union[str, bytes, Dict[str, Any]]) -> ClientMessag
             return QueryInterruptionMessage.model_validate({"query": payload.get("query") or payload.get("text") or ""})
 
         if msg_type in ("voice_end", "voiceend", "speech_end", "speechend", "voice_stop"):
-            return VoiceEndMessage()
+            # Kept for the server to use only if the Web Speech preview is enabled (see `_preview_text`); anything but
+            # text is ignored, as it always was.
+            preview = payload.get("fallback_query")
+            return VoiceEndMessage(fallback_query=preview if isinstance(preview, str) else None)
 
         if msg_type == "playback_done":
             return PlaybackDoneMessage.model_validate(

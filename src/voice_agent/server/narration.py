@@ -9,22 +9,20 @@ import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from voice_agent.document.bm25 import BM25Index
 from voice_agent.cursor.tracker import CursorPosition, CursorTracker
 from voice_agent.document.parser import DocumentContent
 from voice_agent.llm.client import (
     CHARACTER_PERSONA_PROMPTS,
+    OFFLINE_LINE,
     LLMClient,
     search_web,
 )
-from voice_agent.orchestrator.context import (
-    estimate_tokens,
-    sanitize_chatml,
-    truncate_to_tokens,
-)
-from voice_agent.server.connection_manager import ConnectionManager
+from voice_agent.llm.intents import classify_local, greeting_reply
+from voice_agent.llm.prompt import HISTORY_MESSAGES, build_messages
+from voice_agent.server.connection_manager import ConnectionManager, Statuses
 from voice_agent.server.schemas import (
     CursorUpdateMessage,
     ErrorMessage,
@@ -32,24 +30,28 @@ from voice_agent.server.schemas import (
     ReplyErrorMessage,
 )
 from voice_agent.settings import Settings, load_settings
-from voice_agent.tts.synthesizer import synthesize_sentence
+from voice_agent.tts.backends import Synthesizer, build_tts
 
 logger = logging.getLogger(__name__)
 
-# Called as tts(text, voice_id, cadence); returns (audio bytes or None, format name).
-TtsFn = Callable[[str, str, float], Awaitable[tuple[bytes | None, str]]]
 # Called as search(query, max_results); returns the grounding text, "" when nothing was found.
 SearchFn = Callable[[str, int], Awaitable[str]]
-
-
-async def _default_tts(text: str, voice_id: str, cadence: float) -> tuple[bytes | None, str]:
-    # Resolves synthesize_sentence at call time so the module attribute stays patchable.
-    return await synthesize_sentence(text, voice_id=voice_id, cadence=cadence)
 
 
 # Spoken when a reply fails or the user's speech was not understood. Neutral on purpose: no persona, no detail.
 REPLY_ERROR_LINE = "Something went wrong answering that."
 UNRECOGNIZED_LINE = "I didn't catch that."
+# Read before the closest passage of the book when no model answered.
+FROM_THE_TEXT = "From the text: "
+
+# The book is the primary source, and the web is not searched, when its best passage scores at least this much.
+AUTHORITATIVE_SCORE = 2.5
+DEFAULT_PERSONA_PROMPT = (
+    "You are an interactive conversational voice audiobook narrator. "
+    "The user interrupted the book narration to ask you a question. "
+    "Answer concisely, helpfully, and naturally in 1 to 3 spoken sentences. "
+    "Use the provided book context and web search results when answering."
+)
 
 
 # After an interruption, a pause or a change of owner, a sentence that was partly spoken starts again this many words
@@ -126,12 +128,13 @@ class NarrationEngine:
         initial_sentences: Optional[List[str]] = None,
         *,
         settings: Optional[Settings] = None,
-        tts: Optional[TtsFn] = None,
+        tts: Optional[Synthesizer] = None,
         search: Optional[SearchFn] = None,
     ):
         self.manager = connection_manager
         self.settings = settings if settings is not None else load_settings()
-        self.tts: TtsFn = tts if tts is not None else _default_tts
+        # The chain follows the settings this engine was given, not whatever the environment holds when it is first used.
+        self.tts: Synthesizer = tts if tts is not None else build_tts(self.settings.tts_primary)
         self.search: SearchFn = search if search is not None else search_web
         if llm_client is not None:
             self.llm = llm_client
@@ -142,6 +145,8 @@ class NarrationEngine:
                 model=self.settings.llm_model,
                 web_search_enabled=self.settings.web_search_enabled,
             )
+        self._llm_status = "ok"  # how the last request that ran to its end finished; ok before any request
+        self._stt_status = "ok"
         self.sentences: List[str] = list(initial_sentences or DEFAULT_STORY_SENTENCES)
         self._bm25_index: BM25Index = BM25Index.from_sentences(self.sentences)
         self.document_title: str = "Night City: Santo Domingo Run"
@@ -156,6 +161,38 @@ class NarrationEngine:
         session.followup_window_s = self.settings.followup_window_s
         session.add_listener(self._on_state_change)
         self.manager.add_owner_listener(self._on_owner_change)
+        self.manager.set_status_provider(self.statuses)
+
+    # --- statuses reported to the HUD ------------------------------------------------------------------------------
+
+    def statuses(self) -> Statuses:
+        """The model, speech and recognizer statuses as the HUD is told them. `none` is the no-model mode, whatever the
+        last request said."""
+        provider = self.llm.provider
+        return Statuses(
+            llm_status="none" if provider == "none" else self._llm_status,
+            llm_provider=provider,
+            tts_status=self.tts.status,
+            stt_status=self._stt_status,
+            web_speech_preview=self.settings.web_speech_preview,
+        )
+
+    def set_stt_status(self, status: str) -> None:
+        self._stt_status = status
+        self.manager.refresh_statuses()
+
+    def _llm_endpoint(self) -> tuple[Any, ...]:
+        """What decides which model answers: a change in any of these makes the old endpoint's behaviour irrelevant."""
+        config = self.llm.get_config()
+        return (config.get("provider"), config.get("base_url"), config.get("model"), getattr(self.llm, "api_key", None))
+
+    def configure_llm(self, **fields: Any) -> None:
+        """Change the model configuration. When the endpoint, provider, model or key changed, how the old one behaved
+        says nothing about the new one, so the status starts over; a change to anything else (web search) keeps it."""
+        before = self._llm_endpoint()
+        self.llm.update_config(**fields)
+        if self._llm_endpoint() != before:
+            self._llm_status = "ok"
 
     def _on_owner_change(self) -> None:
         """The audio goes to a different tab now. What the old one was playing is stopped either way."""
@@ -190,7 +227,9 @@ class NarrationEngine:
                 # and a replacement reply (which cancels the old one by name) are not barge-ins.
                 self.manager.tasks.cancel("reply")
         elif new == "NARRATING":
-            # Coming back from a question or a listening window is announced to the HUD; a plain resume is not.
+            # Coming back from a question or a listening window is announced to the HUD, with the number of words
+            # narration really starts back by (the loop works that out; none when it starts at a first word). A resume
+            # from a pause is not announced.
             self._cue_pre_roll = old in ("LISTENING", "REPLYING")
             self._ensure_narration()
 
@@ -277,14 +316,20 @@ class NarrationEngine:
     def start_narration(self) -> None:
         """Start or resume background narration loop. Refused (and logged) from a state that may not narrate.
 
-        Ignored while a reply is in progress: the reply returns the session to what it was doing when it ends, and
-        resuming now would run narration under the answer. Every tab sends a resume when its socket opens, so a second
-        tab must not be able to cut an answer off. (From LISTENING it still works: that is how a user stops waiting.)
+        While a question is open (LISTENING or REPLYING) the session returns to narration when it ends, whatever it was
+        doing before the question, so a resume from a paused session still takes effect. From LISTENING it narrates at
+        once: that is how a user stops waiting. A reply that is in progress is not cut off: it ends, and narration
+        follows it. (Every tab sends a resume when its socket opens, so a second tab must not be able to cut an answer
+        off.)
         """
-        if self.manager.state == "REPLYING":
-            logger.debug("Resume ignored: a reply is in progress and will return the session to what it was doing")
+        session = self.manager.session
+        state = session.state
+        if state in ("LISTENING", "REPLYING"):
+            session.set_resume_to("NARRATING")
+        if state == "REPLYING":
+            logger.debug("Resume during a reply: the reply goes on and narration follows it")
             return
-        if not self.manager.session.transition("NARRATING", "resume"):
+        if not session.transition("NARRATING", "resume"):
             return
         self._ensure_narration()  # the state listener starts it on a change; this covers a loop that has since ended
         logger.info("Narration started/resumed.")
@@ -331,14 +376,15 @@ class NarrationEngine:
         sentence that has not been synthesized yet."""
         voice_id = self.manager.active_voice or "david-martinez"
         cadence = self.manager.cadence or 1.0
-        audio_bytes, _fmt = await self.tts(text, voice_id, cadence)
+        speech = await self.tts.synthesize(text, voice_id, cadence)
+        self.manager.refresh_statuses()
         return _Synthesis(
             sentence_idx=sentence_idx,
             first_word=first_word,
             word_count=max(1, len(text.split())),
             duration_s=self._estimated_duration_s(text, cadence),
             gap_s=self.settings.inter_sentence_pause_s / cadence,
-            audio=audio_bytes or None,
+            audio=speech.data if speech is not None and speech.data else None,
         )
 
     async def _feed(
@@ -419,15 +465,18 @@ class NarrationEngine:
         generation = self.manager.generation  # before the first await: this loop belongs to the audio that follows the last stop
         feeder: asyncio.Task[None] | None = None
         try:
+            start = self._restart_point()
             if self._cue_pre_roll:
                 self._cue_pre_roll = False
-                # Queued behind the state_sync that started this loop, ahead of the first cursor_update.
-                await self.manager.broadcast_json(PromptEnvelopeMessage(
-                    state="NARRATING",
-                    context=self.sentences[self.current_sentence_idx % len(self.sentences)] if self.sentences else "",
-                    pre_roll_words=RESUME_PRE_ROLL_WORDS,
-                ))
-            start = self._restart_point()
+                # The cursor is still where narration stopped: the words between it and the start are the rewind.
+                words_back = self.current_word_idx - start[1] if start[0] == self.current_sentence_idx else 0
+                if words_back > 0:
+                    # Queued behind the state_sync that started this loop, ahead of the first cursor_update.
+                    await self.manager.broadcast_json(PromptEnvelopeMessage(
+                        state="NARRATING",
+                        context=self.sentences[start[0]],
+                        pre_roll_words=words_back,
+                    ))
             await self._show_word(start[0], start[1])  # the sentence is on screen while its audio is being made
             clips: asyncio.Queue[_Clip | Exception] = asyncio.Queue()
             room = asyncio.Semaphore(2)  # the clip playing and the one queued behind it
@@ -469,15 +518,8 @@ class NarrationEngine:
         if not self.sentences or not query.strip():
             return []
 
-        # Cyberpunk voice recognition alias normalization
-        query_norm = query.lower()
-        if "arakas" in query_norm:
-            query_norm += " arasaka"
-        if "sande" in query_norm and "sandevistan" not in query_norm:
-            query_norm += " sandevistan"
-
         scored = self._bm25_index.search(
-            query=query_norm,
+            query=query,
             top_k=max_passages,
             current_sentence_idx=current_sentence_idx,
         )
@@ -499,19 +541,77 @@ class NarrationEngine:
 
     # --- replies --------------------------------------------------------------------------------------------------
 
+    def _run_command(self, query: str) -> bool:
+        """Carry out `query` if it is a pause, resume or repeat command, and say whether it was. These never reach the
+        model or enter the history, and each is one change of the session at most."""
+        intent = classify_local(query)
+        if intent not in ("pause", "resume", "repeat"):
+            return False  # a greeting is a reply (see `_answer`); everything else is a question
+        state_before = self.manager.state
+        if intent == "pause":
+            self.pause_narration()
+        elif intent == "resume":
+            self.start_narration()
+        else:
+            self._repeat_sentence()
+        if self.manager.state == state_before:
+            self._bring_page_back(intent, state_before)
+        return True
+
+    def _bring_page_back(self, intent: str, state: str) -> None:
+        """Typed text arrives from a page that has already stopped its own audio and shows LISTENING. When the command
+        leaves the state as it was, no transition tells it where the session is, so it is told here, and whatever it
+        stopped goes on for it: the narration that was playing starts again (a few words back after a resume, from the
+        sentence's first word after a repeat), and a reply whose clip was stopped stops waiting for a report that will
+        never come."""
+        manager = self.manager
+        restart_narration = state == "NARRATING" and intent in ("resume", "repeat")
+        if restart_narration or (intent == "resume" and state == "REPLYING"):
+            manager.stop_audio()
+        if restart_narration:
+            manager.tasks.cancel("narration")
+        # Queued before the restarted loop exists, so the page hears the state before the loop's first cursor_update.
+        manager.broadcast_state_sync()
+        if restart_narration:
+            self._cue_pre_roll = True
+            self._ensure_narration()
+
+    def _repeat_sentence(self) -> None:
+        """Narrate the current sentence again from its first word, from whatever the session was doing."""
+        session = self.manager.session
+        state = session.state
+        self.current_word_idx = 0
+        self.manager.update_cursor(sentence_idx=self.current_sentence_idx, word_offset=0)
+        if state == "NARRATING":
+            return  # the state is unchanged, so `_run_command` restarts the loop after it has told the page (`_bring_page_back`)
+        session.set_resume_to("NARRATING")
+        if state == "PAUSED":
+            session.transition("NARRATING", "repeat")
+        else:
+            # The question or answer in progress is dropped: the user asked to hear the book again.
+            self.manager.tasks.cancel("reply")
+            self.manager.tasks.cancel("stt")
+            self.manager.stop_audio()
+            session.resume("repeat")
+
     def ask(self, query: str) -> None:
         """Answer `query` now: stop what is playing, take the session over and speak the answer as the `reply` task.
+        A pause, resume or repeat command is carried out instead and starts no reply.
 
         Synchronous on purpose. The state has changed when this returns, so nothing the caller does next (another
         question, a pause, an audio frame) can see a half-started reply, and the messages the change causes are queued
         ahead of everything the reply sends. A reply that is already running is replaced, and a transcription still
         pending is dropped: this question is the newest turn.
         """
+        if self._run_command(query):
+            return
         self._begin_reply("question", barge_in=True)
         self.manager.tasks.spawn(self._reply(query), "reply", replace=True)
 
     async def handle_user_interruption(self, query: str) -> None:
         """`ask`, but the caller waits for the whole exchange: the answer spoken and the follow-up window open."""
+        if self._run_command(query):
+            return
         self._begin_reply("question", barge_in=True)
         await self._reply(query)
 
@@ -572,12 +672,19 @@ class NarrationEngine:
     async def _speak(self, text: str) -> None:
         """Synthesize `text`, send it to the owner and wait until the browser says it has played. With nobody to say so
         (no owner, or no audio could be made) the wait is the estimate; if the report never comes the wait ends after
-        `playback_ack_timeout_s` past the estimate, with a WARNING, and the reply goes on."""
+        `playback_ack_timeout_s` past the estimate, with a WARNING, and the reply goes on. If audio was stopped after the
+        clip was queued, the clip was dropped unsent: the stop is what ended this speech, so it ends at once."""
         voice_id = self.manager.active_voice or "david-martinez"
         cadence = self.manager.cadence or 1.0
-        audio_bytes, _fmt = await self.tts(text, voice_id, cadence)
+        speech = await self.tts.synthesize(text, voice_id, cadence)
+        self.manager.refresh_statuses()
         estimate_s = self._estimated_duration_s(text, cadence)
-        segment_id = await self.manager.send_audio(audio_bytes) if audio_bytes else None
+        generation = self.manager.generation
+        segment_id = None
+        if speech is not None and speech.data:
+            segment_id = await self.manager.send_audio(speech.data, generation=generation)
+            if segment_id is None and self.manager.generation != generation:
+                return
         if segment_id is None:
             await asyncio.sleep(estimate_s)
         else:
@@ -596,130 +703,90 @@ class NarrationEngine:
         self.manager.session.resume("reply_done")
 
     async def _answer(self, query: str) -> None:
-        """Ground the question, stream the answer, speak it and open the follow-up window. Raises on any failure."""
+        """Answer the question and open the follow-up window. Raises on any failure.
+
+        A greeting is answered locally. Anything else is grounded in the book (and the web, when the book is not
+        authoritative) and put to the model. When the model gives no text, the closest passage of the book is read out
+        instead, or the offline line when there is none.
+        """
         current_context = self.sentences[self.current_sentence_idx] if self.sentences else ""
         voice_id = self.manager.active_voice or "david-martinez"
+        if classify_local(query) == "greeting":
+            await self._announce(query, current_context, greeting_reply(voice_id))
+            await self._speak_then_listen(query, current_context, greeting_reply(voice_id))
+            return
 
-        # 1. Retrieve relevant passages with BM25 & Gaussian proximity boost
-        scored_passages = self.search_document_passages_with_scores(
-            query,
-            max_passages=3,
-            current_sentence_idx=self.current_sentence_idx,
+        scored = self.search_document_passages_with_scores(
+            query, max_passages=3, current_sentence_idx=self.current_sentence_idx
         )
-        doc_passages = [text for text, _ in scored_passages]
-        best_doc_score = scored_passages[0][1] if scored_passages else 0.0
-        is_authoritative = best_doc_score >= 2.5
+        passages = [text for text, _ in scored]
+        authoritative = bool(scored) and scored[0][1] >= AUTHORITATIVE_SCORE
 
-        # 2. Live Internet Web Search Grounding (skipped if document passage has high BM25 confidence >= 2.5)
-        web_grounding = ""
-        if self.llm.web_search_enabled and not is_authoritative:
-            await self.manager.broadcast_json(PromptEnvelopeMessage(
-                state="REPLYING",
-                context=f"Searching web and document for: {query[:50]}...",
-                query=query,
-                reply="",
-            ))
-            web_grounding = await self.search(query, 3)
+        has_model = self.llm.provider != "none"
+        web_results = ""
+        if has_model and self.llm.web_search_enabled and not authoritative:
+            await self._announce(query, f"Searching web and document for: {query[:50]}...", "")
+            web_results = await self.search(query, 3)
 
-        # 3. Context Budgeting & ChatML Sanitization (enforces 2048-token limit for RTX 3050 4GB VRAM)
-        clean_query = sanitize_chatml(query)
-        clean_query = truncate_to_tokens(clean_query, max_tokens=256, from_end=False)
-        clean_current_context = sanitize_chatml(current_context)
-        clean_passages = [sanitize_chatml(p) for p in doc_passages]
-        clean_web_grounding = sanitize_chatml(web_grounding)
+        reply = ""
+        if has_model:
+            messages = build_messages(
+                system_prompt=CHARACTER_PERSONA_PROMPTS.get(voice_id, DEFAULT_PERSONA_PROMPT),
+                history=self._conversation_history,
+                question=query,
+                passages=passages,
+                current_sentence=current_context,
+                web_results=web_results,
+                authoritative=authoritative,
+            )
+            await self._announce(query, current_context, "Formulating answer...")
+            reply = await self._stream_reply(messages, query, current_context, voice_id)
 
-        character_prompt = CHARACTER_PERSONA_PROMPTS.get(
-            voice_id,
-            (
-                "You are an interactive conversational voice audiobook narrator. "
-                "The user interrupted the book narration to ask you a question. "
-                "Answer concisely, helpfully, and naturally in 1 to 3 spoken sentences. "
-                "Use the provided book context and web search results when answering."
-            ),
-        )
+        status = self.llm.status if has_model else "none"
+        if not reply and status != "ok":
+            # No model, or one that gave nothing usable: read the book's closest passage rather than a canned line.
+            passage = passages[0].strip() if passages else ""
+            spoken = FROM_THE_TEXT + passage if passage else OFFLINE_LINE
+            await self._announce(query, current_context, spoken)
+        elif not reply:
+            raise EmptyReply("the language model returned no text")
+        else:
+            spoken = reply
+            # Only a real answer is remembered: an offline line or a half-finished reply would be sent back to the model
+            # as something it had said, and a small model may repeat it.
+            if status == "ok":
+                self._remember(query, reply)
+        await self._speak_then_listen(query, current_context, spoken)
 
-        # Calculate token allowances
-        system_tokens = estimate_tokens(character_prompt) + 30
-        output_headroom = 256  # Reserved for 3-sentence generation
-        max_context_budget = 2048
-        available_user_tokens = max(256, max_context_budget - system_tokens - output_headroom)
-        query_tokens = estimate_tokens(clean_query)
-        remaining_context_budget = max(100, available_user_tokens - query_tokens)
+    async def _announce(self, query: str, context: str, reply: str) -> None:
+        await self.manager.broadcast_json(PromptEnvelopeMessage(state="REPLYING", context=context, query=query, reply=reply))
 
-        context_parts = []
-        if clean_passages:
-            if is_authoritative:
-                header = "Authoritative Document Passages (Primary Source of Truth):\n"
-            else:
-                header = "Passages from Document:\n"
-            context_parts.append(header + "\n".join(f"- {p}" for p in clean_passages))
-        if clean_current_context:
-            context_parts.append(f"Currently Reading Sentence: \"{clean_current_context}\"")
-        if clean_web_grounding:
-            context_parts.append(f"Live Internet Web Search Results:\n{clean_web_grounding}")
-
-        raw_context_block = "\n\n".join(context_parts)
-        context_block = truncate_to_tokens(raw_context_block, max_tokens=remaining_context_budget, from_end=False)
-
-        messages = [
-            {
-                "role": "system",
-                "content": character_prompt,
-            },
-        ]
-        # Inject up to 3 prior turns of conversational context for multi-turn dialogue
-        for prev_turn in self._conversation_history[-6:]:
-            messages.append(prev_turn)
-
-        messages.append({
-            "role": "user",
-            "content": f"{context_block}\n\nUser Question: {clean_query}",
-        })
-
-        # 4. Stream LLM tokens to the prompt envelope
-        await self.manager.broadcast_json(PromptEnvelopeMessage(
-            state="REPLYING",
-            context=current_context,
-            query=query,
-            reply="Formulating answer...",
-        ))
-        accumulated_reply = ""
+    async def _stream_reply(self, messages: list[dict[str, str]], query: str, context: str, voice_id: str) -> str:
+        """The model's text, shown to the HUD as it arrives. The status is read once the stream has ended, and the HUD is
+        told only if it changed: never once per token."""
+        reply = ""
         # The stream is closed here, whatever ends the loop: a cancelled or failed reply must not leave a
         # connection to the model open until the generator is garbage collected.
         async with contextlib.aclosing(self.llm.stream_generate(messages, character_id=voice_id)) as stream:
             async for token in stream:
-                accumulated_reply += token
-                # Periodic telemetry update
-                await self.manager.broadcast_json(PromptEnvelopeMessage(
-                    state="REPLYING",
-                    context=current_context,
-                    query=query,
-                    reply=accumulated_reply.strip(),
-                ))
+                reply += token
+                await self._announce(query, context, reply.strip())
+        # Not reached by a cancelled reply, so a barge-in is not reported as a model failure.
+        self._llm_status = self.llm.status
+        self.manager.refresh_statuses()
+        return reply.strip()
 
-        final_reply = accumulated_reply.strip()
-        if not final_reply:
-            raise EmptyReply("the language model returned no text")
+    def _remember(self, question: str, answer: str) -> None:
+        self._conversation_history.append({"role": "user", "content": question})
+        self._conversation_history.append({"role": "assistant", "content": answer})
+        del self._conversation_history[:-HISTORY_MESSAGES]
 
-        # The history keeps any non-empty text the client returns, and a reply stays in it even if speaking it fails.
-        # The fallback line the client yields when the model is unreachable is non-empty, so it is kept too; telling
-        # it apart from a real answer needs the client to say which it was.
-        self._conversation_history.append({"role": "user", "content": clean_query})
-        self._conversation_history.append({"role": "assistant", "content": final_reply})
-        if len(self._conversation_history) > 12:
-            self._conversation_history = self._conversation_history[-12:]
+    async def _speak_then_listen(self, query: str, context: str, spoken: str) -> None:
+        await self._speak(spoken)
 
-        # 5. Synthesize the answer to speech and stream it to the clients
-        await self._speak(final_reply)
-
-        # 6. Conversational turn-taking window: leave comms open for a follow-up. The reply ends here; the session
+        # Conversational turn-taking window: leave comms open for a follow-up. The reply ends here; the session
         # deadline closes the window, and a question asked inside it is a reply of its own.
         self.manager.clear_audio_turn()
         self.manager.session.enter_listening("followup", followup=True)
         # Queued, not awaited: it must reach the clients after the state_sync that the line above announced.
-        self.manager.broadcast_json_sync(PromptEnvelopeMessage(
-            state="LISTENING",
-            context=current_context,
-            query=query,
-            reply=final_reply,
-        ))
+        self.manager.broadcast_json_sync(PromptEnvelopeMessage(state="LISTENING", context=context, query=query, reply=spoken))

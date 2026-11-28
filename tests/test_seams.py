@@ -1,14 +1,16 @@
 """Injection seams: NarrationEngine and create_app take settings, LLM, TTS and search."""
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
-from fakes import FakeLLM, FakeSearch, FakeTts, wait_for_state
+from fakes import FakeLLM, FakeSearch, FakeTts, RecordingSocket, wait_for_state
 from voice_agent.server.app import create_app
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.narration import NarrationEngine
 from voice_agent.settings import Settings
+from voice_agent.tts.backends import ChainedTts, SpeechAudio, TtsError
 
 
 @pytest.fixture
@@ -96,3 +98,42 @@ def test_create_app_threads_seams() -> None:
     assert engine.search is search
     assert engine.llm is llm
     assert engine.settings is settings
+
+
+@pytest.mark.parametrize("primary", ["edge", "pyttsx3"])
+def test_default_tts_chain_follows_the_engines_own_settings(primary: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The chain is built from the settings the engine was given, not from the environment at first use."""
+    monkeypatch.setenv("VOICE_AGENT_TTS_PRIMARY", "pocket")
+
+    engine = NarrationEngine(
+        ConnectionManager(), llm_client=FakeLLM(), settings=replace(Settings.fast(), tts_primary=primary), search=FakeSearch()
+    )
+
+    assert [backend.name for backend in engine.tts.backends][0] == primary  # type: ignore[attr-defined]  # a ChainedTts
+
+
+async def test_a_chain_with_no_audio_does_not_stop_the_narration(cancel_narration) -> None:
+    """Every backend failing gives no clip, and the cursor still moves on through the sentences."""
+    manager = ConnectionManager()
+    tts = ChainedTts([_Failing("edge"), _Failing("pyttsx3")])
+    engine = NarrationEngine(
+        manager, llm_client=FakeLLM(), initial_sentences=["One two.", "Three four."], settings=Settings.fast(), tts=tts,
+        search=FakeSearch(),
+    )
+    cancel_narration(engine)
+    socket = RecordingSocket()
+    await manager.connect(socket)  # type: ignore[arg-type]
+
+    engine.start_narration()
+    await socket.wait_until(lambda: any(m["sentence_idx"] == 1 for m in socket.messages("cursor_update")))
+
+    assert manager.state == "NARRATING"
+    assert tts.status == "unavailable"
+
+
+class _Failing:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    async def synthesize(self, text: str, voice_id: str, cadence: float) -> SpeechAudio:
+        raise TtsError("down")

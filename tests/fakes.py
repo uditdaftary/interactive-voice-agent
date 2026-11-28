@@ -9,11 +9,14 @@ import asyncio
 import json
 import threading
 import time
-from collections.abc import AsyncGenerator, Callable, Collection, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Collection, Sequence
 from types import SimpleNamespace
 from typing import Any, NamedTuple
 
 import numpy as np
+
+from voice_agent.stt.backends import Transcript
+from voice_agent.tts.backends import SpeechAudio
 
 TTS_SAMPLE_RATE = 24000
 SAMPLES_PER_WORD = 4800  # 0.2 s of audio per word
@@ -30,17 +33,27 @@ def wait_until(condition: Callable[[], bool], timeout_s: float = 5.0, interval_s
 
 
 class FakeTts:
-    """Records `(text, voice_id, cadence)` and returns 24 kHz int16 silence sized by word count."""
+    """A synthesizer that records `(text, voice_id, cadence)` and makes 24 kHz int16 silence sized by word count.
 
-    def __init__(self) -> None:
+    The engine calls `synthesize`, which turns what `__call__` returns (the bytes, or None for no audio, and a format
+    name) into the chain's result. A test scripts a synthesizer by overriding `__call__`. `status` is what a real
+    chain reports; a test sets it to say the chain fell back.
+    """
+
+    def __init__(self, status: str = "ok") -> None:
+        self.status = status
         self.calls: list[tuple[str, str, float]] = []
         self._called = asyncio.Event()
 
-    async def __call__(self, text: str, voice_id: str, cadence: float) -> tuple[bytes, str]:
+    async def __call__(self, text: str, voice_id: str, cadence: float) -> tuple[bytes | None, str]:
         self.calls.append((text, voice_id, cadence))
         self._called.set()
         silence = np.zeros(len(text.split()) * SAMPLES_PER_WORD, dtype=np.int16)
-        return silence.tobytes(), "pcm_s16le"
+        return silence.tobytes(), "audio/pcm"
+
+    async def synthesize(self, text: str, voice_id: str, cadence: float) -> SpeechAudio | None:
+        data, mime = await self(text, voice_id, cadence)
+        return SpeechAudio(data, mime) if data else None
 
     async def wait_for_calls(self, count: int) -> None:
         """Block until at least `count` calls were made. Wrap in `asyncio.timeout` in tests."""
@@ -74,11 +87,22 @@ class FailingTts(FakeTts):
         self.fail_on = None if fail_on is None else frozenset(fail_on)
         self.attempts: list[str] = []
 
-    async def __call__(self, text: str, voice_id: str, cadence: float) -> tuple[bytes, str]:
+    async def __call__(self, text: str, voice_id: str, cadence: float) -> tuple[bytes | None, str]:
         self.attempts.append(text)
         if self.fail_on is None or text in self.fail_on:
             raise RuntimeError("synthesis exploded")
         return await super().__call__(text, voice_id, cadence)
+
+
+class FunctionTts(FakeTts):
+    """A synthesizer scripted by one async function `(text, voice_id, cadence) -> (bytes or None, format)`."""
+
+    def __init__(self, speak: Callable[[str, str, float], Awaitable[tuple[bytes | None, str]]]) -> None:
+        super().__init__()
+        self._speak = speak
+
+    async def __call__(self, text: str, voice_id: str, cadence: float) -> tuple[bytes | None, str]:
+        return await self._speak(text, voice_id, cadence)
 
 
 class FakeSearch:
@@ -96,9 +120,14 @@ class FakeSearch:
 class FakeLLM:
     """Streams preset tokens. Mirrors the slice of `LLMClient` that the server uses."""
 
-    def __init__(self, tokens: Sequence[str] = ("Understood. ",), web_search_enabled: bool = False) -> None:
+    def __init__(
+        self, tokens: Sequence[str] = ("Understood. ",), web_search_enabled: bool = False, status: str = "ok"
+    ) -> None:
         self.tokens = list(tokens)
         self.web_search_enabled = web_search_enabled
+        self.status = status  # how a request ended, as `LLMClient.status` says; it is what the client leaves after every stream
+        self.provider = "fake"
+        self.api_key = "local"
         self.calls: list[list[dict[str, str]]] = []
         self.config: dict[str, Any] = {"provider": "fake", "web_search_enabled": web_search_enabled}
 
@@ -116,6 +145,10 @@ class FakeLLM:
 
     def update_config(self, **kwargs: Any) -> None:
         self.config.update({key: value for key, value in kwargs.items() if value is not None})
+        if kwargs.get("provider") is not None:
+            self.provider = kwargs["provider"]
+        if kwargs.get("api_key") is not None:
+            self.api_key = kwargs["api_key"]
         if kwargs.get("web_search_enabled") is not None:
             self.web_search_enabled = bool(kwargs["web_search_enabled"])
 
@@ -191,35 +224,42 @@ class FakeWhisper:
         return ([SimpleNamespace(text=self.text)] if self.text else []), None
 
 
-class FakeStt:
-    """Stands in for the STT engine: returns a fixed transcript and records the byte length of each input."""
+def _transcript(text: str, rejected_reason: str | None) -> Transcript:
+    """Words come with no reason; no words always come with one, as from a real backend."""
+    return Transcript(text, None if text else (rejected_reason or "not-speech"))
 
-    def __init__(self, fixed_transcript: str = "") -> None:
+
+class FakeStt:
+    """Stands in for an `SttBackend`: returns a fixed transcript and records the byte length of each input."""
+
+    def __init__(self, fixed_transcript: str = "", rejected_reason: str | None = None) -> None:
         self.fixed_transcript = fixed_transcript
+        self.rejected_reason = rejected_reason
         self.calls: list[int] = []
 
-    def transcribe(self, audio_data: bytes | bytearray | np.ndarray, sample_rate: int = 16000) -> str:
-        self.calls.append(audio_data.nbytes if isinstance(audio_data, np.ndarray) else len(audio_data))
-        return self.fixed_transcript
+    def transcribe(self, pcm16: bytes, sample_rate: int = 16000) -> Transcript:
+        self.calls.append(len(pcm16))
+        return _transcript(self.fixed_transcript, self.rejected_reason)
 
 
 class GatedStt:
-    """An STT engine whose `transcribe` blocks until the test releases it, then returns `transcript`.
+    """An STT backend whose `transcribe` blocks until the test releases it, then returns `transcript`.
 
     `started` is set once a call is inside `transcribe`; `inputs` holds the audio of every call.
     """
 
-    def __init__(self, transcript: str = "") -> None:
+    def __init__(self, transcript: str = "", rejected_reason: str | None = None) -> None:
         self.transcript = transcript
+        self.rejected_reason = rejected_reason
         self.started = threading.Event()
         self.release = threading.Event()
         self.inputs: list[bytes] = []
 
-    def transcribe(self, audio: bytes) -> str:
-        self.inputs.append(bytes(audio))
+    def transcribe(self, pcm16: bytes, sample_rate: int = 16000) -> Transcript:
+        self.inputs.append(bytes(pcm16))
         self.started.set()
         assert self.release.wait(5), "the test never released the recognizer"
-        return self.transcript
+        return _transcript(self.transcript, self.rejected_reason)
 
     async def wait_started(self) -> None:
         """Return once a call is inside `transcribe`, without blocking the event loop."""

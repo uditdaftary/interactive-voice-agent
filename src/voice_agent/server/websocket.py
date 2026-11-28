@@ -17,7 +17,10 @@ from voice_agent.server.connection_manager import (
 )
 from voice_agent.server.security import origin_allowed
 from voice_agent.stt.accumulator import MAX_UTTERANCE_S
+from voice_agent.stt.backends import STT_UNAVAILABLE, Transcript, stt_status
+from voice_agent.stt.speech_judge import SAMPLE_RATE
 from voice_agent.server.schemas import (
+    MAX_QUERY_CHARS,
     BargeInTriggerMessage,
     PlaybackControlMessage,
     PlaybackDoneMessage,
@@ -44,6 +47,20 @@ async def _ensure_stt_engine(app: Any) -> Any:
     return await ensure_stt_engine(app)
 
 
+def _preview_text(engine: Optional[Any], raw: Optional[str]) -> str:
+    """The browser's Web Speech preview of a turn, if the user opted into it: else "". It is the only source of a
+    fallback, and it is cut to the length of a question. It reaches the server only because the browser sent the
+    microphone to its vendor, so it is dropped unless the setting is on."""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    # `is True`: an engine stand-in without settings must not switch it on.
+    if getattr(getattr(engine, "settings", None), "web_speech_preview", False) is not True:
+        logger.debug("Ignoring a Web Speech preview transcript (%d chars): the preview is not enabled", len(text))
+        return ""
+    return text[:MAX_QUERY_CHARS]
+
+
 def submit_turn(
     websocket: WebSocket,
     manager: ConnectionManager,
@@ -57,7 +74,8 @@ def submit_turn(
     Only the first end of the current turn is taken (a silence-detected utterance and the client's own
     `voice_end` can both arrive for one LISTENING entry); every later one is dropped. The recording goes to
     the single `stt` task. A turn with no recording is answered from its fallback text, or, with neither,
-    given back to the session at once rather than at the deadline.
+    given back to the session at once rather than at the deadline. `fallback_query` is the Web Speech preview, already
+    checked by `_preview_text`.
     """
     session = manager.session
     turn = session.turn_id
@@ -94,12 +112,14 @@ async def _transcribe(
     try:
         try:
             active = stt_engine if stt_engine else await _ensure_stt_engine(websocket.app)
-            transcript = await asyncio.to_thread(active.transcribe, utterance)
+            transcript = await asyncio.to_thread(active.transcribe, utterance, SAMPLE_RATE)
         except Exception:  # noqa: BLE001  # logged with its traceback; the user hears "I didn't catch that"
             logger.exception("STT transcription failed; treating the utterance as unrecognized")
-            transcript = ""
+            transcript = Transcript("", STT_UNAVAILABLE)
         latency_ms = round((time.perf_counter() - started) * 1000.0, 2)
-        text = (transcript or "").strip()
+        if engine is not None:
+            engine.set_stt_status(stt_status(transcript))
+        text = transcript.text.strip()
         if not text and fallback:
             logger.info("Using fallback query following empty STT transcript: %s", fallback)
             text = fallback
@@ -214,7 +234,7 @@ async def handle_client_text_message(
 
     elif isinstance(msg, UpdateLLMConfigMessage):
         if engine is not None and getattr(engine, "llm", None) is not None:
-            engine.llm.update_config(
+            engine.configure_llm(
                 base_url=msg.base_url,
                 api_key=msg.api_key,
                 provider=msg.provider,
@@ -241,7 +261,7 @@ async def handle_client_text_message(
         elif not manager.session.turn_claimed:
             acc = getattr(manager, "accumulator", None)
             utterance = acc.flush() if acc is not None else None
-            submit_turn(websocket, manager, engine, stt_engine, utterance, getattr(msg, "fallback_query", None))
+            submit_turn(websocket, manager, engine, stt_engine, utterance, _preview_text(engine, msg.fallback_query))
 
 
 async def _handle_frame(

@@ -1,6 +1,7 @@
 """M2: Whisper is built lazily, once, off the event loop, and never at import."""
 
 import asyncio
+import importlib
 import subprocess
 import sys
 import threading
@@ -17,38 +18,41 @@ from fastapi.testclient import TestClient
 from voice_agent.server.app import create_app, ensure_stt_engine
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.settings import Settings
-from voice_agent.stt import recognizer
+from voice_agent.stt.backends import Transcript
 from fakes import FakeStt, FakeWhisper
 from speech_audio import speech_like_pcm
+
+# Not `from voice_agent.server import app`: the package re-exports the FastAPI instance under that name.
+app_module = importlib.import_module("voice_agent.server.app")
 
 SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 
 
 class ExplodingSTT:
     def __init__(self, *args: object, **kwargs: object) -> None:
-        raise AssertionError("STTEngine must not be constructed here")
+        raise AssertionError("an STT backend must not be built here")
 
 
 class CountingSTT:
-    """Stands in for STTEngine: counts constructions and records the building thread."""
+    """Stands in for `build_stt_backend`: counts builds, keeps the settings each was given and the building thread."""
 
-    built: list[dict[str, object]] = []
+    built: list[Settings] = []
     build_threads: list[int] = []
 
-    def __init__(self, *args: object, **kwargs: object) -> None:
+    def __init__(self, settings: Settings) -> None:
         time.sleep(0.05)  # widen the race window so an unguarded double build would show
-        CountingSTT.built.append(dict(kwargs))
+        CountingSTT.built.append(settings)
         CountingSTT.build_threads.append(threading.get_ident())
 
     def load(self) -> bool:
         return True
 
-    def transcribe(self, audio_data: bytes, sample_rate: int = 16000) -> str:
-        return "lazily built transcript"
+    def transcribe(self, pcm16: bytes, sample_rate: int = 16000) -> Transcript:
+        return Transcript("lazily built transcript")
 
 
 class GatedSTT:
-    """Stands in for STTEngine: the build blocks in its worker thread until the test releases it."""
+    """Stands in for `build_stt_backend`: the build blocks in its worker thread until the test releases it."""
 
     built = 0
     started = threading.Event()
@@ -69,7 +73,7 @@ def gated_stt(monkeypatch: pytest.MonkeyPatch) -> type[GatedSTT]:
     GatedSTT.built = 0
     GatedSTT.started = threading.Event()
     GatedSTT.release = threading.Event()
-    monkeypatch.setattr(recognizer, "STTEngine", GatedSTT)
+    monkeypatch.setattr(app_module, "build_stt_backend", GatedSTT)
     return GatedSTT
 
 
@@ -77,18 +81,18 @@ def gated_stt(monkeypatch: pytest.MonkeyPatch) -> type[GatedSTT]:
 def counting_stt(monkeypatch: pytest.MonkeyPatch) -> type[CountingSTT]:
     CountingSTT.built = []
     CountingSTT.build_threads = []
-    monkeypatch.setattr(recognizer, "STTEngine", CountingSTT)
+    monkeypatch.setattr(app_module, "build_stt_backend", CountingSTT)
     return CountingSTT
 
 
 def test_create_app_does_not_build_stt(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(recognizer, "STTEngine", ExplodingSTT)
+    monkeypatch.setattr(app_module, "build_stt_backend", ExplodingSTT)
     app = create_app(connection_manager=ConnectionManager())
     assert app.state.stt_engine is None
 
 
 def test_connection_manager_stt_engine_never_constructs(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(recognizer, "STTEngine", ExplodingSTT)
+    monkeypatch.setattr(app_module, "build_stt_backend", ExplodingSTT)
     manager = ConnectionManager()
     assert manager.stt_engine is None
     mock = FakeStt("x")
@@ -104,7 +108,7 @@ async def test_ensure_stt_engine_builds_once_off_the_event_loop(counting_stt: ty
     assert first is second
     assert app.state.stt_engine is first
     assert len(counting_stt.built) == 1
-    assert counting_stt.built[0] == {"initial_prompt": ""}
+    assert counting_stt.built[0].stt_initial_prompt == ""
     assert counting_stt.build_threads[0] != threading.get_ident()
 
 
@@ -113,7 +117,7 @@ async def test_build_passes_the_configured_initial_prompt(counting_stt: type[Cou
 
     await ensure_stt_engine(app)
 
-    assert counting_stt.built == [{"initial_prompt": "Arasaka"}]
+    assert [settings.stt_initial_prompt for settings in counting_stt.built] == ["Arasaka"]
 
 
 async def test_cancelled_caller_does_not_discard_the_build(gated_stt: type[GatedSTT]) -> None:
@@ -239,5 +243,5 @@ async def test_build_loads_whisper_before_the_first_transcribe(fake_whisper: Fak
     engine = await ensure_stt_engine(app)
 
     assert len(fake_whisper.constructions) == 1
-    assert engine.transcribe(speech_like_pcm()) == "hello there"
+    assert engine.transcribe(speech_like_pcm(), 16000) == Transcript("hello there", None)
     assert len(fake_whisper.constructions) == 1

@@ -5,7 +5,7 @@ import logging
 
 import pytest
 
-from fakes import BlockingLLM, FakeLLM, FakeSearch, FakeTts
+from fakes import BlockingLLM, FakeLLM, FakeSearch, FakeTts, FunctionTts
 from voice_agent.server.connection_manager import ConnectionManager
 from voice_agent.server.narration import NarrationEngine
 from voice_agent.server.tasks import TaskRegistry
@@ -211,7 +211,7 @@ def make_engine(llm: FakeLLM, tts: object) -> NarrationEngine:
         ConnectionManager(),
         llm_client=llm,
         settings=Settings.fast(),
-        tts=tts,  # type: ignore[arg-type]
+        tts=FunctionTts(tts),  # type: ignore[arg-type]  # any async (text, voice, cadence) callable
         search=FakeSearch(),
     )
 

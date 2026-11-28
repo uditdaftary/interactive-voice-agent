@@ -4,6 +4,7 @@ import inspect
 import logging
 import sys
 
+import numpy as np
 import pytest
 
 from fakes import FakeWhisper
@@ -131,3 +132,16 @@ def test_failed_whisper_load_waits_out_the_cooldown_then_retries(fake_whisper: F
     assert len(fake_whisper.constructions) == 2
     warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
     assert len(warnings) == 1  # one per failed attempt, none for the skipped call
+
+
+def test_48khz_input_is_resampled_to_16khz(fake_whisper: FakeWhisper) -> None:
+    fake_whisper.text = "test transcription"
+    t = np.arange(48000) / 48000.0
+    tone_48k = np.clip(8000 * np.sin(2 * np.pi * 150 * t), -32768, 32767).astype(np.int16)
+    audio_48k = np.concatenate([np.zeros(24000, dtype=np.int16), tone_48k])
+
+    transcript = WhisperBackend().transcribe(audio_48k.tobytes(), 48000)
+
+    assert transcript == Transcript("test transcription", None)
+    # 0.5 s of quiet plus 1 s of tone, at 16 kHz.
+    assert fake_whisper.inputs[0].size == 24000

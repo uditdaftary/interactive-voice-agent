@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 import httpx
 import pytest
 
-from voice_agent.llm.client import OFFLINE_LINE, LLMClient, LlmOutcome, ThinkFilter
+from voice_agent.llm.client import LLMClient, LlmOutcome, ThinkFilter
 
 MESSAGES = [{"role": "user", "content": "Who is the narrator?"}]
 SECRET = "sk-secret-123"
@@ -111,7 +111,7 @@ async def test_connect_refused_is_offline(caplog: pytest.LogCaptureFixture) -> N
 
     client = make_client(handler)
     with caplog.at_level(logging.WARNING):
-        assert await collect(client) == [OFFLINE_LINE]
+        assert await collect(client) == []
 
     assert client.status == "offline"
     (record,) = warnings_from(caplog)
@@ -126,7 +126,7 @@ async def test_connect_timeout_is_offline() -> None:
 
     client = make_client(handler)
 
-    assert await collect(client) == [OFFLINE_LINE]
+    assert await collect(client) == []
     assert client.status == "offline"
 
 
@@ -135,7 +135,7 @@ async def test_http_status_maps_to_outcome(code: int, expected: LlmOutcome, capl
     client = make_client(lambda request: httpx.Response(code, text="nope"))
 
     with caplog.at_level(logging.WARNING):
-        assert await collect(client) == [OFFLINE_LINE]
+        assert await collect(client) == []
 
     assert client.status == expected
     (record,) = warnings_from(caplog)
@@ -146,7 +146,7 @@ async def test_empty_200_is_error_and_speaks_offline_line(caplog: pytest.LogCapt
     client = make_client(lambda request: sse_response(sse()))
 
     with caplog.at_level(logging.WARNING):
-        assert await collect(client) == [OFFLINE_LINE]
+        assert await collect(client) == []
 
     assert client.status == "error"
     (record,) = warnings_from(caplog)
@@ -173,7 +173,7 @@ async def test_read_timeout_before_any_token_is_error_not_offline() -> None:
 
     client = make_client(handler)
 
-    assert await collect(client) == [OFFLINE_LINE]
+    assert await collect(client) == []
     assert client.status == "error"
 
 
@@ -187,7 +187,7 @@ async def test_unusable_base_url_is_error_and_never_raises(base_url: str) -> Non
 
     client = LLMClient(base_url=base_url, provider="ollama", transport=httpx.MockTransport(handler))
 
-    assert await collect(client) == [OFFLINE_LINE]
+    assert await collect(client) == []
     assert client.status == "error"
 
 
@@ -210,7 +210,7 @@ async def test_non_ascii_api_key_is_error_and_never_raises(caplog: pytest.LogCap
     client = make_client(lambda request: sse_response(sse("never")), api_key="k\u00e9y")
 
     with caplog.at_level(logging.DEBUG):
-        assert await collect(client) == [OFFLINE_LINE]
+        assert await collect(client) == []
 
     assert client.status == "error"
     assert "k\u00e9y" not in caplog.text
@@ -316,8 +316,8 @@ async def test_key_is_sent_as_bearer_token() -> None:
     assert seen == [f"Bearer {SECRET}"]
 
 
-@pytest.mark.parametrize("provider", ["builtin", "local-builtin", "native", "none", " Builtin "])
-async def test_builtin_mode_is_offline_line(provider: str) -> None:
+@pytest.mark.parametrize("provider", ["none", " None "])
+async def test_no_model_mode_makes_no_request(provider: str) -> None:
     calls: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -326,7 +326,7 @@ async def test_builtin_mode_is_offline_line(provider: str) -> None:
 
     client = LLMClient(provider=provider, transport=httpx.MockTransport(handler))
 
-    assert await collect(client) == [OFFLINE_LINE]
+    assert await collect(client) == []
     assert client.status == "offline"
     assert calls == []
 
@@ -376,7 +376,7 @@ async def test_stream_that_starts_inside_a_think_block_is_cleaned() -> None:
 async def test_prefilled_think_with_no_answer_is_error() -> None:
     client = make_client(lambda request: sse_response(sse("I should greet.", " </think>", "\n\n")))
 
-    assert await collect(client) == [OFFLINE_LINE]
+    assert await collect(client) == []
     assert client.status == "error"
 
 
@@ -393,7 +393,7 @@ async def test_partial_reply_held_by_the_filter_is_spoken_when_the_stream_breaks
 async def test_think_only_reply_is_error() -> None:
     client = make_client(lambda request: sse_response(sse("<think>", "I should say hello", "</think>")))
 
-    assert await collect(client) == [OFFLINE_LINE]
+    assert await collect(client) == []
     assert client.status == "error"
 
 
@@ -687,8 +687,24 @@ def test_no_key_warning_without_a_real_key(api_key: str, caplog: pytest.LogCaptu
     assert key_warnings(caplog) == []
 
 
+@pytest.mark.parametrize("provider", ["builtin", "local-builtin", "native"])
+async def test_only_none_is_the_no_model_mode(provider: str) -> None:
+    """The other provider names used to mean no model; they are ordinary endpoints now (the managed server reuses `builtin`)."""
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return sse_response(sse("A reply."))
+
+    client = LLMClient(provider=provider, transport=httpx.MockTransport(handler))
+
+    assert "".join(await collect(client)) == "A reply."
+    assert client.status == "ok"
+    assert len(calls) == 1
+
+
 def test_no_key_warning_in_no_model_mode(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING):
-        LLMClient(base_url="http://models.example.com/v1", api_key=SECRET, provider="builtin")
+        LLMClient(base_url="http://models.example.com/v1", api_key=SECRET, provider="none")
 
     assert key_warnings(caplog) == []
