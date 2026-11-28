@@ -85,7 +85,7 @@ def submit_turn(
     fallback = (fallback_query or "").strip()
     if not utterance:
         if fallback:
-            logger.info("No audio for this turn; answering its fallback text: %s", fallback)
+            logger.info("No audio for this turn; answering its fallback text (%d chars)", len(fallback))
             _deliver(manager, engine, turn, fallback, 0.0)
         else:
             session.resume("empty_turn")
@@ -121,7 +121,7 @@ async def _transcribe(
             engine.set_stt_status(stt_status(transcript))
         text = transcript.text.strip()
         if not text and fallback:
-            logger.info("Using fallback query following empty STT transcript: %s", fallback)
+            logger.info("Using the fallback query after an empty STT transcript (%d chars)", len(fallback))
             text = fallback
         _deliver(manager, engine, turn, text, latency_ms)
     finally:

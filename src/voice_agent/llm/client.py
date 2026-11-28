@@ -244,7 +244,8 @@ def search_web_sync(query: str, max_results: int = 8) -> str:
         if title or body:
             lines.append(f"- {title}: {body}")
     if not lines:
-        logger.warning("Live web search found nothing for query %r", query)
+        # The query is user speech or text: only its length is logged.
+        logger.warning("Live web search found nothing for a query of %d chars", len(query))
     return "\n".join(lines)
 
 
