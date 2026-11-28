@@ -225,6 +225,8 @@ def run_document_scenario(body: str) -> Any:
         + "\n"
         + hud_function_source("syncDocumentFromServer")
         + "\n"
+        + hud_function_source("moveCursorFor")
+        + "\n"
         + DOCUMENT_HARNESS
         + "\n(async () => {"
         + body
@@ -531,3 +533,27 @@ def test_a_cue_longer_than_the_sentence_so_far_marks_only_the_words_before_the_s
 
 def test_a_cue_with_no_count_goes_back_four_words() -> None:
     assert marked_pre_roll_words(None, 9)["marked"] == ["2:5", "2:6", "2:7", "2:8"]
+
+
+def test_the_cursor_update_that_starts_a_refetch_keeps_its_word() -> None:
+    result = run_document_scenario(
+        """
+        // Three sentences are shown; the update says the document has 8 and the cursor is at sentence 3, word 5.
+        STORY_PARAGRAPHS = ['A.', 'B.', 'C.'];
+        const slow = later();
+        queued.push(slow.reply);
+        moveCursorFor({ sentence_idx: 3, word_offset: 5, total_sentences: 8 });
+        // The reply names the same sentence, and has no word.
+        slow.release({ ok: true, status: 200, json: async () => doc('Book', ['1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.'], 3) });
+        await settle();
+        const sameSentence = { idx: currentSentenceIdx, word: currentWordIdx, shown: STORY_PARAGRAPHS.length };
+        // An update for a document of the length shown does not fetch, and moves the cursor.
+        moveCursorFor({ sentence_idx: 4, word_offset: 1, total_sentences: 8 });
+        return { sameSentence, next: { idx: currentSentenceIdx, word: currentWordIdx }, unused: queued.length };
+        """
+    )
+    assert result == {
+        "sameSentence": {"idx": 3, "word": 5, "shown": 8},
+        "next": {"idx": 4, "word": 1},
+        "unused": 0,
+    }

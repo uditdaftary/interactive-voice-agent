@@ -1859,19 +1859,8 @@
         currentState = 'NARRATING';
         updateStateUI();
       }
-      if (msg.sentence_idx !== undefined) {
-        currentSentenceIdx = msg.sentence_idx;
-        cursorMoves += 1;
-      }
-      if (msg.word_offset !== undefined) {
-        currentWordIdx = msg.word_offset;
-        cursorMoves += 1;
-      }
-      // A document of another length than the one shown (it was not loaded yet, or another tab loaded a new one) is
-      // fetched again. A sentence is patched only where the page has a sentence to patch.
-      if (msg.total_sentences !== undefined && msg.total_sentences !== STORY_PARAGRAPHS.length) {
-        requestDocumentSync(msg.total_sentences);
-      }
+      moveCursorFor(msg);
+      // A sentence is patched only where the page has a sentence to patch.
       if (msg.sentence_text && currentSentenceIdx < STORY_PARAGRAPHS.length && STORY_PARAGRAPHS[currentSentenceIdx] !== msg.sentence_text) {
         STORY_PARAGRAPHS[currentSentenceIdx] = msg.sentence_text;
         renderNarrativeStream();
@@ -2299,6 +2288,24 @@
       renderNarrativeStream();
     } catch (e) {
       failed(e);
+    }
+  }
+
+  // Sets the cursor from a cursor_update. A document of another length than the one shown (it was not loaded yet, or
+  // another tab loaded a new one) is fetched again, and that fetch is started first: the position the update names is
+  // then newer than the fetch's reply, which holds the sentence but no word, and is kept. Counted first, it was not, and
+  // a reply naming the same sentence moved the highlight back to the first word.
+  function moveCursorFor(msg) {
+    if (msg.total_sentences !== undefined && msg.total_sentences !== STORY_PARAGRAPHS.length) {
+      requestDocumentSync(msg.total_sentences);
+    }
+    if (msg.sentence_idx !== undefined) {
+      currentSentenceIdx = msg.sentence_idx;
+      cursorMoves += 1;
+    }
+    if (msg.word_offset !== undefined) {
+      currentWordIdx = msg.word_offset;
+      cursorMoves += 1;
     }
   }
 
