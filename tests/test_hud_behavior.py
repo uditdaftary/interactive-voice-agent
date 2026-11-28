@@ -299,28 +299,28 @@ def test_a_superseded_fetch_that_fails_does_not_give_back_the_newer_ones_count()
 # --- the state the question panel shows ------------------------------------------------------------------------------
 
 
-def test_the_question_panel_shows_only_the_state_the_server_sent() -> None:
+def test_the_question_panel_labels_only_a_state_it_knows_and_shows_no_label_for_any_other() -> None:
     table_start = HUD_SOURCE.index("const ENVELOPE_STATE_PILLS")
     table = HUD_SOURCE[table_start : HUD_SOURCE.index("]);", table_start) + 3]
     script = (
         "const setPill = (pill, className, text) => { pill.className = className; pill.text = text; };"
-        + "const pill = { className: 'state-pill listening', text: '' };"
+        + "const pill = { className: 'state-pill listening', text: '', style: {} };"
         + "const document = { getElementById: () => pill };"
         + table
         + hud_function_source("showEnvelopeState")
         + "const shown = [];"
         + "for (const state of ['LISTENING', 'REPLYING', 'NARRATING', undefined]) {"
-        + "  showEnvelopeState(state); shown.push([pill.className, pill.text]);"
+        + "  showEnvelopeState(state); shown.push([pill.className, pill.text, pill.style.display]);"
         + "}"
         + "process.stdout.write(JSON.stringify(shown));"
     )
     done = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout) == [
-        ["state-pill listening", "Listening"],
-        ["state-pill replying", "Replying"],
-        ["state-pill replying", "Replying"],  # a state with no entry leaves what was shown
-        ["state-pill replying", "Replying"],
+        ["state-pill listening", "Listening", ""],
+        ["state-pill replying", "Replying", ""],
+        ["state-pill replying", "Replying", "none"],  # a state with no entry shows no label
+        ["state-pill replying", "Replying", "none"],  # nor does none
     ]
 
 

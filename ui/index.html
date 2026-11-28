@@ -1081,7 +1081,8 @@
     if (bargePill && known) setPill(bargePill, `state-pill ${known[0]}`, known[1]);
   }
 
-  // The state the question panel shows, from the state a prompt_envelope carries. Any other state shows nothing.
+  // The state the question panel shows, from the state a prompt_envelope carries. Any other state, or none, shows no
+  // label, so a label is never left over from an earlier message.
   const ENVELOPE_STATE_PILLS = new Map([
     ['LISTENING', ['listening', 'Listening']],
     ['REPLYING', ['replying', 'Replying']],
@@ -1089,8 +1090,10 @@
 
   function showEnvelopeState(state) {
     const pill = document.getElementById('env-status-pill');
+    if (!pill) return;
     const known = ENVELOPE_STATE_PILLS.get(state);
-    if (pill && known) setPill(pill, `state-pill ${known[0]}`, known[1]);
+    pill.style.display = known ? '' : 'none';
+    if (known) setPill(pill, `state-pill ${known[0]}`, known[1]);
   }
 
   // The server sends null for a latency it did not measure, and that is shown as such, never as a number.
