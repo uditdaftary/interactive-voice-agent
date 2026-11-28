@@ -322,3 +322,55 @@ def test_the_question_panel_shows_only_the_state_the_server_sent() -> None:
         ["state-pill replying", "Replying"],  # a state with no entry leaves what was shown
         ["state-pill replying", "Replying"],
     ]
+
+
+# --- what the key field says when a save would drop the stored key ---------------------------------------------------
+
+KEY_FORM = {
+    "provider": "openai",
+    "providerPicked": False,
+    "baseUrl": LOADED["base_url"],
+    "apiKey": "",
+    "clearKey": False,
+}
+
+
+def key_field_texts(has_key: bool, changes: dict[str, Any]) -> dict[str, str]:
+    """What the note, the line saying the key is sent, and the field's placeholder show for a form with `changes`."""
+    script = (
+        hud_function_source("destinationChanged")
+        + hud_function_source("updateKeyNote")
+        + f"const loadedConfig = {{...{json.dumps(LOADED)}, hasKey: {json.dumps(has_key)}}};"
+        + f"const readConfigForm = () => ({json.dumps({**KEY_FORM, **changes})});"
+        + "const fields = { 'cfg-key-note': { style: {} }, 'cfg-key-sent': { style: {} }, 'cfg-api-key': {} };"
+        + "const document = { getElementById: (id) => fields[id] };"
+        + "updateKeyNote();"
+        + "process.stdout.write(JSON.stringify({ note: fields['cfg-key-note'].style.display,"
+        + " sent: fields['cfg-key-sent'].style.display, placeholder: fields['cfg-api-key'].placeholder }));"
+    )
+    done = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+@pytest.mark.parametrize(
+    "changes", [{"provider": "groq", "providerPicked": True}, {"baseUrl": "https://api.other.test/v1"}]
+)
+def test_the_form_says_the_stored_key_is_removed_when_the_destination_changes(changes: dict[str, Any]) -> None:
+    shown = key_field_texts(True, changes)
+    assert shown == {"note": "block", "sent": "none", "placeholder": "Enter a key for the new provider or endpoint"}
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{}, {"provider": "groq", "providerPicked": True, "apiKey": "sk-new"}, {"clearKey": True, "baseUrl": "x"}],
+)
+def test_the_form_keeps_saying_the_key_is_kept_when_nothing_drops_it(changes: dict[str, Any]) -> None:
+    shown = key_field_texts(True, changes)
+    assert shown == {"note": "none", "sent": "", "placeholder": "A key is stored. Leave this blank to keep it."}
+
+
+def test_the_form_says_nothing_about_a_key_when_none_is_stored() -> None:
+    shown = key_field_texts(False, {"baseUrl": "https://api.other.test/v1"})
+    assert shown["note"] == "none"
+    assert shown["placeholder"] == "Enter remote API key or leave blank for local Ollama"

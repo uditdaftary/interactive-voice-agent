@@ -462,7 +462,7 @@
         <label class="field-label">API Key (Optional for Local Ollama)</label>
         <input type="password" id="cfg-api-key" class="field-input" placeholder="Enter remote API key or leave blank for local Ollama" oninput="updateKeyNote()">
         <div id="cfg-key-stored" style="display:none; flex-direction:column; gap:4px; font-size:12.5px;">
-          <span class="faint">A key is stored. It is sent to the endpoint above.</span>
+          <span class="faint" id="cfg-key-sent">A key is stored. It is sent to the endpoint above.</span>
           <span id="cfg-key-note" style="display:none; color:var(--high);">The stored key will be removed because the provider or endpoint changed.</span>
           <label style="display:flex; align-items:center; gap:8px;">
             <input type="checkbox" id="cfg-clear-key" onchange="updateKeyNote()">
@@ -2359,9 +2359,6 @@
         // The server never sends the key, only whether it holds one. A blank field keeps it; removing it is a choice.
         const keyField = document.getElementById('cfg-api-key');
         keyField.value = '';
-        keyField.placeholder = llm.has_api_key === true
-          ? 'A key is stored. Leave this blank to keep it.'
-          : 'Enter remote API key or leave blank for local Ollama';
         document.getElementById('cfg-clear-key').checked = false;
         document.getElementById('cfg-key-stored').style.display = llm.has_api_key === true ? 'flex' : 'none';
         setConfigFieldsEnabled(select.value);
@@ -2424,6 +2421,11 @@
     const dropped = loadedConfig.hasKey && form.provider !== 'none' && !form.apiKey && !form.clearKey
       && destinationChanged(form, loadedConfig);
     note.style.display = dropped ? 'block' : 'none';
+    // What the field and the line above it say must agree with the note: a key being dropped is not kept or sent.
+    document.getElementById('cfg-key-sent').style.display = dropped ? 'none' : '';
+    document.getElementById('cfg-api-key').placeholder = !loadedConfig.hasKey
+      ? 'Enter remote API key or leave blank for local Ollama'
+      : dropped ? 'Enter a key for the new provider or endpoint' : 'A key is stored. Leave this blank to keep it.';
   }
 
   function onProviderChange(val) {
