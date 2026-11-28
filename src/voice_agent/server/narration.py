@@ -667,13 +667,19 @@ class NarrationEngine:
     async def _speak(self, text: str) -> None:
         """Synthesize `text`, send it to the owner and wait until the browser says it has played. With nobody to say so
         (no owner, or no audio could be made) the wait is the estimate; if the report never comes the wait ends after
-        `playback_ack_timeout_s` past the estimate, with a WARNING, and the reply goes on."""
+        `playback_ack_timeout_s` past the estimate, with a WARNING, and the reply goes on. If audio was stopped after the
+        clip was queued, the clip was dropped unsent: the stop is what ended this speech, so it ends at once."""
         voice_id = self.manager.active_voice or "david-martinez"
         cadence = self.manager.cadence or 1.0
         speech = await self.tts.synthesize(text, voice_id, cadence)
         self.manager.refresh_statuses()
         estimate_s = self._estimated_duration_s(text, cadence)
-        segment_id = await self.manager.send_audio(speech.data) if speech is not None and speech.data else None
+        generation = self.manager.generation
+        segment_id = None
+        if speech is not None and speech.data:
+            segment_id = await self.manager.send_audio(speech.data, generation=generation)
+            if segment_id is None and self.manager.generation != generation:
+                return
         if segment_id is None:
             await asyncio.sleep(estimate_s)
         else:

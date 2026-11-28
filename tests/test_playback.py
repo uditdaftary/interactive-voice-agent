@@ -595,3 +595,42 @@ async def test_a_reply_whose_clip_went_to_the_old_owner_goes_on_when_the_owner_c
     await asyncio.wait([reply], timeout=5)  # no 30 s wait for a tab that is no longer playing the answer
     assert reply.done() and reply.exception() is None
     await manager.tasks.cancel_all()
+
+
+# --- a reply whose clip was stopped before it was sent ------------------------------------------------------------------
+
+
+async def test_a_reply_whose_clip_was_stopped_before_it_was_sent_ends_at_once() -> None:
+    """Audio is stopped between handing the clip over and the send taking its turn: the clip is dropped, and the stop is
+    what ended the speech. Pacing it by its estimate would hold the reply in silence for the clip's whole length."""
+    manager = ConnectionManager()
+    tts = FakeTts()
+    settings = dataclasses.replace(Settings.fast(), min_sentence_s=3600.0)  # an hour: waiting it out would hang
+    engine = make_engine(manager, tts=tts, settings=settings)
+    socket, = await listeners(manager, 1, auto_ack=True)
+
+    await manager._audio_lock.acquire()  # the send cannot proceed, as when another clip or a stop is being delivered
+    speak = asyncio.create_task(engine._speak("A sentence that takes a while to say."))
+    async with asyncio.timeout(5):
+        await tts.wait_for_calls(1)  # the clip is made and queued for sending
+    manager.stop_audio()  # lands before the send takes the lock
+    manager._audio_lock.release()
+
+    async with asyncio.timeout(5):
+        await speak
+    assert socket.clips == []  # the clip was never sent
+    await manager.tasks.cancel_all()
+
+
+async def test_a_reply_with_no_owner_still_paces_by_its_estimate() -> None:
+    """The early end is only for a stop: with nobody to play the clip, the estimate is the wait."""
+    manager = ConnectionManager()
+    settings = dataclasses.replace(Settings.fast(), min_sentence_s=3600.0)
+    engine = make_engine(manager, settings=settings)
+
+    speak = asyncio.create_task(engine._speak("Nobody is connected to hear this."))
+    done, _ = await asyncio.wait([speak], timeout=0.2)
+
+    assert done == set()  # still waiting out its hour
+    speak.cancel()
+    await asyncio.wait([speak])
