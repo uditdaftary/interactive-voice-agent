@@ -511,6 +511,9 @@
   let STORY_PARAGRAPHS = [];
   let currentSentenceIdx = 0;
   let currentWordIdx = 0;
+  // How many times the server has set the cursor (a state_sync or a cursor_update), so that a document fetched while
+  // one arrived can keep that newer position instead of the one the fetch started with.
+  let cursorMoves = 0;
   let isPlaying = true;
   let currentCadence = 1.0;
   let currentState = 'NARRATING'; // NARRATING, PAUSED, LISTENING, REPLYING (BARGE_IN is a client-side flash only)
@@ -1810,6 +1813,7 @@
       if (msg.sentence_idx !== undefined) {
         currentSentenceIdx = msg.sentence_idx;
         currentWordIdx = msg.word_offset || 0;
+        cursorMoves += 1;
         updateWordHighlight();
       }
     }
@@ -1843,9 +1847,11 @@
       }
       if (msg.sentence_idx !== undefined) {
         currentSentenceIdx = msg.sentence_idx;
+        cursorMoves += 1;
       }
       if (msg.word_offset !== undefined) {
         currentWordIdx = msg.word_offset;
+        cursorMoves += 1;
       }
       // A document of another length than the one shown (it was not loaded yet, or another tab loaded a new one) is
       // fetched again. A sentence is patched only where the page has a sentence to patch.
@@ -2260,6 +2266,7 @@
   // Shows the document the server holds, or the empty state when it holds none.
   async function syncDocumentFromServer() {
     const mine = ++documentFetchSerial;
+    const cursorBefore = cursorMoves;
     const failed = (why) => {
       if (mine !== documentFetchSerial) return;
       documentSyncTotal = null;
@@ -2276,10 +2283,12 @@
       const sentences = Array.isArray(data.sentences) ? data.sentences.filter(text => typeof text === 'string') : [];
       STORY_PARAGRAPHS = sentences;
       documentSyncTotal = sentences.length;
-      currentSentenceIdx = Number.isInteger(data.current_sentence_idx)
-        ? Math.max(0, Math.min(data.current_sentence_idx, sentences.length - 1))
-        : 0;
-      currentWordIdx = 0;
+      // The reply holds the position the server had when the fetch started. One the server reported since is newer, and
+      // is kept, so the highlight does not jump back.
+      const cursorMovedSince = cursorMoves !== cursorBefore;
+      const wanted = cursorMovedSince ? currentSentenceIdx : data.current_sentence_idx;
+      currentSentenceIdx = Number.isInteger(wanted) ? Math.max(0, Math.min(wanted, sentences.length - 1)) : 0;
+      if (!cursorMovedSince) currentWordIdx = 0;
       const docTitleEl = document.getElementById('header-doc-title');
       if (docTitleEl) docTitleEl.innerText = (sentences.length && data.title) ? `[BOOK: ${data.title}]` : '[No document]';
       renderNarrativeStream();

@@ -194,6 +194,7 @@ DOCUMENT_HARNESS = """
 let STORY_PARAGRAPHS = [];
 let currentSentenceIdx = 0;
 let currentWordIdx = 0;
+let cursorMoves = 0;
 let documentSyncTotal = null;
 let documentFetchSerial = 0;
 const getApiBaseUrl = () => '';
@@ -402,3 +403,36 @@ def test_the_form_follows_the_remove_checkbox(changes: dict[str, Any]) -> None:
     # The checkbox explains itself, so no note, but the field and the line above it stop saying the key is kept or sent.
     shown = key_field_texts(True, changes)
     assert shown == {"note": "none", "sent": "none", "placeholder": "The stored key will be removed"}
+
+
+def test_a_document_reply_keeps_a_cursor_the_server_reported_while_it_was_on_its_way() -> None:
+    result = run_document_scenario(
+        """
+        const slow = later();
+        queued.push(slow.reply);
+        const fetched = syncDocumentFromServer();
+        // A cursor_update arrives while the fetch is out, newer than the position the reply will hold.
+        cursorMoves += 1; currentSentenceIdx = 2; currentWordIdx = 4;
+        slow.release({ ok: true, status: 200, json: async () => doc('Book', ['A.', 'B.', 'C.', 'D.'], 0) });
+        await fetched;
+        const kept = { idx: currentSentenceIdx, word: currentWordIdx };
+        // A position past the end of the new document is brought back into it.
+        const late = later();
+        queued.push(late.reply);
+        const clamped = syncDocumentFromServer();
+        cursorMoves += 1; currentSentenceIdx = 9; currentWordIdx = 1;
+        late.release({ ok: true, status: 200, json: async () => doc('Book', ['A.', 'B.'], 0) });
+        await clamped;
+        const pastTheEnd = { idx: currentSentenceIdx, word: currentWordIdx };
+        // With no cursor update in between, the reply's position is used, from its first word.
+        queued.push(ok(doc('Book', ['A.', 'B.', 'C.'], 1)));
+        currentWordIdx = 7;
+        await syncDocumentFromServer();
+        return { kept, pastTheEnd, fromReply: { idx: currentSentenceIdx, word: currentWordIdx } };
+        """
+    )
+    assert result == {
+        "kept": {"idx": 2, "word": 4},
+        "pastTheEnd": {"idx": 1, "word": 1},
+        "fromReply": {"idx": 1, "word": 0},
+    }
