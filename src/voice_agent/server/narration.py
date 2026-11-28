@@ -557,17 +557,19 @@ class NarrationEngine:
     def _bring_page_back(self, intent: str, state: str) -> None:
         """Typed text arrives from a page that has already stopped its own audio and shows LISTENING. When the command
         leaves the state as it was, no transition tells it where the session is, so it is told here, and whatever it
-        stopped goes on for it: the narration that was playing starts again a few words back, and a reply whose clip
-        was stopped stops waiting for a report that will never come."""
+        stopped goes on for it: the narration that was playing starts again (a few words back after a resume, from the
+        sentence's first word after a repeat), and a reply whose clip was stopped stops waiting for a report that will
+        never come."""
         manager = self.manager
-        restart_narration = intent == "resume" and state == "NARRATING"
-        if intent == "resume" and state in ("NARRATING", "REPLYING"):
+        restart_narration = state == "NARRATING" and intent in ("resume", "repeat")
+        if restart_narration or (intent == "resume" and state == "REPLYING"):
             manager.stop_audio()
         if restart_narration:
             manager.tasks.cancel("narration")
-        manager.broadcast_state_sync()  # queued before the restarted loop's first message
+        # Queued before the restarted loop exists, so the page hears the state before the loop's first cursor_update.
+        manager.broadcast_state_sync()
         if restart_narration:
-            self._cue_pre_roll = True
+            self._cue_pre_roll = intent == "resume"  # a repeat starts at the first word and rewinds nothing
             self._ensure_narration()
 
     def _repeat_sentence(self) -> None:
@@ -577,8 +579,7 @@ class NarrationEngine:
         self.current_word_idx = 0
         self.manager.update_cursor(sentence_idx=self.current_sentence_idx, word_offset=0)
         if state == "NARRATING":
-            self._go_to(self.current_sentence_idx)
-            return
+            return  # the state is unchanged, so `_run_command` restarts the loop after it has told the page (`_bring_page_back`)
         session.set_resume_to("NARRATING")
         if state == "PAUSED":
             session.transition("NARRATING", "repeat")

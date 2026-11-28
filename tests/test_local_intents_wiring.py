@@ -362,6 +362,30 @@ async def test_repeat_while_narrating_tells_the_page() -> None:
     await manager.tasks.cancel_all()
 
 
+@pytest.mark.parametrize("command", ["continue", "repeat"])
+async def test_the_page_hears_the_state_before_the_restarted_narration_sends_anything(command: str) -> None:
+    manager = ConnectionManager()
+    tts = FakeTts()
+    engine, _, _ = make_engine(manager, tts=tts)
+    socket = PlayerSocket(manager)  # never reports a clip played: the page stopped it
+    await manager.connect(socket)  # type: ignore[arg-type]
+    engine.start_narration()
+    await socket.wait_for_clips(1)
+    await delivered()
+    generation = socket.clips[0].generation
+    frames_before = len(socket.frames)
+
+    engine.ask(command)
+    await socket.wait_until(lambda: any(clip.generation > generation for clip in socket.clips))
+    await delivered()
+
+    after = socket.frames[frames_before:]
+    assert "state_sync" in after
+    assert "cursor_update" in after
+    assert after.index("state_sync") < after.index("cursor_update")
+    await manager.tasks.cancel_all()
+
+
 async def test_resume_during_a_reply_tells_the_page_and_the_reply_goes_on_without_the_stopped_clip() -> None:
     manager = ConnectionManager()
     engine, llm, _ = make_engine(manager)
