@@ -128,9 +128,9 @@ class HybridMicrophoneBridge:
         self._barge_in_callbacks: List[Callable[[BargeInEvent], None]] = []
         self._vad_callbacks: List[Callable[[VADTelemetry], None]] = []
         self._frame_callbacks: List[Callable[[np.ndarray], None]] = []
-        # Frame and VAD listeners run for every 30 ms frame: a failure is logged once per instance.
-        self._frame_listener_failure_logged = False
-        self._vad_listener_failure_logged = False
+        # Frame and VAD listeners run for every 30 ms frame, so each listener's first failure is logged, keyed by id.
+        self._frame_listeners_logged: set[int] = set()
+        self._vad_listeners_logged: set[int] = set()
 
         # Speech state tracking for onset detection
         self._speech_in_progress = False
@@ -292,9 +292,9 @@ class HybridMicrophoneBridge:
             try:
                 cb(frame)
             except Exception:  # noqa: BLE001  # one failing listener must not stop the others
-                if not self._frame_listener_failure_logged:
-                    self._frame_listener_failure_logged = True
-                    logger.exception("Error in frame callback; later failures are not logged")
+                if id(cb) not in self._frame_listeners_logged:
+                    self._frame_listeners_logged.add(id(cb))
+                    logger.exception("Error in frame callback; later failures of this listener are not logged")
 
         # Evaluate VAD step
         self.vad._step_frame(frame)
@@ -319,9 +319,9 @@ class HybridMicrophoneBridge:
             try:
                 vad_cb(telemetry)
             except Exception:  # noqa: BLE001  # one failing listener must not stop the others
-                if not self._vad_listener_failure_logged:
-                    self._vad_listener_failure_logged = True
-                    logger.exception("Error in VAD callback; later failures are not logged")
+                if id(vad_cb) not in self._vad_listeners_logged:
+                    self._vad_listeners_logged.add(id(vad_cb))
+                    logger.exception("Error in VAD callback; later failures of this listener are not logged")
 
         # Check for speech onset to trigger sub-50ms barge-in interruption
         consecutive = getattr(self.vad, "_consecutive_speech_frames", 0)
@@ -431,6 +431,8 @@ class HybridMicrophoneBridge:
         with self._lock:
             if callback in self._vad_callbacks:
                 self._vad_callbacks.remove(callback)
+                # The id is freed with the callback; a later listener reusing it must get its own first log.
+                self._vad_listeners_logged.discard(id(callback))
 
     def add_frame_callback(self, callback: Callable[[np.ndarray], None]) -> None:
         """Register callback receiving calibrated 30ms 16kHz audio frames."""

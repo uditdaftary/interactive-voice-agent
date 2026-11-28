@@ -66,8 +66,8 @@ class ConnectionManager:
         self._explicit_owner: Optional[WebSocket] = None
         self._owner_listeners: List[Callable[[], None]] = []
         self._ignored_logged: set[WebSocket] = set()
-        # The audio sink runs for every client PCM frame: its first failure is logged, later ones are not.
-        self._audio_sink_failure_logged = False
+        # The audio sink runs for every client PCM frame: each sink's first failure is logged, keyed by id.
+        self._audio_sinks_logged: set[int] = set()
         self.tasks = TaskRegistry()
         # Audio: one clip at a time goes out, each announced just before its blob; `_generation` orders everything
         # audible (see `stop_audio`).
@@ -502,6 +502,8 @@ class ConnectionManager:
         """Register a callback sink to receive client Web Audio PCM frames."""
         with self._lock:
             self._audio_sink = callback
+            # Only the current sink's id is kept; a replaced sink's entry goes with it.
+            self._audio_sinks_logged.clear()
 
     def register_barge_in_callback(self, callback: Callable[[Optional[int], Optional[float]], Any]) -> None:
         """Register a callback invoked when barge-in is triggered."""
@@ -527,9 +529,9 @@ class ConnectionManager:
             try:
                 sink(frame_bytes)
             except Exception:  # noqa: BLE001  # one failing listener must not stop the others
-                if not self._audio_sink_failure_logged:
-                    self._audio_sink_failure_logged = True
-                    logger.exception("Error in audio sink callback; later failures are not logged")
+                if id(sink) not in self._audio_sinks_logged:
+                    self._audio_sinks_logged.add(id(sink))
+                    logger.exception("Error in audio sink callback; later failures of this sink are not logged")
 
     # ========================================================================
     # Messaging & Broadcasting

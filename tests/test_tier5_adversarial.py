@@ -538,10 +538,14 @@ def test_failing_listeners_are_logged_and_the_others_still_run(caplog) -> None:
     def failing_frame_listener(frame: np.ndarray) -> None:
         raise RuntimeError("frame listener broke")
 
+    def other_failing_frame_listener(frame: np.ndarray) -> None:
+        raise RuntimeError("second frame listener broke")
+
     def failing_barge_in_listener(event: object) -> None:
         raise RuntimeError("barge-in listener broke")
 
     bridge.add_frame_callback(failing_frame_listener)
+    bridge.add_frame_callback(other_failing_frame_listener)
     bridge.add_frame_callback(lambda frame: frame_sizes.append(frame.size))
     bridge.add_barge_in_callback(failing_barge_in_listener)
     bridge.add_barge_in_callback(barge_in_events.append)
@@ -554,7 +558,7 @@ def test_failing_listeners_are_logged_and_the_others_still_run(caplog) -> None:
     assert frame_sizes == [480, 480, 480]
     assert len(barge_in_events) == 1
     messages = [record.getMessage() for record in caplog.records]
-    # The frame listener runs for every 30 ms frame, so its failure is logged once.
-    assert sum("frame callback" in message for message in messages) == 1
+    # Each frame listener runs for every 30 ms frame, so each one's failure is logged once, and a second listener is not hidden by the first.
+    assert sum("frame callback" in message for message in messages) == 2
     assert sum("barge-in callback" in message for message in messages) == 1
     assert all(record.exc_info for record in caplog.records)

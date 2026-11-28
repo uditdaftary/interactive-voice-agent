@@ -193,6 +193,29 @@ def test_failing_audio_sink_is_logged_once_and_keeps_receiving(caplog: pytest.Lo
     assert errors[0].exc_info is not None
 
 
+def test_replacing_the_audio_sink_logs_the_new_sink_failure(caplog: pytest.LogCaptureFixture) -> None:
+    manager = ConnectionManager()
+    seen: list[str] = []
+
+    def first_sink(frame: bytes) -> None:
+        seen.append("first")
+        raise RuntimeError("first sink broke")
+
+    def second_sink(frame: bytes) -> None:
+        seen.append("second")
+        raise RuntimeError("second sink broke")
+
+    manager.register_audio_sink(first_sink)
+    with caplog.at_level(logging.ERROR):
+        manager.on_audio_frame(b"\x00\x00")
+        manager.register_audio_sink(second_sink)
+        manager.on_audio_frame(b"\x00\x00")
+
+    assert seen == ["first", "second"]
+    errors = [record for record in caplog.records if "audio sink" in record.getMessage()]
+    assert len(errors) == 2
+
+
 def test_failing_voice_change_callback_is_logged_and_does_not_raise(caplog: pytest.LogCaptureFixture) -> None:
     manager = ConnectionManager()
 
